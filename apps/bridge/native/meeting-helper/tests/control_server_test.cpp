@@ -38,9 +38,11 @@ using broadify::meeting::MeetingRecorder;
 using broadify::meeting::MeetingState;
 using broadify::meeting::Options;
 using broadify::meeting::PreviewFrameStore;
+using broadify::meeting::RecordingStatus;
 using broadify::meeting::StubScreenCaptureSource;
 using broadify::meeting::VideoFrame;
 using broadify::meeting::handleRpc;
+using broadify::meeting::recordingStatusJson;
 using broadify::meeting::runControlServer;
 
 void fail(const char *message) {
@@ -251,6 +253,29 @@ std::string sendRpc(const std::string &endpoint, const std::string &request) {
 }  // namespace
 
 int main() {
+  {
+    // Recording status: the audio counters are additive and optional. A
+    // recorder that fills them (Windows) serializes numbers, one that does
+    // not (macOS, stub) serializes null so the keys are always present.
+    RecordingStatus withAudio;
+    withAudio.active = false;
+    withAudio.filePath = "C:\\rec\\a.mp4";
+    withAudio.videoFrames = 630;
+    withAudio.audioSamplesWritten = 12;
+    withAudio.audioSamplesDroppedBeforeStart = 3;
+    const std::string audioJson = recordingStatusJson(withAudio);
+    if (!contains(audioJson, "\"audio_samples_written\":12") ||
+        !contains(audioJson, "\"audio_samples_dropped\":3") ||
+        !contains(audioJson, "\"video_frames\":630")) {
+      fail("recording status did not serialize the audio counters");
+    }
+    const std::string noAudioJson = recordingStatusJson(RecordingStatus{});
+    if (!contains(noAudioJson, "\"audio_samples_written\":null") ||
+        !contains(noAudioJson, "\"audio_samples_dropped\":null")) {
+      fail("recording status without audio counters did not serialize null");
+    }
+  }
+
   StubCameraSource camera;
   StubScreenCaptureSource screen;
   MeetingState state;
@@ -295,6 +320,13 @@ int main() {
   }
 
   auto stopServer = [&] {
+    // Wake the server first: its accept() loop only re-checks `running` on the
+    // next connection, so a failed assertion (which stops the server before
+    // exiting) would otherwise hang forever instead of failing fast.
+    if (socketMode && running.load()) {
+      (void)sendRpc(endpoint,
+                    "{\"id\":\"stop\",\"method\":\"control.shutdown\"}");
+    }
     running.store(false);
     if (server.joinable()) {
       server.join();
@@ -386,6 +418,39 @@ int main() {
       !contains(keyer, "\"no_subject\":true")) {
     stopServer();
     fail("keyer.get did not include vcam publish/no-subject fields");
+  }
+  // No backend has checked a model hash yet (CoreML/Vision on macOS never do):
+  // the flag must be null, not a misleading "false" (= hash mismatch).
+  if (!contains(keyer, "\"model_hash_ok\":null")) {
+    stopServer();
+    fail("keyer.get did not report model_hash_ok as null without a hash check");
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.modelHashOk = true;
+  }
+  if (!contains(rpc("{\"id\":\"5h1\",\"method\":\"keyer.get\"}"),
+                "\"model_hash_ok\":true")) {
+    stopServer();
+    fail("keyer.get did not report model_hash_ok true after a matching hash");
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.modelHashOk = false;
+  }
+  if (!contains(rpc("{\"id\":\"5h2\",\"method\":\"keyer.get\"}"),
+                "\"model_hash_ok\":false")) {
+    stopServer();
+    fail("keyer.get did not report model_hash_ok false after a hash mismatch");
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.modelHashOk.reset();
+  }
+  if (!contains(rpc("{\"id\":\"5h3\",\"method\":\"keyer.get\"}"),
+                "\"model_hash_ok\":null")) {
+    stopServer();
+    fail("keyer.get did not return model_hash_ok to null after reset");
   }
 #if defined(_WIN32)
   if (!contains(keyer, "\"camera_upload_ms\":0.330000") ||

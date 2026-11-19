@@ -59,7 +59,8 @@ State machine:
   arm duplicate retries.
 
 Constants:
-- Startup auto-connect delay: 3 s.
+- Startup auto-connect delay: 3 s after `mode_activate` (studio/conference);
+  there is no auto-connect at bridge start any more.
 - Startup attempts: 5 total attempts, then quiet give-up.
 - Session reconnect: 1 s base, exponential, capped at 30 s, with 20% jitter.
 - Self-heal grace: 30 s.
@@ -76,6 +77,27 @@ Join semantics:
 `engine_status` includes additive `reconnect` metadata while retries are armed:
 `attempt`, `nextRetryAt`, and optional `lastError`. Auto-reconnect failures stay
 on `connecting` plus `reconnect.lastError`; they do not emit `engine_error`.
+
+## Mode-driven startup restore
+
+The persisted startup connect is no longer scheduled in `startServer()`. The
+web app announces its mode with `mode_activate`; for `studio` and `conference`
+the command calls `engineAdapter.startPersistedAutoConnect()`, for `meeting`
+nothing happens (see `docs/bridge/features/mode-activation.md`).
+
+`startPersistedAutoConnect()` is idempotent: no-op while a startup timer is
+pending, while any connect is in flight, or while the engine is not
+`disconnected`. Repeated activations (reload, second client, relay replay)
+therefore never arm a second restore.
+
+Error events are gated on the mode: while the persisted restore is running
+(`startupRestoreActive`, spanning all five supervisor attempts) and no
+studio/conference mode has been activated, an adapter error state is logged at
+info and **not** published as `engine_error`. The local state, the WebSocket
+`engine.error` broadcast and `engine_status` are unchanged. A manual
+`engine_connect` clears the flag, so operator-initiated failures are always
+published, and once a Studio/Conference mode is active the restore failures
+are published too.
 
 The same supervisor also observes vMix adapter drops. vMix polling failures that
 move the adapter to `error` are therefore auto-reconnected through the same

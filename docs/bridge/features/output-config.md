@@ -38,6 +38,11 @@ Diese Doku beschreibt, wie Outputs konfiguriert, validiert und für Hardware‑A
 - `video_hdmi`
   - Output1 erforderlich
   - HDMI/DisplayPort/Thunderbolt‑Port
+  - Kein DeckLink-Fallback: ist der Ziel-Port nicht im Device-Cache (Display
+    abgezogen), wirft `selectOutputAdapter()` `output_device_not_found`
+    („Display output `<id>` is not connected"); die persistierte Config bleibt
+    erhalten, der Output-Supervisor wartet auf den Device-Change. Nur ein im
+    Cache gefundener HDMI-Port eines DeckLink-Geräts nutzt den DeckLink-Adapter.
   - Opak (kein Alpha): externe Mischer (z. B. RØDECaster Video, ATEM) keyen
     auf die Hintergrundfarbe; Default Grün, siehe
     `docs/integration/rodecaster-video-integration.md`
@@ -90,8 +95,26 @@ sequenceDiagram
   GM-->>CR: success
 ```
 
+## Persistierte Output-Config: Laden vs. Anwenden
+- `graphicsManager.initialize()` (Bridge-Start) lädt und loggt die persistierte
+  Config (`outputConfigStore`), wendet sie aber **nicht** an; Renderer und
+  Assets werden wie bisher initialisiert.
+- `graphicsManager.applyPersistedOutput()` wendet sie an – ausgelöst durch
+  `mode_activate` mit `studio`/`conference`, nie im Meeting-Modus
+  (`docs/bridge/features/mode-activation.md`). Idempotent: No-op bei bereits
+  konfiguriertem Output, laufender Supervisor-Recovery oder Apply in Flight.
+- Fehlerbehandlung wie der frühere Startup-Apply: Config bleibt gespeichert,
+  Stub-Adapter aktiv, `graphics_error` (typisierter Code, z. B.
+  `output_device_not_found`, sonst `renderer_error`/`output_helper_error`),
+  Supervisor `init_failed` mit Backoff 2 s → 60 s (max. 6 Versuche, danach
+  Warten auf Device-Change). Bei Erfolg `graphics_status` mit
+  `reason: outputs_configured`.
+- Alte Web-App ohne `mode_activate`: nach einem Bridge-Neustart bleibt der
+  Studio-Output unkonfiguriert, bis `graphics_configure_outputs` gesendet wird.
+
 ## Fehlerbilder
 - Ports nicht verfügbar → Validation Error
+- Display-Target nicht angeschlossen (Restore/Recovery) → `output_device_not_found`
 - Format nicht unterstützt → Validation Error
 - Helper nicht verfügbar → leerer Mode‑List → Validation Error
 - Port‑IDs ungültig → parseDecklinkPortId() Fehler

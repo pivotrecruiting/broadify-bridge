@@ -19,7 +19,7 @@ jest.mock("node:fs/promises", () => ({
 type MockChildT = EventEmitter & {
   stdout: EventEmitter;
   stderr: EventEmitter;
-  stdin: { writable: boolean; write: jest.Mock };
+  stdin: EventEmitter & { writable: boolean; write: jest.Mock; end: jest.Mock };
   kill: jest.Mock;
   exitCode: number | null;
   signalCode: NodeJS.Signals | null;
@@ -29,7 +29,11 @@ function createMockChild(): MockChildT {
   const child = new EventEmitter() as MockChildT;
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
-  child.stdin = { writable: true, write: jest.fn().mockReturnValue(true) };
+  child.stdin = Object.assign(new EventEmitter(), {
+    writable: true,
+    write: jest.fn().mockReturnValue(true),
+    end: jest.fn(),
+  });
   child.kill = jest.fn();
   child.exitCode = null;
   child.signalCode = null;
@@ -363,6 +367,19 @@ describe("AtemUsbAdapter", () => {
     // The lingering helper must be told to shut down so it releases the USB
     // claim; otherwise the next connect fails until a physical replug.
     expect(child.stdin.write).toHaveBeenCalledWith('{"command":"shutdown"}\n');
+  });
+
+  it("tolerates an EPIPE error on helper stdin after connect", async () => {
+    const adapter = new AtemUsbAdapter();
+    await connectAdapter(adapter);
+
+    expect(() =>
+      child.stdin.emit(
+        "error",
+        Object.assign(new Error("write EPIPE"), { code: "EPIPE" })
+      )
+    ).not.toThrow();
+    expect(adapter.getState().status).toBe("connected");
   });
 
   it("sends shutdown on disconnect and resets state", async () => {

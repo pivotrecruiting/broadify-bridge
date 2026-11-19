@@ -199,10 +199,10 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
     },
     "status": {
       "active_keyer": "vision_person_segmentation", // "modnet"|"vision_person_segmentation"|"passthrough", required, seit Bestand
-      "fallback_active": false, // boolean, required, seit Bestand
-      "keyer_degraded": false, // boolean, required, seit Bestand
-      "keyer_ready": true, // boolean, required, seit Bestand
-      "fallback_reason": null, // string|null, required, seit Bestand
+      "fallback_active": false, // boolean, required, seit Bestand; seit B-11 auch true bei macOS CoreML->Vision-Downgrade (s. u.)
+      "keyer_degraded": false, // boolean, required, seit Bestand; folgt fallback_active (ausser fallback_reason "keyer_disabled")
+      "keyer_ready": true, // boolean, required, seit Bestand; false nur bei fallback_reason "loading"/"not_loaded"
+      "fallback_reason": null, // string|null, required, seit Bestand; bei CoreML->Vision-Downgrade der CoreML-Grund (s. u.)
       "degradation_stage": "fresh", // string, required, seit Bestand
       "empty_valid": false, // boolean, required, seit Bestand
       "no_subject": false, // boolean, required, seit Bestand
@@ -217,7 +217,7 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
       "active_performance_mode": null, // string|null, required, auf macOS null, seit Bestand
       "provider": "vision_sequence", // string|null, required, seit Bestand
       "inference_ms": 8.2, // number|null, required, volatil, seit Bestand
-      "model_hash_ok": true, // boolean, required, seit Bestand
+      "model_hash_ok": true, // boolean|null, required; null = dieses Backend prueft keinen Hash (CoreML/Vision auf macOS), seit B-11 (vorher immer false auf macOS)
       "model_path": "...", // string|null, required, seit Bestand
       "pipeline_mode": "live", // string, required, seit Bestand
       "keyer_pipeline_mode": null, // string|null, required, auf macOS null, seit Bestand
@@ -238,7 +238,9 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
     "file_path": "/Users/.../meeting.mp4.part", // string, required, lokal, seit Bestand
     "elapsed_seconds": 21, // number, required, volatil, seit Bestand
     "video_frames": 630, // number, required, volatil, seit Bestand
-    "last_error": "" // string, required, seit Bestand
+    "audio_samples_written": 2100, // number|null, additiv seit Okt 2026 (B-9), volatil; Windows-Helper Zahl, macOS/Stub null
+    "audio_samples_dropped": 3, // number|null, additiv seit Okt 2026 (B-9), volatil; Samples vor Session-Start verworfen (siehe meeting-recording.md)
+    "last_error": "" // string, required, seit Bestand; "finalize_timeout" wenn stop() den Finalize-Schritt nach kRecorderFinalizeTimeoutMs abbricht (.part bleibt)
   },
   "virtualCamera": { // object, optional, camelCase, seit Bestand
     "active": true, // boolean, required wenn Windows-helper Status, seit Bestand
@@ -281,6 +283,30 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
   "camera_permission_status": "authorized" // string|null, required in Stage 2, optional fuer aeltere Clients
 }
 ```
+
+#### `fallback_active` / `fallback_reason` / `model_hash_ok` auf macOS (B-11)
+
+- `model_hash_ok` ist tri-state: `true`/`false` nur, wenn das aktive Backend die
+  Modelldatei gegen den Manifest-Hash geprueft hat (Windows ONNX-/OpenVINO-MODNet).
+  `null` = kein Hash-Check auf diesem Backend (CoreML-MODNet und Apple Vision auf
+  macOS). Vor B-11 lieferte macOS hier immer `false`, was wie ein Hash-Mismatch
+  aussah. Webapp-Typ `model_hash_ok?: boolean` muss zu `boolean | null` werden
+  (Webapp-Follow-up); die Bridge mappt bereits `model_hash_ok ?? null`.
+- CoreML->Vision-Downgrade sichtbar: Auf macOS ist der fused CoreML-MODNet-Keyer
+  der Produktions-Keyer unabhaengig vom angeforderten `model` (die Webapp sendet
+  kein `model`, der Default bleibt `vision_person_segmentation`). Faellt der fused
+  CoreML-Keyer aus und uebernimmt der asynchrone Vision-Fallback, meldet der
+  Status deshalb immer `fallback_active: true`, `keyer_degraded: true` und als
+  `fallback_reason` den CoreML-Grund; `active_keyer` bleibt ehrlich
+  `vision_person_segmentation`, `keyer_ready` bleibt `true` (Vision liefert Masken).
+  Emittierte Gruende: die `fallback_reason` des CoreML-Keyers (`model_missing`,
+  `model_compile_failed`, `model_load_failed`, `invalid_frame`,
+  `frame_convert_failed`, `input_provider_failed`, `inference_failed`,
+  `no_mask_output`, `coreml_requires_macos_13`, `coreml_unsupported_platform`,
+  `not_loaded`) bzw. `coreml_inference_failed`, wenn CoreML ohne Grund eine leere
+  Maske liefert. Sobald der fused Keyer wieder liefert, verschwindet der Fallback.
+  Ist der fused Pfad per `BROADIFY_MEETING_GPU_PIPELINE=0` abgeschaltet, gibt es
+  keinen fused Fehler und damit keinen Grund; Vision laeuft dann unmarkiert.
 
 ### Gestoppter Helper
 
@@ -369,9 +395,10 @@ Relay-Event wird:
 
 Volatile Keys auf beliebiger Tiefe sind `rendered_frames`, `reused_frames`,
 `published_preview_frames`, `written_framebus_frames`, `inference_ms`,
-`elapsed_seconds`, `video_frames`, `updated_at`, `captured_frames`,
-`program_dirty` und `graphics_dirty`; zusaetzlich wird `keyer.status.metrics`
-aus der stabilen Projektion entfernt.
+`elapsed_seconds`, `video_frames`, `audio_samples_written`,
+`audio_samples_dropped`, `updated_at`, `captured_frames`, `program_dirty` und
+`graphics_dirty`; zusaetzlich wird `keyer.status.metrics` aus der stabilen
+Projektion entfernt.
 
 `requestStatusPublish(reason)` sammelt Forced-Reasons in einem festen
 `STATUS_PUBLISH_COALESCE_MS` = 120-ms-Fenster. Reasons werden per `+`
@@ -424,6 +451,17 @@ Identity-Metadaten und nicht Teil der Keyer-Signatur; eine reine ID-Aenderung
 loest keinen Keyer-Reset aus. `keyer.configure` behandelt
 `background_image_path`, `background_asset_id` und `background_template_id`
 presence-guarded: fehlt ein Feld, bleibt der aktuelle Wert erhalten.
+
+`background_image_path` ist UTF-8; der Helper oeffnet die Datei ueber die
+UTF-8-Pfadhelfer (auch bei Windows-Benutzernamen mit Umlaut) und meldet das
+Ergebnis als Helper-Event in `meeting-helper-events.log`, nicht im
+`meeting_status`: `background_image_loaded` einmal pro erfolgreichem Laden,
+`background_image_load_failed` (`stage` `open`|`decode`, `errno`) genau
+einmal pro Pfad, solange das Laden fehlschlaegt (Retry mit Backoff 400 ms *
+2^n, max. 2 s). Das Feld `path` enthaelt dabei nur den Dateinamen
+(Basename), nie das Verzeichnis - der volle Pfad liegt unter userData und
+enthaelt den Windows-Benutzernamen. Details: `meeting-keyer-windows.md`, Abschnitt "Paths And
+Encoding".
 
 ## Kompatibilitaet
 

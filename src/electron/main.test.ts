@@ -1,3 +1,4 @@
+import path from "path";
 /**
  * Tests for main process (main.ts).
  * Uses dynamic import and mocked argv so that the main app path runs.
@@ -6,7 +7,8 @@
 const readyHandlers: Array<() => void> = [];
 const secondInstanceHandlers: Array<() => void> = [];
 const openUrlHandlers: Array<(event: { preventDefault: () => void }, _url: string) => void> = [];
-const beforeQuitHandlers: Array<() => void | Promise<void>> = [];
+type QuitEventT = { preventDefault: () => void };
+const beforeQuitHandlers: Array<(event?: QuitEventT) => void | Promise<void>> = [];
 const powerMonitorHandlers: Record<string, Array<() => void>> = {
   resume: [],
   "unlock-screen": [],
@@ -133,6 +135,7 @@ const mockUpdaterCheckForUpdates = jest.fn().mockResolvedValue({});
 const mockUpdaterDownloadUpdate = jest.fn().mockResolvedValue({});
 const mockUpdaterQuitAndInstall = jest.fn();
 const mockUpdaterShutdown = jest.fn();
+const mockUpdaterSetInstallPreparationHook = jest.fn();
 
 jest.mock("./services/app-updater.js", () => ({
   appUpdaterService: {
@@ -142,6 +145,8 @@ jest.mock("./services/app-updater.js", () => ({
     downloadUpdate: () => mockUpdaterDownloadUpdate(),
     quitAndInstall: () => mockUpdaterQuitAndInstall(),
     shutdown: () => mockUpdaterShutdown(),
+    setInstallPreparationHook: (hook: () => Promise<void>) =>
+      mockUpdaterSetInstallPreparationHook(hook),
   },
 }));
 
@@ -198,6 +203,7 @@ const mockAppSetPath = jest.fn();
 const mockAppendSwitch = jest.fn();
 let singleInstanceLockReturns = true;
 const mockRequestSingleInstanceLock = jest.fn(() => singleInstanceLockReturns);
+const mockAppHide = jest.fn();
 const mockAppOn = jest.fn((event: string, handler: () => void) => {
   if (event === "ready") readyHandlers.push(handler);
   if (event === "second-instance") secondInstanceHandlers.push(handler);
@@ -233,6 +239,7 @@ jest.mock("electron", () => ({
     },
     exit: (code?: number) => mockAppExit(code),
     quit: () => mockAppQuit(),
+    hide: () => mockAppHide(),
     on: mockAppOn,
   },
   BrowserWindow: jest.fn().mockImplementation(function (
@@ -257,8 +264,32 @@ jest.mock("electron", () => ({
     this.focus = jest.fn();
     return this;
   }),
-  shell: { openExternal: jest.fn() },
+  shell: { openExternal: jest.fn().mockResolvedValue(undefined) },
 }));
+
+/**
+ * Override `process.platform` for one test; returns the restore function.
+ * The web app open gate hides the bridge window only on macOS.
+ */
+function overridePlatform(platform: NodeJS.Platform): () => void {
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", {
+    value: platform,
+    configurable: true,
+  });
+  return () => {
+    if (original) {
+      Object.defineProperty(process, "platform", original);
+    }
+  };
+}
+
+/** Let the open promise and the chained hide microtasks settle. */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 4; i += 1) {
+    await Promise.resolve();
+  }
+}
 
 describe("main", () => {
   const originalArgv = process.argv;
@@ -280,11 +311,13 @@ describe("main", () => {
       termsAcceptedAt: "2020-01-01T00:00:00Z",
     });
     mockStart.mockResolvedValue({ success: true });
+    mockStop.mockResolvedValue(undefined);
     mockGetConfig.mockReturnValue({ host: "127.0.0.1", port: 8787 });
     mockIsRunning.mockReturnValue(true);
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     process.argv = originalArgv;
   });
 
@@ -368,6 +401,90 @@ describe("main", () => {
       expect(win.isMinimized).toHaveBeenCalled();
       expect(win.restore).toHaveBeenCalled();
       expect(win.focus).toHaveBeenCalled();
+    });
+
+    it("second-instance only logs while the app is shutting down", async () => {
+      await readyHandlers[0]();
+      const { BrowserWindow } = await import("electron");
+      const win = (BrowserWindow as jest.Mock).mock.results[0].value;
+      const closeCb = win.on.mock.calls.find((c: unknown[]) => c[0] === "close")?.[1];
+      // Shutdown in flight: the bridge stop has not returned yet.
+      mockStop.mockReturnValue(new Promise(() => {}));
+      closeCb({ preventDefault: jest.fn() });
+
+      secondInstanceHandlers[0]();
+
+      expect(win.isMinimized).not.toHaveBeenCalled();
+      expect(win.restore).not.toHaveBeenCalled();
+      expect(win.focus).not.toHaveBeenCalled();
+      expect(mockLogAppInfo).toHaveBeenCalledWith(
+        expect.stringContaining("second instance"),
+      );
+    });
+
+    it("registers the install hook once on ready before any updater status", async () => {
+      await readyHandlers[0]();
+
+      expect(mockUpdaterSetInstallPreparationHook).toHaveBeenCalledTimes(1);
+      expect(mockUpdaterInitialize).toHaveBeenCalledTimes(1);
+      expect(
+        mockUpdaterSetInstallPreparationHook.mock.invocationCallOrder[0],
+      ).toBeLessThan(mockUpdaterInitialize.mock.invocationCallOrder[0]);
+
+      // The status listener only forwards to the renderer; it never
+      // re-registers the hook.
+      const listener = mockUpdaterInitialize.mock.calls[0][0];
+      listener({ state: "idle" });
+      listener({ state: "downloaded" });
+      expect(mockUpdaterSetInstallPreparationHook).toHaveBeenCalledTimes(1);
+      expect(mockIpcWebContentsSend).toHaveBeenCalledWith(
+        "updaterStatus",
+        expect.anything(),
+        { state: "downloaded" },
+      );
+    });
+
+    it("install hook stops the bridge and releases the quit guard", async () => {
+      await readyHandlers[0]();
+      const hook = mockUpdaterSetInstallPreparationHook.mock.calls[0][0];
+      mockStop.mockClear();
+
+      await hook();
+
+      expect(mockUpdaterShutdown).toHaveBeenCalled();
+      expect(mockStop).toHaveBeenCalledTimes(1);
+      // The quit guard stands down: the installer's normal quit goes through.
+      const event = { preventDefault: jest.fn() };
+      beforeQuitHandlers[0](event);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      // The install path never force-exits; electron-updater drives the quit.
+      expect(mockAppExit).not.toHaveBeenCalled();
+    });
+
+    it("releases the quit guard when the bridge stop hangs", async () => {
+      jest.useFakeTimers();
+      await readyHandlers[0]();
+      const hook = mockUpdaterSetInstallPreparationHook.mock.calls[0][0];
+      mockStop.mockReturnValue(new Promise(() => {}));
+
+      let hookResolved = false;
+      const hookPromise = hook().then(() => {
+        hookResolved = true;
+      });
+      await jest.advanceTimersByTimeAsync(29_999);
+      expect(hookResolved).toBe(false);
+
+      await jest.advanceTimersByTimeAsync(1);
+      await hookPromise;
+
+      expect(hookResolved).toBe(true);
+      expect(mockLogAppWarn).toHaveBeenCalledWith(
+        expect.stringContaining("Cleanup timed out after 30000ms"),
+      );
+      const event = { preventDefault: jest.fn() };
+      beforeQuitHandlers[0](event);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(mockAppExit).not.toHaveBeenCalled();
     });
 
     it("open-url prevents default and focuses window", async () => {
@@ -515,6 +632,101 @@ describe("main", () => {
       expect(mockStart).toHaveBeenCalled();
     });
 
+    it("bridgeStart returns the web app URL alongside the start result", async () => {
+      await readyHandlers[0]();
+      const idx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const handler = mockIpcMainHandle.mock.calls[idx][1];
+      const result = await handler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      expect(result.success).toBe(true);
+      // No env override in tests -> production default base URL.
+      expect(typeof result.webAppUrl).toBe("string");
+      expect(result.webAppUrl).toBe("https://app.broadify.de/");
+      // The same URL is pushed via the initial bridgeStatus event.
+      expect(mockIpcWebContentsSend).toHaveBeenCalledWith(
+        "bridgeStatus",
+        expect.anything(),
+        expect.objectContaining({ running: true, webAppUrl: result.webAppUrl }),
+      );
+    });
+
+    it("bridgeStart returns the configured web app URL when the env var is set", async () => {
+      const previous = process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+      process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL =
+        "https://studio.example.test/control";
+      try {
+        await readyHandlers[0]();
+        const idx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "bridgeStart",
+        );
+        const handler = mockIpcMainHandle.mock.calls[idx][1];
+        const result = await handler(undefined, {
+          networkBindingId: "localhost",
+          host: "127.0.0.1",
+          port: 8787,
+        });
+        expect(result.success).toBe(true);
+        expect(result.webAppUrl).toBe("https://studio.example.test/control");
+      } finally {
+        if (previous === undefined) {
+          delete process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+        } else {
+          process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL = previous;
+        }
+      }
+    });
+
+    it("bridgeStart omits webAppUrl when the configured base URL is invalid", async () => {
+      const previous = process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+      process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL = "not a valid url";
+      const consoleErrorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      try {
+        await readyHandlers[0]();
+        const idx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "bridgeStart",
+        );
+        const handler = mockIpcMainHandle.mock.calls[idx][1];
+        const result = await handler(undefined, {
+          networkBindingId: "localhost",
+          host: "127.0.0.1",
+          port: 8787,
+        });
+        expect(result.success).toBe(true);
+        expect(result.webAppUrl).toBeUndefined();
+        expect("webAppUrl" in result).toBe(false);
+      } finally {
+        consoleErrorSpy.mockRestore();
+        if (previous === undefined) {
+          delete process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL;
+        } else {
+          process.env.PRODUCTION_STUDIO_CONTROL_WEBAPP_URL = previous;
+        }
+      }
+    });
+
+    it("bridgeStart failure does not carry a web app URL", async () => {
+      mockStart.mockResolvedValueOnce({ success: false, error: "boom" });
+      await readyHandlers[0]();
+      const idx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const handler = mockIpcMainHandle.mock.calls[idx][1];
+      const result = await handler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      expect(result.success).toBe(false);
+      expect(result.webAppUrl).toBeUndefined();
+    });
+
     it("prevents app suspension while the bridge runs", async () => {
       await readyHandlers[0]();
       const startIndex = mockIpcMainHandle.mock.calls.findIndex(
@@ -606,6 +818,189 @@ describe("main", () => {
       expect(mockClearPairing).toHaveBeenCalled();
     });
 
+    it("bridgeStart opens the web app once, only after the bridge is reachable and relay-authenticated", async () => {
+      const { shell } = await import("electron");
+      await readyHandlers[0]();
+      const startIdx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const startHandler = mockIpcMainHandle.mock.calls[startIdx][1];
+      const result = await startHandler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      expect(result.success).toBe(true);
+      expect(result.webAppUrl).toBe("https://app.broadify.de/");
+
+      // The start result alone must not open the browser (the bridge server
+      // is not listening yet and the relay is not authenticated).
+      expect(shell.openExternal).not.toHaveBeenCalled();
+
+      const statusCb = mockStartHealthCheckPolling.mock.calls[0][1];
+      statusCb({ running: true, reachable: false });
+      expect(shell.openExternal).not.toHaveBeenCalled();
+      statusCb({ running: true, reachable: true, relayConnected: false });
+      expect(shell.openExternal).not.toHaveBeenCalled();
+
+      statusCb({ running: true, reachable: true, relayConnected: true });
+      expect(shell.openExternal).toHaveBeenCalledTimes(1);
+      expect(shell.openExternal).toHaveBeenCalledWith(
+        "https://app.broadify.de/",
+        { activate: true },
+      );
+      // The status still reaches the renderer with the URL for the UI link.
+      expect(mockIpcWebContentsSend).toHaveBeenLastCalledWith(
+        "bridgeStatus",
+        expect.anything(),
+        expect.objectContaining({
+          relayConnected: true,
+          webAppUrl: "https://app.broadify.de/",
+        }),
+      );
+
+      // Later ready statuses never open a second tab.
+      statusCb({ running: true, reachable: true, relayConnected: true });
+      statusCb({ running: true, reachable: true, relayConnected: true });
+      expect(shell.openExternal).toHaveBeenCalledTimes(1);
+    });
+
+    it("bridgeStop disarms the web app open gate", async () => {
+      const { shell } = await import("electron");
+      await readyHandlers[0]();
+      const startIdx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const stopIdx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStop",
+      );
+      const startHandler = mockIpcMainHandle.mock.calls[startIdx][1];
+      const stopHandler = mockIpcMainHandle.mock.calls[stopIdx][1];
+      await startHandler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      const statusCb = mockStartHealthCheckPolling.mock.calls[0][1];
+      statusCb({ running: true, reachable: true, relayConnected: false });
+
+      await stopHandler();
+
+      // A stale poll result arriving after the stop must not open anything.
+      statusCb({ running: true, reachable: true, relayConnected: true });
+      expect(shell.openExternal).not.toHaveBeenCalled();
+    });
+
+    it("bridgeStart opens the web app after the relay timeout when the relay never connects", async () => {
+      jest.useFakeTimers();
+      const { shell } = await import("electron");
+      await readyHandlers[0]();
+      const startIdx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "bridgeStart",
+      );
+      const startHandler = mockIpcMainHandle.mock.calls[startIdx][1];
+      await startHandler(undefined, {
+        networkBindingId: "localhost",
+        host: "127.0.0.1",
+        port: 8787,
+      });
+      const statusCb = mockStartHealthCheckPolling.mock.calls[0][1];
+      statusCb({ running: true, reachable: true, relayConnected: false });
+      expect(shell.openExternal).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(14_999);
+      expect(shell.openExternal).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+
+      expect(shell.openExternal).toHaveBeenCalledTimes(1);
+      expect(shell.openExternal).toHaveBeenCalledWith(
+        "https://app.broadify.de/",
+        { activate: true },
+      );
+    });
+
+    it("gated open hides the bridge window on macOS once the browser opened", async () => {
+      const restorePlatform = overridePlatform("darwin");
+      try {
+        const { shell } = await import("electron");
+        await readyHandlers[0]();
+        const startIdx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "bridgeStart",
+        );
+        const startHandler = mockIpcMainHandle.mock.calls[startIdx][1];
+        await startHandler(undefined, {
+          networkBindingId: "localhost",
+          host: "127.0.0.1",
+          port: 8787,
+        });
+        const statusCb = mockStartHealthCheckPolling.mock.calls[0][1];
+        statusCb({ running: true, reachable: true, relayConnected: false });
+        expect(mockAppHide).not.toHaveBeenCalled();
+
+        statusCb({ running: true, reachable: true, relayConnected: true });
+        expect(shell.openExternal).toHaveBeenCalledTimes(1);
+        // Hiding waits for shell.openExternal to resolve: Safari must have been
+        // activated before the bridge window steps back.
+        expect(mockAppHide).not.toHaveBeenCalled();
+        await flushMicrotasks();
+        expect(mockAppHide).toHaveBeenCalledTimes(1);
+        expect(mockLogAppInfo).toHaveBeenCalledWith(
+          "[WebApp] Hiding bridge window so the browser is in front",
+        );
+
+        // Later ready statuses neither open nor hide again.
+        statusCb({ running: true, reachable: true, relayConnected: true });
+        await flushMicrotasks();
+        expect(mockAppHide).toHaveBeenCalledTimes(1);
+      } finally {
+        restorePlatform();
+      }
+    });
+
+    it("gated open does not hide the bridge window on Windows", async () => {
+      const restorePlatform = overridePlatform("win32");
+      try {
+        const { shell } = await import("electron");
+        await readyHandlers[0]();
+        const startIdx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "bridgeStart",
+        );
+        const startHandler = mockIpcMainHandle.mock.calls[startIdx][1];
+        await startHandler(undefined, {
+          networkBindingId: "localhost",
+          host: "127.0.0.1",
+          port: 8787,
+        });
+        const statusCb = mockStartHealthCheckPolling.mock.calls[0][1];
+        statusCb({ running: true, reachable: true, relayConnected: true });
+        await flushMicrotasks();
+
+        expect(shell.openExternal).toHaveBeenCalledTimes(1);
+        expect(mockAppHide).not.toHaveBeenCalled();
+      } finally {
+        restorePlatform();
+      }
+    });
+
+    it("manual openExternal IPC never hides the bridge window", async () => {
+      const restorePlatform = overridePlatform("darwin");
+      try {
+        const { shell } = await import("electron");
+        await readyHandlers[0]();
+        const idx = mockIpcMainHandle.mock.calls.findIndex(
+          (c: unknown[]) => c[0] === "openExternal",
+        );
+        const handler = mockIpcMainHandle.mock.calls[idx][1];
+        await handler(undefined, "https://app.broadify.de");
+        await flushMicrotasks();
+
+        expect(shell.openExternal).toHaveBeenCalledTimes(1);
+        expect(mockAppHide).not.toHaveBeenCalled();
+      } finally {
+        restorePlatform();
+      }
+    });
+
     it("bridgeGetStatus returns running false when process not running", async () => {
       mockIsRunning.mockReturnValue(false);
       mockGetConfig.mockReturnValue(null);
@@ -659,7 +1054,10 @@ describe("main", () => {
       );
       const handler = mockIpcMainHandle.mock.calls[idx][1];
       await handler(undefined, "https://app.broadify.de");
-      expect(shell.openExternal).toHaveBeenCalledWith("https://app.broadify.de");
+      expect(shell.openExternal).toHaveBeenCalledWith(
+        "https://app.broadify.de",
+        { activate: true },
+      );
     });
 
     it("appGetVersion returns app version", async () => {
@@ -1049,9 +1447,19 @@ describe("main", () => {
   });
 
   describe("loadNetworkConfig from template", () => {
+    // Only the cwd template exists; the userData copy must stay missing so the
+    // template branch (not the user-config branch) is what gets exercised.
+    // path.join: main.ts builds this path with the host separator (Windows runner).
+    const CWD_NETWORK_CONFIG_TEMPLATE = path.join(
+      process.cwd(),
+      "config",
+      "network-config.json",
+    );
+
     it("getNetworkConfig returns template when template exists and user file missing", async () => {
+      mockIsDev.mockReturnValue(true);
       mockExistsSync.mockImplementation((p: string) =>
-        p.includes("network-config.json") && p.includes("config"),
+        p === CWD_NETWORK_CONFIG_TEMPLATE,
       );
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
@@ -1071,8 +1479,9 @@ describe("main", () => {
     });
 
     it("getNetworkConfig uses template in memory when writeFileSync fails", async () => {
+      mockIsDev.mockReturnValue(true);
       mockExistsSync.mockImplementation((p: string) =>
-        p.includes("network-config.json") && p.includes("config"),
+        p === CWD_NETWORK_CONFIG_TEMPLATE,
       );
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
@@ -1093,6 +1502,35 @@ describe("main", () => {
       const result = await handler();
       expect(result.port.default).toBe(7777);
     });
+
+    it("ignores the cwd template when not in dev", async () => {
+      mockIsDev.mockReturnValue(false);
+      mockExistsSync.mockImplementation((p: string) =>
+        p === CWD_NETWORK_CONFIG_TEMPLATE,
+      );
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          networkBinding: { default: {}, options: [] },
+          port: { default: 8888 },
+        }),
+      );
+      jest.resetModules();
+      await import("./main.js");
+      await readyHandlers[0]();
+      const idx = mockIpcMainHandle.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === "getNetworkConfig",
+      );
+      const handler = mockIpcMainHandle.mock.calls[idx][1];
+      const result = await handler();
+      // Packaged builds never ship the template; the hardcoded default must win.
+      expect(result.port.default).toBe(8787);
+      expect(result.networkBinding.default.id).toBe("localhost");
+      expect(mockWriteFileSync).not.toHaveBeenCalledWith(
+        expect.stringContaining("network-config.json"),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
   });
 
   describe("single instance lock", () => {
@@ -1105,6 +1543,13 @@ describe("main", () => {
       await import("./main.js");
       expect(mockRequestSingleInstanceLock).toHaveBeenCalled();
       expect(mockAppQuit).toHaveBeenCalled();
+      // The reason for the silent exit must be in the app log.
+      expect(mockLogAppWarn).toHaveBeenCalledWith(
+        expect.stringContaining("already running"),
+      );
+      expect(mockLogAppWarn.mock.invocationCallOrder[0]).toBeLessThan(
+        mockAppQuit.mock.invocationCallOrder[0],
+      );
       singleInstanceLockReturns = true;
     });
   });
@@ -1112,6 +1557,11 @@ describe("main", () => {
 
 describe("main graphics-renderer path", () => {
   const originalArgv = process.argv;
+
+  beforeEach(() => {
+    mockAppExit.mockClear();
+    mockRequestSingleInstanceLock.mockClear();
+  });
 
   afterEach(() => {
     process.argv = originalArgv;
@@ -1124,5 +1574,43 @@ describe("main graphics-renderer path", () => {
     await import("./main.js");
     expect(mockAppExit).toHaveBeenCalledWith(1);
     consoleSpy.mockRestore();
+  });
+
+  it("exits with code 1 when the renderer entry is outside the allowed roots", async () => {
+    // app.getAppPath() is mocked to "/app" and process.resourcesPath is unset
+    // under Jest, so /tmp/evil can never be inside an allowed root.
+    process.argv = [
+      "electron",
+      "/app",
+      "--graphics-renderer",
+      "--renderer-entry",
+      "/tmp/evil/electron-renderer-entry.js",
+    ];
+    jest.resetModules();
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const logSpy = jest.spyOn(console, "log").mockImplementation();
+    await import("./main.js");
+    expect(mockAppExit).toHaveBeenCalledWith(1);
+    const rejection = errorSpy.mock.calls.find((call) =>
+      String(call[0]).includes("Rejected renderer entry"),
+    );
+    expect(rejection).toBeDefined();
+    for (const call of [...errorSpy.mock.calls, ...logSpy.mock.calls]) {
+      expect(call.map(String).join(" ")).not.toContain("/tmp/evil");
+    }
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  it("does not treat a positional entry path without --graphics-renderer as aux mode", async () => {
+    process.argv = ["electron", "/tmp/evil/electron-renderer-entry.js"];
+    jest.resetModules();
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const logSpy = jest.spyOn(console, "log").mockImplementation();
+    await import("./main.js");
+    expect(mockRequestSingleInstanceLock).toHaveBeenCalled();
+    expect(mockAppExit).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
   });
 });

@@ -32,6 +32,15 @@ jest.mock("./bridge-process-stop.js", () => ({
     mockStopChildProcessGracefully(...args),
 }));
 
+const mockCheckBridgeHealth = jest.fn().mockResolvedValue({
+  running: false,
+  reachable: false,
+  error: "unreachable",
+});
+jest.mock("./bridge-health-check.js", () => ({
+  checkBridgeHealth: (...args: unknown[]) => mockCheckBridgeHealth(...args),
+}));
+
 const mockQuitVcamHelperApp = jest.fn();
 jest.mock("./vcam-helper-app.js", () => ({
   quitVcamHelperApp: () => mockQuitVcamHelperApp(),
@@ -70,6 +79,11 @@ describe("BridgeProcessManager", () => {
     mockIsPortAvailable.mockResolvedValue(true);
     mockFindAvailablePort.mockResolvedValue(null);
     mockStopChildProcessGracefully.mockResolvedValue(undefined);
+    mockCheckBridgeHealth.mockResolvedValue({
+      running: false,
+      reachable: false,
+      error: "unreachable",
+    });
     (isDev as jest.Mock).mockReturnValue(true);
   });
 
@@ -159,6 +173,125 @@ describe("BridgeProcessManager", () => {
       expect(result.success).toBe(true);
       expect(result.actualPort).toBe(8005);
       expect(mockFindAvailablePort).toHaveBeenCalledWith(8000, 8010, "127.0.0.1");
+    });
+
+    describe("same-bridge port guard", () => {
+      const spawnedPort = (): string | undefined => {
+        const args = mockSpawn.mock.calls[0]?.[1] as string[] | undefined;
+        if (!args) return undefined;
+        return args[args.indexOf("--port") + 1];
+      };
+
+      it("waits for a shutting-down bridge with the same id and starts on the same port", async () => {
+        jest.useFakeTimers();
+        // Busy on the initial check and the first poll, free on the second poll.
+        mockIsPortAvailable
+          .mockResolvedValueOnce(false)
+          .mockResolvedValueOnce(false)
+          .mockResolvedValue(true);
+        mockCheckBridgeHealth.mockResolvedValue({
+          running: true,
+          reachable: true,
+          bridgeId: "bridge-1",
+        });
+        mockSpawn.mockReturnValue(createFakeChildProcess());
+
+        const startPromise = bridgeProcessManager.start(
+          baseConfig,
+          true,
+          "bridge-1",
+        );
+        await jest.advanceTimersByTimeAsync(5000);
+        const result = await startPromise;
+
+        expect(mockCheckBridgeHealth).toHaveBeenCalledWith({
+          host: "127.0.0.1",
+          port: 8000,
+        });
+        expect(result.success).toBe(true);
+        expect(result.actualPort).toBeUndefined();
+        expect(mockFindAvailablePort).not.toHaveBeenCalled();
+        expect(spawnedPort()).toBe("8000");
+        expect(bridgeProcessManager.getConfig()?.port).toBe(8000);
+      });
+
+      it("rejects without falling back to port+1 when the same bridge never releases the port", async () => {
+        jest.useFakeTimers();
+        mockIsPortAvailable.mockResolvedValue(false);
+        mockFindAvailablePort.mockResolvedValue(8001);
+        mockCheckBridgeHealth.mockResolvedValue({
+          running: true,
+          reachable: true,
+          bridgeId: "bridge-1",
+        });
+        mockSpawn.mockReturnValue(createFakeChildProcess());
+
+        const startPromise = bridgeProcessManager.start(
+          baseConfig,
+          true,
+          "bridge-1",
+        );
+        await jest.advanceTimersByTimeAsync(15_000);
+        const result = await startPromise;
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain(
+          "A Broadify Bridge with this identity is still running on port 8000",
+        );
+        expect(result.error).toContain("did not shut down within 10 s");
+        expect(mockFindAvailablePort).not.toHaveBeenCalled();
+        expect(mockSpawn).not.toHaveBeenCalled();
+      });
+
+      it("falls back to the next free port when the busy port belongs to a foreign bridge", async () => {
+        jest.useFakeTimers();
+        mockIsPortAvailable.mockResolvedValue(false);
+        mockFindAvailablePort.mockResolvedValue(8005);
+        mockCheckBridgeHealth.mockResolvedValue({
+          running: true,
+          reachable: true,
+          bridgeId: "bridge-2",
+        });
+        mockSpawn.mockReturnValue(createFakeChildProcess());
+
+        const startPromise = bridgeProcessManager.start(
+          baseConfig,
+          true,
+          "bridge-1",
+        );
+        await jest.advanceTimersByTimeAsync(5000);
+        const result = await startPromise;
+
+        expect(mockCheckBridgeHealth).toHaveBeenCalledTimes(1);
+        expect(result.success).toBe(true);
+        expect(result.actualPort).toBe(8005);
+        expect(mockFindAvailablePort).toHaveBeenCalledWith(8000, 8010, "127.0.0.1");
+        expect(spawnedPort()).toBe("8005");
+      });
+
+      it("falls back to the next free port when the busy port gives no bridge health answer", async () => {
+        jest.useFakeTimers();
+        mockIsPortAvailable.mockResolvedValue(false);
+        mockFindAvailablePort.mockResolvedValue(8001);
+        mockCheckBridgeHealth.mockResolvedValue({
+          running: false,
+          reachable: false,
+          error: "Port 8000 is already in use by another service",
+        });
+        mockSpawn.mockReturnValue(createFakeChildProcess());
+
+        const startPromise = bridgeProcessManager.start(
+          baseConfig,
+          true,
+          "bridge-1",
+        );
+        await jest.advanceTimersByTimeAsync(5000);
+        const result = await startPromise;
+
+        expect(result.success).toBe(true);
+        expect(result.actualPort).toBe(8001);
+        expect(spawnedPort()).toBe("8001");
+      });
     });
 
     it("extracts EADDRNOTAVAIL from stderr when process exits early", async () => {

@@ -1,6 +1,7 @@
 #include "keyer/model_manifest.h"
 
 #include "util/json_utils.h"
+#include "util/path_utf8.h"
 
 #include <fstream>
 #include <sstream>
@@ -9,7 +10,7 @@ namespace broadify::meeting {
 namespace {
 
 std::string readFile(const std::string &path) {
-  std::ifstream input(path);
+  std::ifstream input = openInputFileUtf8(path, std::ios::in);
   if (!input) {
     return "";
   }

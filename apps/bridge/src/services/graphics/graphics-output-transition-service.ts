@@ -1,4 +1,5 @@
 import { getBridgeContext } from "../bridge-context.js";
+import { GraphicsError, type GraphicsErrorCodeT } from "./graphics-errors.js";
 import type { GraphicsOutputConfigT } from "./graphics-schemas.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import type {
@@ -52,7 +53,9 @@ type GraphicsOutputTransitionServiceDepsT = {
 export class GraphicsOutputTransitionError extends Error {
   constructor(
     public readonly stage: OutputTransitionStageT,
-    message: string
+    message: string,
+    /** Typed code of the underlying GraphicsError, when there was one. */
+    public readonly code: GraphicsErrorCodeT | null = null
   ) {
     super(message);
     this.name = "GraphicsOutputTransitionError";
@@ -148,7 +151,11 @@ export class GraphicsOutputTransitionService {
       const rollbackSuffix = rollbackResult.ok
         ? ""
         : ` | rollback_failed=${rollbackResult.message}`;
-      throw new GraphicsOutputTransitionError(stage, `${message}${rollbackSuffix}`);
+      throw new GraphicsOutputTransitionError(
+        stage,
+        `${message}${rollbackSuffix}`,
+        error instanceof GraphicsError ? error.code : null
+      );
     }
   }
 

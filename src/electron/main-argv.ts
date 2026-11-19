@@ -53,6 +53,12 @@ export function getArgMap(argv: string[]): Map<string, string | true> {
 /**
  * Resolve the renderer entry path for graphics renderer mode.
  *
+ * Only the explicit `--renderer-entry=<path>` / `--renderer-entry <path>`
+ * forms are honoured. Positional arguments are never treated as an entry:
+ * a bare path on the command line must not be able to switch the desktop
+ * binary into aux mode. The returned value is still untrusted and must be
+ * validated by `resolveAllowedRendererEntry` before it is loaded.
+ *
  * @param argv Process argument list.
  * @returns Renderer entry path or null.
  */
@@ -66,5 +72,5 @@ export function resolveRendererEntry(argv: string[]): string | null {
   if (direct) {
     return direct;
   }
-  return argv.find((arg) => arg.endsWith("electron-renderer-entry.js")) || null;
+  return null;
 }

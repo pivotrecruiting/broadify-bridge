@@ -49,3 +49,33 @@ foreach ($file in $files) {
     throw "Signature verification failed for $($file.FullName) with exit code $LASTEXITCODE."
   }
 }
+
+# Microsoft Visual C++ runtime DLLs packaged next to the helpers
+# (scripts/lib/windows-vc-runtime.cjs). They ship with Microsoft's Authenticode
+# signature and are intentionally NOT in the Broadify re-signing set
+# (scripts/sign-windows-native-resources.cjs): each must exist, carry a valid
+# signature, and that signature must be Microsoft's.
+$vcRuntimeListScript = Join-Path $PSScriptRoot "list-windows-vc-runtime-paths.cjs"
+$vcRuntimePaths = @(& node $vcRuntimeListScript)
+if ($LASTEXITCODE -ne 0 -or $vcRuntimePaths.Count -eq 0) {
+  throw "Unable to resolve the packaged MSVC runtime DLL list from $vcRuntimeListScript."
+}
+$unpackedResourcesDir = Join-Path $resolvedDistPath "win-unpacked\resources"
+foreach ($relativePath in $vcRuntimePaths) {
+  $dllPath = Join-Path $unpackedResourcesDir ($relativePath -replace '/', '\')
+  if (-not (Test-Path -LiteralPath $dllPath -PathType Leaf)) {
+    throw "Required MSVC runtime DLL is missing: $dllPath"
+  }
+  $signature = Get-AuthenticodeSignature -LiteralPath $dllPath
+  if ($signature.Status -ne 'Valid') {
+    throw "MSVC runtime DLL has no valid Authenticode signature ($($signature.Status)): $dllPath"
+  }
+  # Microsoft signs the VC++ runtime with CN=Microsoft Windows (not
+  # CN=Microsoft Corporation); the organisation is the stable part of the
+  # subject: "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, ...".
+  $signerSubject = $signature.SignerCertificate.Subject
+  if ($signerSubject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
+    throw "MSVC runtime DLL is not signed by Microsoft (signer: $signerSubject): $dllPath. The CRT must keep Microsoft's signature and must not be re-signed."
+  }
+  Write-Host "Verified Microsoft signature: $dllPath"
+}

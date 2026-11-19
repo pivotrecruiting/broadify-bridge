@@ -10,6 +10,7 @@ import {
   EngineConnectSchema,
   ListOutputsSchema,
   MacroIdSchema,
+  ModeActivateSchema,
   PairingCodeSchema,
   StreamDeckActionClaimSchema,
   StreamDeckActionResultSchema,
@@ -36,6 +37,9 @@ import { getRuntimeAppVersion } from "./runtime-app-version.js";
 import { buildBridgeOutputsView } from "./outputs-view.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
+import { canonResponseToCommandResult } from "./canon-xc/canon-xc-command-result.js";
+import { getLiveProgramCapabilities, handlePgmCommand, isPgmCommand } from "./pgm/pgm-command-handler.js";
+import { modeActivationService } from "./mode/mode-activation-service.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "./output-device-modules.js";
 import { powerSocketService } from "./power/power-socket-service.js";
 import {
@@ -87,6 +91,9 @@ export class CommandRouter {
       if (isMeetingCommand(command)) {
         return await handleMeetingCommand(command, payload);
       }
+      if (isPgmCommand(command)) {
+        return await handlePgmCommand(command, payload);
+      }
 
       switch (command) {
         case "get_status": {
@@ -127,6 +134,10 @@ export class CommandRouter {
                   presetDiscovery: true,
                   presetRecall: true,
                 },
+                live_program: getLiveProgramCapabilities(),
+                // The web app sends mode_activate only when this is present;
+                // older bridges restored Studio state at startup on their own.
+                mode_activation: true,
               },
             },
           };
@@ -196,6 +207,20 @@ export class CommandRouter {
           return {
             success: true,
             data: outputs,
+          };
+        }
+
+        case "mode_activate": {
+          const { mode } = parseRelayPayload(
+            ModeActivateSchema,
+            payload ?? {},
+            "Invalid payload for mode_activate",
+          );
+          const result = await modeActivationService.activate(mode);
+
+          return {
+            success: true,
+            data: result,
           };
         }
 
@@ -557,10 +582,9 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_test_connection",
           );
-          return {
-            success: true,
-            data: await canonXCService.testConnection(input),
-          };
+          return canonResponseToCommandResult(
+            await canonXCService.testConnection(input),
+          );
         }
 
         case "canon_xc_delete_device": {
@@ -581,10 +605,9 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_test_device",
           );
-          return {
-            success: true,
-            data: await canonXCService.testDevice(deviceId),
-          };
+          return canonResponseToCommandResult(
+            await canonXCService.testDevice(deviceId),
+          );
         }
 
         case "canon_xc_list_presets": {
@@ -593,10 +616,9 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_list_presets",
           );
-          return {
-            success: true,
-            data: await canonXCService.listPresets(deviceId),
-          };
+          return canonResponseToCommandResult(
+            await canonXCService.listPresets(deviceId),
+          );
         }
 
         case "canon_xc_recall_preset": {
@@ -605,14 +627,13 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_recall_preset",
           );
-          return {
-            success: true,
-            data: await canonXCService.recallPreset(
+          return canonResponseToCommandResult(
+            await canonXCService.recallPreset(
               input.deviceId,
               input.preset,
               input.options,
             ),
-          };
+          );
         }
 
         case "streamdeck_status": {

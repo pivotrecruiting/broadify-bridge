@@ -19,6 +19,36 @@ auto-quality governor in `keyer_chain.cpp` (EMA + hysteresis + doubling
 backoff), generalized to a multi-tier ladder; step-UPS are estimate-based
 (never live probes, see Thresholds).
 
+### macOS: fused CoreML failure is reported, not hidden (B-11, 2026-10-26)
+
+macOS has no governor ladder: the fused CoreML MODNet keyer either keys the
+current frame or fails, and on failure `g_fusedKeyerDegraded` hands the frames
+to the async worker, whose macOS default backend is Apple Vision
+(`vision_person_segmentation`). Vision then reported `fallbackActive=false`
+for its own frames, so `keyer.get` said "all good" while the requested MODNet
+model was not running (the "Mac keyer ghosting" support case). Since B-11:
+
+- `MeetingState::fusedDegradedReason` (under `state.mutex`) stores the CoreML
+  `fallbackReason` (or `coreml_inference_failed` when CoreML returned an empty
+  mask without a reason) at the `g_fusedKeyerDegraded = true` site of the
+  Apple fused block and is cleared where the fused keyer recovers.
+- `projectFusedDegradation()` (`src/keyer/keyer_status_projection.cpp`, pure,
+  stdlib only, `keyer_status_projection_test`) runs inside
+  `updateMeetingKeyerStatus()`: when a reason is set and the active keyer is
+  Vision, the published status becomes `fallback_active=true` /
+  `fallback_reason=<reason>` (`keyer_degraded` follows; `keyer_ready` stays
+  true because the reason is neither `loading` nor `not_loaded`, so nothing
+  blocks the pipeline). `active_keyer` stays `vision_person_segmentation`.
+  There is deliberately no requested-model condition: on macOS the fused
+  CoreML keyer is the production keyer independent of the requested model
+  (the webapp sends no `model`, so `requestedKeyerModel` stays at its Vision
+  default), so ANY Vision takeover after a fused failure is a downgrade and
+  is reported.
+- `model_hash_ok` is now `std::optional<bool>` end to end and serialized as
+  `null` when no backend checked a hash (CoreML/Vision); only the Windows
+  ONNX/OpenVINO backends set `true`/`false`. The Windows governor degradation
+  sites are untouched; they carry their own reasons.
+
 ## Tier Ladder
 
 Best tier first. The governor only ever steps one tier at a time (except the

@@ -1,6 +1,3 @@
-import { mkdir } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import {
   parseRelayPayload,
   EmptyPayloadSchema,
@@ -36,6 +33,8 @@ import {
   validateBrowserSourceUrl,
 } from "./meeting-content-layers.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { PgmWebrtcCloseSchema, PgmWebrtcOfferSchema } from "../pgm/pgm-command-schemas.js";
+import { MeetingProgramStreamError, meetingProgramStream } from "./meeting-program-stream.js";
 import { openGuardedDownload } from "./media-download.js";
 import { fetchBackgroundImage } from "./background-image-store.js";
 import { ConferenceDisplayOutput } from "../conference/conference-display-output.js";
@@ -53,6 +52,7 @@ import {
   MeetingCallControlError,
 } from "./meeting-call-control.js";
 import { pickRecordingSavePath } from "./meeting-recording-dialog.js";
+import { buildDefaultRecordingPath } from "../shared/recording-paths.js";
 import {
   MeetingHelperRequestError,
   type MeetingHelperClient,
@@ -674,8 +674,10 @@ export async function handleMeetingCommand(
 
     case "meeting_recording_toggle": {
       // One-key start/stop (Stream Deck). Unlike meeting_recording_start there
-      // is no save dialog: the file goes to a fixed recordings folder with a
-      // timestamped name.
+      // is no save dialog: the file goes to the shared default recordings
+      // folder (~/Movies/Broadify or ~/Videos/Broadify) with a timestamped
+      // Broadify-Meeting-<stamp>.mp4 name - the same place the save-panel
+      // fallback and PGM recordings use.
       const client = requireClient();
       const status = await runMeetingRpc(() => client.recordingStatus());
       const active = isRecordingActive(status.data);
@@ -686,17 +688,7 @@ export async function handleMeetingCommand(
         }
         return stopped;
       }
-      const recordingsDir = path.join(
-        os.homedir(),
-        "Videos",
-        "Broadify Recordings",
-      );
-      await mkdir(recordingsDir, { recursive: true });
-      const stamp = new Date()
-        .toISOString()
-        .replace(/[:.]/g, "-")
-        .slice(0, 19);
-      const filePath = path.join(recordingsDir, `meeting-${stamp}.mp4`);
+      const filePath = buildDefaultRecordingPath("meeting");
       const micDeviceId =
         typeof payload?.mic_device_id === "string" ? payload.mic_device_id : "";
       const started = await runMeetingRpc(() =>
@@ -1127,10 +1119,52 @@ export async function handleMeetingCommand(
       };
     }
 
+    // --- WebRTC program stream (composited camera picture for the web app's floating viewer) ---
+    case "meeting_program_status": {
+      parseRelayPayload(EmptyPayloadSchema, payload ?? {}, "Invalid payload for meeting_program_status");
+      return { success: true, data: await meetingProgramStream.status() };
+    }
+    case "meeting_program_sessions": {
+      parseRelayPayload(EmptyPayloadSchema, payload ?? {}, "Invalid payload for meeting_program_sessions");
+      return { success: true, data: meetingProgramStream.getSessions() };
+    }
+    case "meeting_program_offer": {
+      const offer = parseRelayPayload(PgmWebrtcOfferSchema, payload ?? {}, "Invalid payload for meeting_program_offer");
+      return runProgramStream(async () => {
+        const answer = await meetingProgramStream.offer(offer);
+        return {
+          session_id: offer.session_id,
+          sdp: answer.sdp,
+          expires_at: Date.now() + 2 * 60 * 60 * 1000,
+          max_viewers: answer.max_viewers,
+          active_viewers: answer.active_viewers,
+          stream: { codec: "h264", audio: false },
+        };
+      });
+    }
+    case "meeting_program_close": {
+      const close = parseRelayPayload(PgmWebrtcCloseSchema, payload ?? {}, "Invalid payload for meeting_program_close");
+      return runProgramStream(async () => {
+        await meetingProgramStream.close(close);
+        return { closed: true };
+      });
+    }
+
     default:
       return {
         success: false,
         error: `Unknown meeting command: ${command}`,
       };
+  }
+}
+
+async function runProgramStream(operation: () => Promise<unknown>): Promise<MeetingCommandResultT> {
+  try {
+    return { success: true, data: await operation() };
+  } catch (error: unknown) {
+    if (error instanceof MeetingProgramStreamError) {
+      return { success: false, error: error.message, errorCode: error.code };
+    }
+    throw error;
   }
 }

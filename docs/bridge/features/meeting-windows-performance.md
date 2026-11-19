@@ -200,7 +200,11 @@ wird z. B. bei `page: 2` und `page-0003.png` `page-0002.png` und
 Seitennummern-Muster enthaelt; bei nicht-deterministischen Pfaden wird nichts
 vorab geladen.
 Erfolg und Fehler stehen als `media_page_loaded` bzw.
-`media_page_load_failed` in den Helper-Events.
+`media_page_load_failed` in den Helper-Events. Das hochgeladene
+Hintergrundbild nutzt denselben Mechanismus (ein Slot, synchron geladen):
+`background_image_loaded` / `background_image_load_failed` mit gleichem
+Backoff; alle Pfade werden als UTF-8 geoeffnet (siehe
+`meeting-keyer-windows.md`, "Paths And Encoding").
 
 Der Raw-Frame-Server sendet Heartbeats aus dem zuletzt gespeicherten Frame und
 meldet `meeting_vcam_raw no_frame_on_connect`, wenn ein VCam-Client nach 2 s

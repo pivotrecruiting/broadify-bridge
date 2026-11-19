@@ -1,14 +1,12 @@
-import net from "node:net";
-
 import {
   DEFAULT_MEETING_FRAMEBUS_NAME,
   getVcamHelperStatus,
   openVcamHelperApp,
 } from "../../modules/vcam/vcam-helper.js";
+import { HelperRequestError, LineRpcClient } from "../helpers/helper-rpc-client.js";
 import { MEETING_HELPER_RPC_TIMEOUTS_MS } from "./meeting-helper-timeouts.js";
 import { runVcamStartWithRegistrationSelfHeal } from "./vcam-registration-self-heal.js";
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
 /**
  * Stable error code for "the control socket/pipe could not be connected at
@@ -16,15 +14,7 @@ const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
  * answer) and `connection_closed` (connected, closed before the response) so
  * the manager can treat it as a liveness signal.
  */
-export const HELPER_NOT_REACHABLE_CODE = "helper_not_reachable";
-const CONNECT_RETRY_MAX_ATTEMPTS = 5;
-const CONNECT_RETRY_BASE_DELAY_MS = 20;
-/**
- * Connect-phase errors worth retrying on Windows. The helper recreates its
- * named-pipe instance between connections; libuv maps ERROR_FILE_NOT_FOUND in
- * that gap to ENOENT without retrying (it only retries ERROR_PIPE_BUSY).
- */
-const WIN32_RETRYABLE_CONNECT_CODES = new Set(["ENOENT", "EPIPE", "ECONNREFUSED"]);
+export { HELPER_NOT_REACHABLE_CODE } from "../helpers/helper-rpc-client.js";
 
 export type MeetingProgramSectionT =
   | "camera"
@@ -33,44 +23,12 @@ export type MeetingProgramSectionT =
   | "speaker_layout"
   | "media_layer";
 
-type JsonRpcResponseT<T> =
-  | {
-      id: string;
-      ok: true;
-      result: T;
-    }
-  | {
-      id: string;
-      ok: false;
-      error?: {
-        code?: string;
-        message?: string;
-      };
-    };
-
-export class MeetingHelperRequestError extends Error {
-  readonly code: string;
-
+export class MeetingHelperRequestError extends HelperRequestError {
   constructor(code: string, detail: string) {
-    super(detail);
+    super(code, detail);
     this.name = "MeetingHelperRequestError";
-    this.code = code;
   }
 }
-
-/** Socket error raised before the request was written (nothing was sent). */
-class ConnectPhaseError extends Error {
-  readonly systemCode: string;
-
-  constructor(systemCode: string, detail: string) {
-    super(detail);
-    this.name = "ConnectPhaseError";
-    this.systemCode = systemCode;
-  }
-}
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
 
 export type MeetingHelperClientOptionsT = {
   /** Platform used for the connect-retry policy (defaults to process.platform). */
@@ -78,23 +36,24 @@ export type MeetingHelperClientOptionsT = {
 };
 
 /**
- * JSON-RPC client for the native meeting-helper control socket.
+ * JSON-RPC client for the native meeting-helper control socket. Transport
+ * (queue, connect retry, timeouts) lives in helpers/helper-rpc-client.ts.
  */
-export class MeetingHelperClient {
-  private readonly socketPath: string;
-  private readonly timeoutMs: number;
-  private readonly retryConnectErrors: boolean;
-  private requestSeq = 0;
-  private rpcQueue: Promise<unknown> = Promise.resolve();
-
+export class MeetingHelperClient extends LineRpcClient {
   constructor(
     socketPath: string,
-    timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+    timeoutMs: number = 5000,
     options: MeetingHelperClientOptionsT = {},
   ) {
-    this.socketPath = socketPath;
-    this.timeoutMs = timeoutMs;
-    this.retryConnectErrors = (options.platform ?? process.platform) === "win32";
+    super(socketPath, {
+      helperName: "Meeting helper",
+      timeoutMs,
+      // Slow-by-design RPCs (permission prompts, MP4 finalization, model load)
+      // get their own budget; everything else keeps the constructor default.
+      methodTimeoutsMs: MEETING_HELPER_RPC_TIMEOUTS_MS,
+      platform: options.platform,
+      createError: (code, detail) => new MeetingHelperRequestError(code, detail),
+    });
   }
 
   async ping(): Promise<boolean> {
@@ -377,166 +336,36 @@ export class MeetingHelperClient {
     return this.rpc("output.vcam.raw.stop");
   }
 
-  /**
-   * Serialize every RPC through a queue. The Windows control channel is a
-   * named pipe served by a single-threaded helper loop that recreates its
-   * instance between connections; concurrent connections used to fail with
-   * ENOENT (e.g. getFullStatus firing getState + framebusStatus in parallel,
-   * or the web app sending commands at once). The helper now keeps a spare
-   * instance parked, but RPCs are millisecond-scale, so serializing them is
-   * negligible on all platforms and eliminates every present and future
-   * collision.
-   */
-  private rpc<T = Record<string, unknown>>(
-    method: string,
-    params?: Record<string, unknown>,
-  ): Promise<T> {
-    // Slow-by-design RPCs (permission prompts, MP4 finalization, model load)
-    // get their own budget; everything else keeps the constructor default.
-    const timeoutMs = MEETING_HELPER_RPC_TIMEOUTS_MS[method] ?? this.timeoutMs;
-    const result = this.rpcQueue.then(
-      () => this.rpcInternal<T>(method, params, timeoutMs),
-      () => this.rpcInternal<T>(method, params, timeoutMs),
-    );
-    // Chain the next RPC after this one settles; swallow errors here so one
-    // failed RPC never rejects the shared queue for later callers.
-    this.rpcQueue = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
+  // --- WebRTC program stream (the composited picture for the web app's floating viewer) ---
 
-  /**
-   * One RPC with a bounded connect-phase retry. Only failures raised BEFORE the
-   * request was written are retried (and only on Windows, see
-   * WIN32_RETRYABLE_CONNECT_CODES): RPCs are not idempotent, so anything after
-   * the write surfaces as-is. Every connect-level failure ends up as
-   * MeetingHelperRequestError(helper_not_reachable) carrying the system code
-   * so command responses get a stable errorCode instead of a raw ENOENT.
-   */
-  private async rpcInternal<T = Record<string, unknown>>(
-    method: string,
-    params: Record<string, unknown> | undefined,
-    timeoutMs: number,
-  ): Promise<T> {
-    const id = `req-${++this.requestSeq}`;
-    const payload = JSON.stringify({ id, method, params: params ?? {} }) + "\n";
-    const deadline = Date.now() + timeoutMs;
-
-    for (let attempt = 1; ; attempt += 1) {
-      const remainingMs = Math.max(1, deadline - Date.now());
-      try {
-        return await this.rpcAttempt<T>(id, payload, remainingMs);
-      } catch (error: unknown) {
-        if (!(error instanceof ConnectPhaseError)) {
-          throw error;
-        }
-        const delayMs = CONNECT_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
-        const retryable =
-          this.retryConnectErrors &&
-          WIN32_RETRYABLE_CONNECT_CODES.has(error.systemCode) &&
-          attempt < CONNECT_RETRY_MAX_ATTEMPTS &&
-          Date.now() + delayMs < deadline;
-        if (!retryable) {
-          throw new MeetingHelperRequestError(
-            HELPER_NOT_REACHABLE_CODE,
-            `Meeting helper control socket not reachable (${error.systemCode}) for ${method} after ${attempt} attempt(s): ${error.message}`,
-          );
-        }
-        await sleep(delayMs);
-      }
-    }
-  }
-
-  private rpcAttempt<T>(id: string, payload: string, timeoutMs: number): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const socket = net.createConnection(this.socketPath);
-      let buffer = "";
-      let settled = false;
-      let requestWritten = false;
-
-      const cleanup = () => {
-        socket.removeAllListeners();
-        socket.destroy();
-      };
-
-      const settleReject = (error: Error) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        cleanup();
-        reject(error);
-      };
-
-      const timeout = setTimeout(() => {
-        settleReject(
-          new MeetingHelperRequestError(
-            "timeout",
-            `Meeting helper request timed out after ${timeoutMs}ms`,
-          ),
-        );
-      }, timeoutMs);
-
-      socket.on("connect", () => {
-        requestWritten = true;
-        socket.write(payload);
-      });
-
-      socket.on("data", (chunk: Buffer) => {
-        buffer += chunk.toString("utf8");
-        const newlineIndex = buffer.indexOf("\n");
-        if (newlineIndex === -1) {
-          return;
-        }
-        const line = buffer.slice(0, newlineIndex);
-        try {
-          const parsed = JSON.parse(line) as JsonRpcResponseT<T>;
-          if (parsed.id !== id) {
-            throw new MeetingHelperRequestError(
-              "id_mismatch",
-              "Meeting helper returned a response for a different request.",
-            );
-          }
-          if (!parsed.ok) {
-            throw new MeetingHelperRequestError(
-              parsed.error?.code || "request_failed",
-              parsed.error?.message || "Meeting helper request failed.",
-            );
-          }
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeout);
-            cleanup();
-            resolve(parsed.result);
-          }
-        } catch (error: unknown) {
-          settleReject(error instanceof Error ? error : new Error(String(error)));
-        }
-      });
-
-      socket.on("error", (error: NodeJS.ErrnoException) => {
-        if (!requestWritten) {
-          settleReject(
-            new ConnectPhaseError(error.code ?? "UNKNOWN", error.message),
-          );
-          return;
-        }
-        settleReject(error);
-      });
-
-      socket.on("close", () => {
-        if (!settled) {
-          settleReject(
-            new MeetingHelperRequestError(
-              "connection_closed",
-              "Meeting helper control socket closed before a response was received.",
-            ),
-          );
-        }
-      });
+  /** Answer to a browser's recvonly offer; `sessionId` doubles as the helper-side viewer id. */
+  programViewerOffer(input: {
+    sessionId: string;
+    sdp: string;
+    profile: string;
+    iceServers: Array<{ urls: string[]; username?: string; credential?: string }>;
+  }): Promise<{ sdp: string }> {
+    return this.rpc<{ sdp: string }>("program.viewer.offer", {
+      viewer_id: input.sessionId,
+      sdp: input.sdp,
+      profile: input.profile,
+      ice_servers: input.iceServers.map((server) => ({
+        url: server.urls[0],
+        username: server.username ?? "",
+        credential: server.credential ?? "",
+      })),
     });
+  }
+
+  programViewerClose(sessionId: string): Promise<Record<string, unknown>> {
+    return this.rpc("program.viewer.close", { viewer_id: sessionId });
+  }
+
+  programSessionsList(): Promise<{ sessions: Array<{ viewer_id: string; state: string; candidate_type: string; audio: boolean; age_ms: number }> }> {
+    return this.rpc("program.sessions.list");
+  }
+
+  programStreamStatus(): Promise<Record<string, unknown> & { supported?: boolean; viewers?: number }> {
+    return this.rpc("program.stream.status");
   }
 }

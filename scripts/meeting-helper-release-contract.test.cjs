@@ -291,6 +291,101 @@ test("Windows distribution builds, packages, signs and registers the vcam DLL", 
   );
 });
 
+// macOS folder/volume consent strings. Both helpers write MP4 recordings to
+// a folder the operator picks in the native save panel (Documents, Desktop,
+// Downloads, external or network volumes are all possible). Without these
+// strings macOS cannot show its consent prompt and the write fails with a bare
+// permission error (finding B-E9).
+const MACOS_RECORDING_FOLDER_USAGE_KEYS = [
+  "NSDocumentsFolderUsageDescription",
+  "NSDesktopFolderUsageDescription",
+  "NSDownloadsFolderUsageDescription",
+  "NSRemovableVolumesUsageDescription",
+  "NSNetworkVolumesUsageDescription",
+];
+
+const plistStringValue = (plist, key) => {
+  const match = plist.match(
+    new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`),
+  );
+  return match ? match[1].trim() : null;
+};
+
+for (const [label, plistPath] of [
+  ["meeting", "apps/bridge/native/meeting-helper/macos/Info.plist"],
+  ["PGM", "apps/bridge/native/pgm-helper/macos/Info.plist"],
+]) {
+  test(`macOS ${label} helper declares the recording folder usage strings`, () => {
+    const plist = read(plistPath);
+    for (const key of MACOS_RECORDING_FOLDER_USAGE_KEYS) {
+      const value = plistStringValue(plist, key);
+      assert.ok(value !== null, `${plistPath} must declare ${key}`);
+      assert.ok(value.length > 0, `${plistPath} ${key} must not be empty`);
+    }
+    // The signing verification must fail closed on the same keys.
+    const verification = read("scripts/verify-macos-release-signing.sh");
+    for (const key of MACOS_RECORDING_FOLDER_USAGE_KEYS) {
+      assert.ok(
+        verification.includes(key),
+        `verify-macos-release-signing.sh must check ${key}`,
+      );
+    }
+  });
+}
+
+test("recorder finalize timeout stays below the recording.stop RPC timeout", () => {
+  // stop() blocks in finishWriting (macOS) / Finalize (Windows) for at most
+  // kRecorderFinalizeTimeoutMs, then reports finalize_timeout. The bridge
+  // aborts the recording.stop RPC after MEETING_HELPER_RPC_TIMEOUTS_MS - if
+  // the helper bound were the larger one, the bridge would report failure
+  // while the helper still finalizes (invisible background recording).
+  // The constant lives in helper-common (shared with the PGM recorder since
+  // ADR-0006); the meeting header must re-export it under its old name.
+  const policy = read(
+    "apps/bridge/native/helper-common/include/helper_common/recording_encode_policy.h",
+  );
+  const policyMatch = policy.match(
+    /constexpr int kRecorderFinalizeTimeoutMs = ([0-9']+);/,
+  );
+  assert.ok(policyMatch, "kRecorderFinalizeTimeoutMs must be defined in helper-common");
+  const finalizeTimeoutMs = Number(policyMatch[1].replace(/'/g, ""));
+  const meetingPolicy = read(
+    "apps/bridge/native/meeting-helper/src/recorder/recorder_encode_policy.h",
+  );
+  assert.match(meetingPolicy, /using broadify::helper::kRecorderFinalizeTimeoutMs;/);
+
+  const timeouts = read(
+    "apps/bridge/src/services/meeting/meeting-helper-timeouts.ts",
+  );
+  const stopMatch = timeouts.match(/"recording\.stop": ([0-9_]+),/);
+  assert.ok(stopMatch, "recording.stop RPC timeout must be defined");
+  const stopTimeoutMs = Number(stopMatch[1].replace(/_/g, ""));
+
+  assert.ok(Number.isFinite(finalizeTimeoutMs) && finalizeTimeoutMs > 0);
+  assert.ok(Number.isFinite(stopTimeoutMs) && stopTimeoutMs > 0);
+  assert.ok(
+    finalizeTimeoutMs < stopTimeoutMs,
+    `finalize timeout ${finalizeTimeoutMs} ms must be below recording.stop ${stopTimeoutMs} ms`,
+  );
+
+  // Both platform recorders must use the shared constant (no literal
+  // drift) and report the same event name on timeout.
+  for (const source of [
+    "apps/bridge/native/meeting-helper/src/recorder/meeting_recorder.mm",
+    "apps/bridge/native/meeting-helper/src/recorder/meeting_recorder_mediafoundation.cpp",
+  ]) {
+    const recorder = read(source);
+    assert.ok(
+      recorder.includes("kRecorderFinalizeTimeoutMs"),
+      `${source} must wait on kRecorderFinalizeTimeoutMs`,
+    );
+    assert.ok(
+      recorder.includes('"finalize_timeout"'),
+      `${source} must report finalize_timeout`,
+    );
+  }
+});
+
 test("packaged macOS helper verifies the model hashes", () => {
   // The runtime self-test hooks retired with the previous helper lineage;
   // the packaged-model hash verification is the remaining hard gate here.

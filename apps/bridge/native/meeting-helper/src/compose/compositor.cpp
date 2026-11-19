@@ -1,4 +1,5 @@
 #include "compose/compositor.h"
+#include "compose/background_image_cache.h"
 #include "compose/media_page_cache.h"
 #if defined(__APPLE__)
 #include "compose/metal_compositor.h"
@@ -11,7 +12,6 @@
 #include <cctype>
 #include <cstdint>
 #include <cmath>
-#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -286,27 +286,12 @@ std::shared_ptr<const RgbaImage> getCornerbugImage(const CornerbugState &cornerb
   return cachedImage;
 }
 
-// Cached loader for the uploaded company background image (single slot,
-// same pattern as the media layer image cache).
+// Cached loader for the uploaded company background image (single slot with
+// UTF-8 path handling, retry backoff and a load-failed event; see
+// BackgroundImageCache).
 std::shared_ptr<const RgbaImage> getBackgroundImage(const std::string &path) {
-  static std::string cachedPath;
-  static std::shared_ptr<const RgbaImage> cachedImage;
-  if (path.empty()) {
-    return nullptr;
-  }
-  if (path == cachedPath) {
-    return cachedImage;
-  }
-  std::ifstream file(path, std::ios::binary);
-  cachedPath = path;
-  if (!file.good()) {
-    cachedImage = nullptr;
-    return nullptr;
-  }
-  const std::vector<uint8_t> bytes(
-      (std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-  cachedImage = decodeImageBytes(bytes);
-  return cachedImage;
+  static BackgroundImageCache cache(decodeImageBytes);
+  return cache.get(path);
 }
 
 MediaPageCacheResult getMediaLayerImageResult(const MediaLayerState &mediaLayer) {

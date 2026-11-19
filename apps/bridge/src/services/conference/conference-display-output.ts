@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { resolveElectronBinary } from "../graphics/renderer/electron-renderer-launch.js";
 import { DEFAULT_MEETING_FRAMEBUS_NAME } from "../../modules/vcam/vcam-helper.js";
+import { getBridgeContext } from "../bridge-context.js";
 
 /**
  * Conference display output: shows the composed meeting program frame fullscreen
@@ -14,6 +15,8 @@ import { DEFAULT_MEETING_FRAMEBUS_NAME } from "../../modules/vcam/vcam-helper.js
  */
 
 const READY_TIMEOUT_MS = 12000;
+/** Dedicated Electron profile so the display window never shares the desktop app's userData. */
+const CONFERENCE_DISPLAY_PROFILE_DIR = "conference-display-profile";
 
 export type ConferenceDisplayTargetT = {
   /** Substring match against the display label (empty = auto external display). */
@@ -39,6 +42,20 @@ const resolveDisplayEntry = (): string | null => {
     "display-output-entry.js",
   );
   return fs.existsSync(entry) ? entry : null;
+};
+
+/**
+ * Resolves the Chromium profile directory for the display window. Mirrors the
+ * graphics renderer: `<userData>/conference-display-profile`, with a
+ * cwd-relative fallback when the bridge context is not initialised (tests,
+ * early startup).
+ */
+const resolveDisplayUserDataDir = (): string => {
+  try {
+    return path.join(getBridgeContext().userDataDir, CONFERENCE_DISPLAY_PROFILE_DIR);
+  } catch {
+    return path.join(process.cwd(), ".bridge-data", CONFERENCE_DISPLAY_PROFILE_DIR);
+  }
 };
 
 const resolveDisplayPreload = (): string | null => {
@@ -108,6 +125,9 @@ export class ConferenceDisplayOutput {
     env.BRIDGE_PARENT_PID = String(process.pid);
     env.BRIDGE_FRAMEBUS_NAME = this.frameBusName;
     env.BRIDGE_DISPLAY_PRELOAD = preload;
+    // The packaged binary's main process honours BRIDGE_GRAPHICS_USER_DATA_DIR
+    // only in --graphics-renderer mode (see src/electron/app-bootstrap.ts).
+    env.BRIDGE_GRAPHICS_USER_DATA_DIR = resolveDisplayUserDataDir();
     if (target.matchName) {
       env.BRIDGE_DISPLAY_MATCH_NAME = target.matchName;
     }
@@ -118,10 +138,22 @@ export class ConferenceDisplayOutput {
       env.BRIDGE_DISPLAY_MATCH_HEIGHT = String(target.matchHeight);
     }
 
-    const child = spawn(electronBinary, [entry], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env,
-    });
+    // In the packaged app `electronBinary` is the desktop binary itself. It
+    // ignores a positional script and would boot as a second desktop instance,
+    // lose the single-instance lock and quit -> ready timeout. The explicit
+    // `--graphics-renderer --renderer-entry <path>` pair switches its main
+    // process into aux mode, which validates the entry against the renderer
+    // entry allowlist and imports it. In dev (node_modules electron binary)
+    // Electron's default app loads the first non-option argument as the app
+    // path, so the same argv works there as well.
+    const child = spawn(
+      electronBinary,
+      ["--graphics-renderer", "--renderer-entry", entry],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        env,
+      },
+    );
     this.child = child;
 
     const ready = new Promise<void>((resolve, reject) => {

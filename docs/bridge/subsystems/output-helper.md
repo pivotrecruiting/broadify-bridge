@@ -56,7 +56,11 @@ DeckLink- und Display-Adapter nutzen eine gemeinsame
 `HelperProcessSession`. Sie startet den Child-Process, parst stdout zeilenweise
 als JSON, haelt die letzten stderr-Zeilen als Ringpuffer und begrenzt den
 Ready-Handshake. DeckLink-Helper muessen innerhalb von 12s `{"type":"ready"}`
-senden, Display-Helper innerhalb von 8s. Bei Spawn-, Exit- oder Timeout-Fehlern
+senden, Display-Helper innerhalb von 8s (Konstanten
+`DECKLINK_OUTPUT_HELPER_READY_TIMEOUT_MS` / `DISPLAY_OUTPUT_HELPER_READY_TIMEOUT_MS`
+in `apps/bridge/src/services/graphics/output-adapters/output-helper-timeouts.ts`;
+Budget-Kette siehe `docs/bridge/architecture/production-timeout-dataflows.md`).
+Bei Spawn-, Exit- oder Timeout-Fehlern
 enthaelt die configure()-Fehlermeldung die letzten stderr-Zeilen und, falls ein
 Helper sie vorher gesendet hat, den `fatal.code`.
 

@@ -105,6 +105,19 @@ jest.mock("./meeting-recording-dialog.js", () => ({
     mockPickRecordingSavePath(...args),
 }));
 
+// The Stream Deck REC toggle derives its default recording path from the
+// shared recording-paths helper, which resolves the home folder and creates
+// the recordings directory. Keep both off the real machine in tests.
+jest.mock("node:os", () => ({
+  ...jest.requireActual<typeof import("node:os")>("node:os"),
+  homedir: () => "/home/test-user",
+}));
+const mockMkdirSync = jest.fn();
+jest.mock("node:fs", () => ({
+  ...jest.requireActual<typeof import("node:fs")>("node:fs"),
+  mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
+}));
+
 import {
   handleMeetingCommand,
   isMeetingCommand,
@@ -978,6 +991,52 @@ describe("meeting-command-handler", () => {
 
       expect(result.success).toBe(true);
       expect(mockClient.recordingStatus).toHaveBeenCalled();
+    });
+
+    it("REC toggle starts into the shared default recordings folder", async () => {
+      mockClient.recordingStatus.mockResolvedValue({
+        recording: { active: false },
+      });
+      mockClient.recordingStart.mockResolvedValue({
+        recording: { active: true },
+      });
+
+      const result = await handleMeetingCommand("meeting_recording_toggle", {
+        mic_device_id: "m1",
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockClient.recordingStart).toHaveBeenCalledTimes(1);
+      const [options] = mockClient.recordingStart.mock.calls[0] as [
+        { file_path: string; mic_device_id: string },
+      ];
+      // One default folder for every trigger: ~/Movies/Broadify (macOS/Linux)
+      // or ~/Videos/Broadify (Windows), prefix Broadify-Meeting-.
+      expect(options.file_path).toMatch(
+        /(Movies|Videos)[\\/]Broadify[\\/]Broadify-Meeting-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.mp4$/,
+      );
+      expect(options.file_path).not.toContain("Broadify Recordings");
+      expect(options.mic_device_id).toBe("m1");
+      expect(mockMkdirSync).toHaveBeenCalledWith(
+        expect.stringMatching(/(Movies|Videos)[\\/]Broadify$/),
+        { recursive: true },
+      );
+      expect(mockNotifyRecordingChanged).toHaveBeenCalled();
+    });
+
+    it("REC toggle stops an active recording without starting a new one", async () => {
+      mockClient.recordingStatus.mockResolvedValue({
+        recording: { active: true },
+      });
+      mockClient.recordingStop.mockResolvedValue({
+        recording: { active: false },
+      });
+
+      const result = await handleMeetingCommand("meeting_recording_toggle", {});
+
+      expect(result.success).toBe(true);
+      expect(mockClient.recordingStop).toHaveBeenCalled();
+      expect(mockClient.recordingStart).not.toHaveBeenCalled();
     });
   });
 

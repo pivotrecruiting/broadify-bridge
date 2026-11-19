@@ -166,6 +166,11 @@ if [[ "$UNAME_S" == "Darwin" ]]; then
   REQUIRED_FILES+=("apps/bridge/native/display-helper/libSDL2-2.0.0.dylib")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper")
+  if [[ "${SKIP_PGM_HELPER_BUILD:-}" != "1" ]]; then
+    REQUIRED_FILES+=("apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app")
+    REQUIRED_FILES+=("apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app/Contents/MacOS/BroadifyPgmHelper")
+    EXECUTABLE_FILES+=("apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app/Contents/MacOS/BroadifyPgmHelper")
+  fi
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/MODNet.mlpackage/Manifest.json")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/MODNet.mlpackage/Data/com.apple.CoreML/model.mlmodel")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/MODNet.mlpackage/Data/com.apple.CoreML/weights/weight.bin")
@@ -206,6 +211,17 @@ elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]];
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/tbbmalloc.dll")
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/models/modnet.onnx")
   REQUIRED_FILES+=("apps/bridge/native/vcam-helper/windows/broadify-vcam.dll")
+  # Microsoft Visual C++ runtime staged by scripts/prepare-windows-vc-runtime.ps1
+  # (dist:win) and packaged next to display-helper.exe and meeting-helper.exe.
+  # A file missing here would surface as STATUS_DLL_NOT_FOUND on customer PCs.
+  if [[ "$EXPECTED_ARCH_NORMALIZED" == "x86-64" ]]; then
+    staged_vc_runtime_files="$(node "$ROOT_DIR/scripts/list-windows-vc-runtime-paths.cjs" --staged)"
+    while IFS= read -r staged_vc_runtime_file; do
+      if [[ -n "$staged_vc_runtime_file" ]]; then
+        REQUIRED_FILES+=("$staged_vc_runtime_file")
+      fi
+    done <<< "$staged_vc_runtime_files"
+  fi
   EXECUTABLE_FILES+=("apps/bridge/native/display-helper/display-helper.exe")
   EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/meeting-helper.exe")
 else

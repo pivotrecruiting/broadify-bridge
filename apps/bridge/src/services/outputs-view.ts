@@ -6,6 +6,7 @@ import { transformDevicesToOutputs } from "./device-to-output-transform.js";
 import {
   buildOutputsDiagnostics,
   getDecklinkDeviceCount,
+  getDisplayDeviceCount,
 } from "./output-diagnostics.js";
 
 type OutputsViewGraphicsStatusT = {
@@ -50,12 +51,20 @@ export function buildBridgeOutputsView(
   const ownedPortIds = getOwnedPortIds(deps.graphicsManager.getStatus());
   const outputs = transformDevicesToOutputs(devices, { ownedPortIds });
   const decklinkModule = deps.moduleRegistry.getModule("decklink");
+  const displayModule = deps.moduleRegistry.getModule("display");
+  const decklinkDiagnostics = decklinkModule?.getLastDiagnostics?.() ?? null;
+  const displayDiagnostics = displayModule?.getLastDiagnostics?.() ?? null;
 
   outputs.diagnostics = buildOutputsDiagnostics({
     platform: deps.platform,
     decklinkRegistered: !!decklinkModule,
-    decklinkDiagnostics: decklinkModule?.getLastDiagnostics?.() ?? null,
+    decklinkDiagnostics:
+      decklinkDiagnostics?.kind === "decklink" ? decklinkDiagnostics : null,
     decklinkDeviceCount: getDecklinkDeviceCount(devices),
+    displayRegistered: !!displayModule,
+    displayDiagnostics:
+      displayDiagnostics?.kind === "display" ? displayDiagnostics : null,
+    displayDeviceCount: getDisplayDeviceCount(devices),
   });
 
   return outputs;

@@ -132,6 +132,30 @@ export type BridgeOutputsDiagnosticsDecklinkStateT =
   | "api_unavailable"
   | "no_devices";
 
+/**
+ * Health state of the external display (HDMI/DisplayPort) detection path.
+ *
+ * - `ok`: the display helper ran and reported at least one external display.
+ * - `unsupported_platform`: the bridge platform has no display detection.
+ * - `helper_missing`: the native display helper binary could not be found
+ *   (spawn failed with ENOENT, e.g. a broken or incomplete installation).
+ * - `missing_runtime`: the native display helper exited with a Windows loader
+ *   failure before reaching `main()`, e.g. STATUS_DLL_NOT_FOUND (0xC0000135)
+ *   because the Microsoft Visual C++ runtime DLLs are not installed. Installing
+ *   vc_redist.x64 or reinstalling the bridge resolves it.
+ * - `helper_failed`: the helper spawned but detection still failed for another
+ *   reason (non-zero exit, timeout, invalid or oversized response, spawn error
+ *   other than ENOENT, or a macOS `system_profiler` failure).
+ * - `no_devices`: detection succeeded but found no external display.
+ */
+export type BridgeOutputsDiagnosticsDisplayStateT =
+  | "ok"
+  | "unsupported_platform"
+  | "helper_missing"
+  | "missing_runtime"
+  | "helper_failed"
+  | "no_devices";
+
 export type BridgeOutputsDiagnosticsT = {
   platform: NodeJS.Platform;
   decklink: {
@@ -139,6 +163,17 @@ export type BridgeOutputsDiagnosticsT = {
     apiVersion?: string;
     helperVersion?: string;
     message?: string;
+  };
+  /**
+   * External display detection health. Absent when the bridge has no display
+   * module registered (older bridges omit the field entirely).
+   */
+  display?: {
+    state: BridgeOutputsDiagnosticsDisplayStateT;
+    /** Human-readable reason for the non-ok state, safe to show in the UI. */
+    message?: string;
+    /** Unsigned helper exit code (Windows DWORD, e.g. 3221225781 = 0xC0000135). */
+    exitCode?: number;
   };
 };
 
@@ -384,4 +419,143 @@ export type EngineStateT = {
   lastCompletedMacroExecution?: MacroExecutionT | null;
   lastUpdate?: number;
   error?: string;
+};
+
+/**
+ * Live program (PGM) preview: the bridge captures the switcher's program
+ * output (UVC or DeckLink input) and streams it to the web app over WebRTC.
+ * Wire keys are snake_case (bridge <-> web app contract).
+ */
+export type VideoPixelFormatT =
+  | "nv12"
+  | "uyvy"
+  | "yuy2"
+  | "bgra"
+  | "mjpeg"
+  | "unknown";
+
+export type VideoScanT =
+  | "progressive"
+  | "interlaced_tff"
+  | "interlaced_bff"
+  | "psf";
+
+/** The signal currently present on a video input, as measured from real frames. */
+export type VideoSignalT = {
+  width: number;
+  height: number;
+  fps_num: number;
+  fps_den: number;
+  scan: VideoScanT;
+  pixel_format: VideoPixelFormatT;
+  no_signal: boolean;
+};
+
+export type VideoInputKindT = "uvc" | "decklink";
+
+/** One selectable program source: a UVC device or a DeckLink input port. */
+export type VideoInputDescriptorT = {
+  id: string;
+  kind: VideoInputKindT;
+  display_name: string;
+  device_id: string;
+  port_id?: string;
+  /** Survives re-enumeration and reboots (vendor/product/serial or port path). */
+  stable_key: string;
+  available: boolean;
+  in_use: boolean;
+  signal?: VideoSignalT;
+};
+
+export type PgmEncoderBackendT = "videotoolbox" | "mediafoundation";
+
+export type PgmEncoderStatusT = {
+  backend: PgmEncoderBackendT;
+  hardware: boolean;
+  bitrate_kbps: number;
+  profile: string;
+};
+
+export type PgmLifecycleStateT =
+  | "idle"
+  | "starting"
+  | "running"
+  | "no_signal"
+  | "error";
+
+export type PgmErrorT = {
+  code: string;
+  message: string;
+};
+
+/** Snapshot published as `bridge_event pgm_status` and returned by `pgm_get_status`. */
+export type PgmRecordingT = {
+  active: boolean;
+  file_path: string | null;
+  started_at_ms: number | null;
+  bytes: number;
+  error: string | null;
+  /**
+   * Archive encoder of the running recording (absent on older helpers that
+   * recorded the preview stream, and while no recording runs): H.264 High at
+   * 0.35 bit/px (2-40 Mbit/s), source geometry up to 1080p at the source rate.
+   */
+  profile?: "high";
+  bitrate_kbps?: number;
+  width?: number;
+  height?: number;
+  fps_num?: number;
+  fps_den?: number;
+  /** Encoded frames written to the file so far. */
+  frames?: number;
+};
+
+export type PgmStatusT = {
+  enabled: boolean;
+  state: PgmLifecycleStateT;
+  input: VideoInputDescriptorT | null;
+  signal: VideoSignalT | null;
+  encoder: PgmEncoderStatusT | null;
+  audio: boolean;
+  viewers: number;
+  last_error: PgmErrorT | null;
+  /** MP4 recording on the bridge machine (absent on older helpers). */
+  recording?: PgmRecordingT | null;
+};
+
+/** Advertised in `get_status.capabilities.live_program`; the web app gates the tile on it. */
+export type LiveProgramCapabilitiesT = {
+  /** This bridge version/platform can stream the program (false: update the bridge). */
+  supported: boolean;
+  /** Machine kill switch (BRIDGE_PGM_PREVIEW=0); absent on older bridges means enabled. */
+  enabled?: boolean;
+  audio: boolean;
+  max_viewers: number;
+  decklink_input: boolean;
+  /** The meeting helper streams its composited program over WebRTC (meeting_program_* commands). */
+  meeting_preview?: boolean;
+  /** Program recording uses its own H.264 High archive encoder (absent: the recording is the preview stream). */
+  recording_profile?: "high";
+};
+
+/**
+ * Mode-driven Studio restoration (`mode_activate`)
+ *
+ * The web app's root page is the mode selection; the bridge learns the mode
+ * only through this command and restores Studio connections (persisted engine,
+ * persisted graphics output) for `studio` and `conference` only.
+ */
+export type BridgeModeT = "studio" | "meeting" | "conference";
+
+/** What `mode_activate` triggered; outcomes arrive via `engine_status` / `graphics_status`. */
+export type ModeActivationRestoreTargetT = "engine_autoconnect" | "graphics_output";
+
+/**
+ * `command_result.data` of `mode_activate`. Support is advertised as
+ * `get_status.capabilities.mode_activation: true`; bridges without it restore
+ * Studio state at startup on their own.
+ */
+export type ModeActivateResultT = {
+  mode: BridgeModeT;
+  restored: ModeActivationRestoreTargetT[];
 };

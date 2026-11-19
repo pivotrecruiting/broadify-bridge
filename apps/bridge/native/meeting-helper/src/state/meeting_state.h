@@ -3,6 +3,7 @@
 #include "keyer/keyer.h"
 
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace broadify::meeting {
@@ -99,6 +100,8 @@ struct MeetingState {
   std::string vcamTransport = "tcp";
   uint64_t vcamWriterGeneration = 0;
   int previewClientCount = 0;
+  // 1 while the WebRTC program stream (ProgramStream) has viewers: the pipeline then publishes preview frames.
+  int programStreamClientCount = 0;
   int vcamShmReaderCount = 0;
   int vcamTcpClientCount = 0;
   int vcamClientCount = 0;
@@ -162,7 +165,15 @@ struct MeetingState {
   bool fallbackActive = true;
   bool keyerDegraded = false;
   bool keyerReady = false;
-  bool modelHashOk = false;
+  // Mirrors KeyerStatus::modelHashOk (true/false/nullopt = no hash check).
+  std::optional<bool> modelHashOk;
+  // macOS fused path (guarded by `mutex`): the fallback reason of the last
+  // failed fused CoreML inference while g_fusedKeyerDegraded is set, empty
+  // once the fused keyer recovers. updateMeetingKeyerStatus() uses it to
+  // report the async Vision takeover as fallback_active + reason instead of
+  // "all good" (projectFusedDegradation). Windows governor degradations carry
+  // their own reasons and never write this.
+  std::string fusedDegradedReason;
   KeyerMetrics keyerMetrics;
   SpeakerLayoutState speakerLayout;
   CornerbugState cornerbug;

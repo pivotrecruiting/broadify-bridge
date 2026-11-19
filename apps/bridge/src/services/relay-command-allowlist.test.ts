@@ -19,6 +19,7 @@ describe("relay-command-allowlist", () => {
       expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_test_device");
       expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_list_presets");
       expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_recall_preset");
+      expect(RELAY_COMMAND_ALLOWLIST).toContain("mode_activate");
     });
 
     it("is readonly tuple", () => {
@@ -36,6 +37,7 @@ describe("relay-command-allowlist", () => {
       expect(isRelayCommand("graphics_configure_outputs")).toBe(true);
       expect(isRelayCommand("canon_xc_recall_preset")).toBe(true);
       expect(isRelayCommand("canon_xc_test_connection")).toBe(true);
+      expect(isRelayCommand("mode_activate")).toBe(true);
     });
 
     it("returns false for unknown command", () => {

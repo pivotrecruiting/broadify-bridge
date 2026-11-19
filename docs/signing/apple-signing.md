@@ -127,6 +127,32 @@ Erwartung:
 1. `codesign` ohne Fehler
 2. `spctl` akzeptiert Artefakt
 3. `stapler validate` erfolgreich
+4. `scripts/verify-macos-release-signing.sh` meldet `Main executable LC_UUID -> <uuid>` (siehe Abschnitt "Main executable UUID")
+
+## Main executable UUID (LC_UUID)
+
+**Warum.** macOS Local-Network-Privacy (Systemeinstellungen › Datenschutz & Sicherheit › Lokales Netzwerk) knüpft seine Entscheidung nicht nur an die Bundle-ID, sondern an die `LC_UUID` des Hauptexecutables (Apple TN3179). electron-builder benennt den Stock-Electron-Launcher (`node_modules/electron/dist/Electron.app/Contents/MacOS/Electron`) nur um, d. h. **Prod (`com.broadify.bridge`) und RC (`com.broadify.bridge.rc`) hatten dieselbe UUID** (`4C4C44E2-5555-3144-A1E4-96FF6D8E37B0`). Folge im Feld: die RC-App erbte eine veraltete Deny-Entscheidung, zeigte nie den Local-Network-Dialog und ATEM-over-IP lief ins Timeout, während Prod funktionierte. Upstream: electron-userland/electron-builder#10297.
+
+**Was gepatcht wird.** Der afterPack-Hook `scripts/patch-macos-main-executable-uuid.cjs` (aktiv über `electron-builder.config.cjs`, nur auf macOS) schreibt die `LC_UUID` des Hauptexecutables `Contents/MacOS/<productFilename>` um. Helper-Apps (Meeting Helper, PGM Helper, VCam) bleiben unberührt – TN3179 bezieht sich auf das Hauptexecutable, Helper laufen als Kindprozesse; der Bridge-Server selbst läuft als dasselbe Executable (`process.execPath` mit `ELECTRON_RUN_AS_NODE`), spricht also mit genau dieser UUID im LAN. Der Hook läuft in app-builder-lib 25 **vor** dem Signieren, die gepatchte Binary ist daher von codesign und Notarization abgedeckt. Thin- und Universal-(FAT-)Binaries werden unterstützt; die eigentliche Mach-O-Logik liegt in `scripts/lib/macho-uuid.cjs` (ohne Abhängigkeiten).
+
+**Warum Prod ≠ RC, aber Updates stabil.** Die UUID ist deterministisch: SHA-256 über `appId \0 Contents/MacOS/<productFilename> \0 cputype`, erste 16 Bytes, RFC-4122-Version-5-/Variant-Bits. Die App-Version geht **nicht** ein. Damit bekommen Prod und RC verschiedene, aber über alle Releases hinweg stabile UUIDs – ein Update setzt die Local-Network-Freigabe nicht zurück, nur Prod und RC bekommen in TCC getrennte Einträge.
+
+| Kanal | appId | Executable | arm64 LC_UUID |
+| --- | --- | --- | --- |
+| Prod | `com.broadify.bridge` | `Broadify Bridge` | `74ADD648-F95E-5731-BBA6-152E90ADB13C` |
+| RC | `com.broadify.bridge.rc` | `Broadify Bridge RC` | `890B678E-AB3C-58C8-92C7-D932398BD590` |
+
+**Verifikation.** `scripts/verify-macos-release-signing.sh` (läuft am Ende von `dist:mac:*`) liest die UUID per `dwarfdump --uuid`, vergleicht sie mit dem Sollwert aus der CLI und schlägt fehl, wenn sie vom Sollwert abweicht, noch der Stock-Electron-UUID entspricht oder mit dem jeweils anderen Kanal kollidiert. Manuell:
+
+```bash
+dwarfdump --uuid "dist/mac-arm64/Broadify Bridge.app/Contents/MacOS/Broadify Bridge"
+node scripts/patch-macos-main-executable-uuid.cjs --print-expected \
+  --app-id com.broadify.bridge --product-filename "Broadify Bridge" --cputype arm64
+```
+
+Beide Ausgaben müssen übereinstimmen. Sind Prod und RC gleichzeitig installiert, erscheinen unter Systemeinstellungen › Datenschutz & Sicherheit › Lokales Netzwerk zwei getrennte Einträge. Unit-Tests: `npm run test:release-contracts` (`scripts/macos-main-executable-uuid.test.cjs`).
+
+**Hinweis dSYM/Sentry.** Gepatcht wird ausschließlich der ~34 KB große Electron-Launcher (`Contents/MacOS/<Name>`); `Electron Framework.framework` und alle Helper behalten ihre Original-UUIDs. Die Bridge nutzt `@sentry/electron` mit Default-Optionen (inkl. nativer Minidumps), lädt aber keine dSYMs hoch. Native Frames **innerhalb des Launchers** können mit der neuen UUID nicht mehr gegen Electrons öffentliche Symbole aufgelöst werden; da der Launcher nur in das Framework springt, liegt praktisch der gesamte native Code (und damit die Symbolisierung) weiterhin im unveränderten Framework.
 
 ## Schritt 8: Manual Fallback (wenn CI hängt)
 

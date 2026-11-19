@@ -2,6 +2,7 @@
 
 #include "recorder/recorder_encode_policy.h"
 #include "util/helper_event_log.h"
+#include "util/path_utf8.h"
 #include "util/pixel_swizzle.h"
 
 // Windows Media Foundation recorder. Mirrors the macOS AVAssetWriter
@@ -32,6 +33,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -71,34 +73,9 @@ struct ComApartment {
   ComApartment &operator=(const ComApartment &) = delete;
 };
 
-std::string wideToUtf8(const wchar_t *wide) {
-  if (wide == nullptr) {
-    return {};
-  }
-  const int needed =
-      WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
-  if (needed <= 1) {
-    return {};
-  }
-  std::string out(static_cast<size_t>(needed - 1), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), needed, nullptr,
-                      nullptr);
-  return out;
-}
-
-std::wstring utf8ToWide(const std::string &utf8) {
-  if (utf8.empty()) {
-    return {};
-  }
-  const int needed =
-      MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-  if (needed <= 1) {
-    return {};
-  }
-  std::wstring out(static_cast<size_t>(needed - 1), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, out.data(), needed);
-  return out;
-}
+// UTF-8 <-> UTF-16 conversion comes from helper-common (util/path_utf8.h):
+// strict for UTF-8 input, so an invalid recording path or microphone id is
+// rejected (invalid_arguments) instead of being reinterpreted.
 
 std::string hresultError(const char *what, HRESULT hr) {
   char buffer[128];
@@ -173,6 +150,10 @@ struct MeetingRecorder::Impl {
   // MF system time (QPC-based, 100ns) when the writing session started.
   // Both video and audio timestamps are rebased against this.
   LONGLONG sessionStartHns = 0;
+  // Audio admission policy + counters (guarded by mutex). Samples captured
+  // before sessionStartHns are dropped and counted so a mute recording can
+  // be diagnosed from the "audio_stats" event / recording status.
+  RecorderAudioRebase audioRebase;
 
   ComPtr<IMFMediaSource> micSource;
   ComPtr<IMFSourceReader> micReader;
@@ -219,22 +200,28 @@ class MicReaderCallback : public IMFSourceReaderCallback {
   STDMETHODIMP OnReadSample(HRESULT hrStatus, DWORD /*streamIndex*/,
                             DWORD streamFlags, LONGLONG timestampHns,
                             IMFSample *sample) override {
+    const bool ended = FAILED(hrStatus) ||
+                       (streamFlags & MF_SOURCE_READERF_ENDOFSTREAM) != 0;
     ComPtr<IMFSourceReader> reader;
     ComPtr<IMFSinkWriter> writer;
     DWORD audioStream = 0;
-    LONGLONG sessionStartHns = 0;
     bool running = false;
+    // Decided under the lock so the counters stay consistent with the
+    // session start they were judged against; the write itself runs outside.
+    RecorderAudioRebase::Decision decision;
     {
       std::lock_guard<std::mutex> lock(impl_->mutex);
       reader = impl_->micReader;
       writer = impl_->writer;
       audioStream = impl_->audioStream;
-      sessionStartHns = impl_->sessionStartHns;
       running = impl_->audioRunning.load();
+      if (running && !ended && reader && writer && sample != nullptr) {
+        decision = impl_->audioRebase.decide(
+            static_cast<int64_t>(impl_->sessionStartHns),
+            static_cast<int64_t>(timestampHns));
+      }
     }
 
-    const bool ended = FAILED(hrStatus) ||
-                       (streamFlags & MF_SOURCE_READERF_ENDOFSTREAM) != 0;
     if (!running || ended || !reader || !writer) {
       if (FAILED(hrStatus)) {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -246,8 +233,8 @@ class MicReaderCallback : public IMFSourceReaderCallback {
       return S_OK;
     }
 
-    if (sample != nullptr && timestampHns >= sessionStartHns) {
-      sample->SetSampleTime(timestampHns - sessionStartHns);
+    if (sample != nullptr && decision.write) {
+      sample->SetSampleTime(static_cast<LONGLONG>(decision.timestamp));
       const HRESULT writeHr = writer->WriteSample(audioStream, sample);
       if (FAILED(writeHr)) {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -635,6 +622,7 @@ bool MeetingRecorder::start(const std::string &filePath,
     impl_->videoStream = videoStream;
     impl_->audioStream = audioStream;
     impl_->sessionStartHns = MFGetSystemTime();
+    impl_->audioRebase.reset();
     impl_->micSource = micSource;
     impl_->micReader = micReader;
     impl_->micCallback = callback;
@@ -772,6 +760,8 @@ void MeetingRecorder::stop() {
   HANDLE drained = nullptr;
   std::string finalPath;
   std::string partPath;
+  uint64_t audioSamplesWritten = 0;
+  uint64_t audioSamplesDroppedBeforeStart = 0;
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (!impl_->active) {
@@ -781,6 +771,10 @@ void MeetingRecorder::stop() {
     impl_->audioRunning.store(false);
     finalPath = impl_->filePath;
     partPath = impl_->partPath;
+    // Final once audioRunning is cleared: the callback no longer admits
+    // samples, so these are the numbers of the whole session.
+    audioSamplesWritten = impl_->audioRebase.written();
+    audioSamplesDroppedBeforeStart = impl_->audioRebase.droppedBeforeStart();
     writer = impl_->writer;
     micReader = impl_->micReader;
     micSource = impl_->micSource;
@@ -794,6 +788,14 @@ void MeetingRecorder::stop() {
     impl_->micCallback = nullptr;
     impl_->sessionStartHns = 0;
   }
+
+  // E1 diagnostics: "written=0 dropped_before_start=0" means the device never
+  // delivered a sample, a large dropped count with few writes means the
+  // capture clock ran ahead of the session start.
+  logRecorderEvent("audio_stats",
+                   "written=" + std::to_string(audioSamplesWritten) +
+                       " dropped_before_start=" +
+                       std::to_string(audioSamplesDroppedBeforeStart));
 
   ComApartment com;
   // Give an in-flight audio callback time to return before finalizing (the
@@ -824,7 +826,38 @@ void MeetingRecorder::stop() {
   }
 
   if (writer) {
-    const HRESULT hr = writer->Finalize();
+    // Finalize() flushes the encoder and writes the trailing MP4 metadata; a
+    // wedged sink (slow disk, stuck hardware encoder) never returns from it,
+    // which used to hang the sequential control thread past the bridge's
+    // recording.stop timeout. Mirror the macOS recorder: run it on a detached
+    // worker that owns its own COM apartment and the LAST writer reference,
+    // and wait bounded. On timeout this thread reports and moves on; the
+    // worker releases the writer whenever Finalize returns, and nothing here
+    // touches the writer again.
+    std::promise<HRESULT> finalizePromise;
+    std::future<HRESULT> finalizeResult = finalizePromise.get_future();
+    std::thread([finalizeWriter = std::move(writer),
+                 promise = std::move(finalizePromise)]() mutable {
+      ComApartment threadCom;
+      const HRESULT finalizeHr = finalizeWriter->Finalize();
+      finalizeWriter.Reset();
+      promise.set_value(finalizeHr);
+    }).detach();
+    if (finalizeResult.wait_for(std::chrono::milliseconds(
+            kRecorderFinalizeTimeoutMs)) != std::future_status::ready) {
+      // Previously stop() blocked here indefinitely. Report it like any other
+      // finalize failure; the ".part" sidecar keeps its name (REC-03) because
+      // it is not a finished recording.
+      logRecorderEvent("finalize_timeout",
+                       "Finalize exceeded " +
+                           std::to_string(kRecorderFinalizeTimeoutMs) + "ms");
+      std::lock_guard<std::mutex> lock(impl_->mutex);
+      if (impl_->lastError.empty()) {
+        impl_->lastError = "finalize_timeout";
+      }
+      return;
+    }
+    const HRESULT hr = finalizeResult.get();
     if (FAILED(hr)) {
       std::lock_guard<std::mutex> lock(impl_->mutex);
       impl_->lastError = hresultError("finish_failed", hr);
@@ -854,6 +887,9 @@ RecordingStatus MeetingRecorder::status() const {
   status.videoFrames = impl_->videoFrames;
   status.elapsedSeconds = impl_->active ? secondsSince(impl_->startedAt) : 0.0;
   status.lastError = impl_->lastError;
+  status.audioSamplesWritten = impl_->audioRebase.written();
+  status.audioSamplesDroppedBeforeStart =
+      impl_->audioRebase.droppedBeforeStart();
   return status;
 }
 

@@ -2,9 +2,11 @@ import { DecklinkModule } from "./index.js";
 import { DecklinkDetector } from "./decklink-detector.js";
 
 const mockDetect = jest.fn().mockResolvedValue([]);
+const mockGetLastDiagnostics = jest.fn().mockReturnValue(null);
 jest.mock("./decklink-detector.js", () => ({
   DecklinkDetector: jest.fn().mockImplementation(() => ({
     detect: () => mockDetect(),
+    getLastDiagnostics: () => mockGetLastDiagnostics(),
   })),
 }));
 
@@ -22,6 +24,28 @@ describe("DecklinkModule", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockDetect.mockResolvedValue([]);
+    mockGetLastDiagnostics.mockReturnValue(null);
+  });
+
+  describe("getLastDiagnostics", () => {
+    it("returns null while the detector has no diagnostics", () => {
+      expect(new DecklinkModule().getLastDiagnostics()).toBeNull();
+    });
+
+    it("wraps detector diagnostics with kind decklink", () => {
+      mockGetLastDiagnostics.mockReturnValue({
+        apiAvailable: true,
+        apiVersion: "12.8",
+        helperVersion: "0.1.0",
+      });
+
+      expect(new DecklinkModule().getLastDiagnostics()).toEqual({
+        kind: "decklink",
+        apiAvailable: true,
+        apiVersion: "12.8",
+        helperVersion: "0.1.0",
+      });
+    });
   });
 
   describe("name", () => {

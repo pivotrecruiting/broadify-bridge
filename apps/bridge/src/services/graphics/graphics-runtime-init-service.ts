@@ -7,6 +7,7 @@ import type {
   GraphicsRendererConfigT,
 } from "./renderer/graphics-renderer.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { GraphicsError } from "./graphics-errors.js";
 
 type GraphicsRuntimeInitServiceDepsT = {
   /**
@@ -38,24 +39,42 @@ export type GraphicsRuntimeInitResultT = {
  * Runtime initializer and startup recovery workflow for graphics services.
  *
  * This service centralizes renderer startup, fallback to stub renderer,
- * asset bootstrap, and persisted output-config recovery logic.
+ * asset bootstrap, and persisted output-config recovery logic. Loading the
+ * persisted state (`initialize`) and applying it (`applyPersistedOutput`) are
+ * separate steps: the output is applied only once the web app activates a
+ * Studio/Conference mode, never at bridge start.
  */
 export class GraphicsRuntimeInitService {
   constructor(private readonly deps: GraphicsRuntimeInitServiceDepsT) {}
 
   /**
-   * Initialize graphics runtime once at process startup.
+   * Initialize graphics runtime once at process startup: assets, the
+   * persisted output store (loaded and logged, not applied) and the renderer.
    */
-  async initialize(): Promise<GraphicsRuntimeInitResultT> {
+  async initialize(): Promise<void> {
     await assetRegistry.initialize();
     if (this.deps.usePersistedOutputConfig === false) {
       await this.initializeRendererWithFallback();
-      return { persistedApplyFailed: false, persistedConfig: null };
+      return;
     }
     await outputConfigStore.initialize();
     this.logPersistedRuntimeState();
 
     await this.initializeRendererWithFallback();
+  }
+
+  /**
+   * Apply the persisted output config loaded by `initialize()`.
+   *
+   * Same error handling as the former startup apply: on failure the runtime
+   * falls back to the stub adapter, the persisted config is kept, and the
+   * caller hands recovery to the output supervisor. No-op for managers that
+   * do not own the shared store (meeting planes).
+   */
+  async applyPersistedOutput(): Promise<GraphicsRuntimeInitResultT> {
+    if (this.deps.usePersistedOutputConfig === false) {
+      return { persistedApplyFailed: false, persistedConfig: null };
+    }
     return this.applyPersistedOutputConfigIfPresent();
   }
 
@@ -118,10 +137,15 @@ export class GraphicsRuntimeInitService {
       this.deps.setOutputAdapter(nextAdapter);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.deps.publishGraphicsError(
-        stage === "renderer" ? "renderer_error" : "output_helper_error",
-        errorMessage
-      );
+      // A typed GraphicsError (e.g. output_device_not_found from the adapter
+      // factory) keeps its code; everything else maps by stage.
+      const errorCode =
+        error instanceof GraphicsError
+          ? error.code
+          : stage === "renderer"
+            ? "renderer_error"
+            : "output_helper_error";
+      this.deps.publishGraphicsError(errorCode, errorMessage);
       getBridgeContext().logger.error(
         `[Graphics] Failed to apply persisted output config, falling back to stub: ${errorMessage}`
       );

@@ -37,6 +37,7 @@ const makeDeps = (
     output1Id?: string;
     output2Id?: string;
     decklinkModule?: DeviceModule;
+    displayModule?: DeviceModule;
     platform?: NodeJS.Platform;
   } = {},
 ) => ({
@@ -52,7 +53,11 @@ const makeDeps = (
   },
   moduleRegistry: {
     getModule: (moduleName: string) =>
-      moduleName === "decklink" ? options.decklinkModule : undefined,
+      moduleName === "decklink"
+        ? options.decklinkModule
+        : moduleName === "display"
+          ? options.displayModule
+          : undefined,
   },
   platform: options.platform ?? "darwin",
 });
@@ -76,6 +81,33 @@ const decklinkModule = (
     createController,
     getLastDiagnostics: diagnostics,
   });
+
+const displayModule = (
+  diagnostics?: DeviceModule["getLastDiagnostics"],
+): DeviceModule => ({
+  name: "display",
+  detect: jest.fn().mockResolvedValue([]),
+  createController,
+  getLastDiagnostics: diagnostics,
+});
+
+const makeDisplayDevice = (): DeviceDescriptorT => ({
+  id: "display-1",
+  displayName: "HDMI Monitor",
+  type: "display",
+  ports: [
+    {
+      id: "display-port-1",
+      displayName: "HDMI",
+      type: "hdmi",
+      role: "fill",
+      direction: "output",
+      status: { available: true },
+      capabilities: { formats: [], modes: [] },
+    },
+  ],
+  status: { present: true, inUse: false, ready: true, lastSeen: Date.now() },
+});
 
 describe("buildBridgeOutputsView", () => {
   it("marks configured output ports as owned and available", () => {
@@ -128,6 +160,7 @@ describe("buildBridgeOutputsView", () => {
       [makeDecklinkDevice()],
       makeDeps({
         decklinkModule: decklinkModule(() => ({
+          kind: "decklink",
           apiAvailable: true,
           apiVersion: "12.8",
           helperVersion: "0.1.0",
@@ -156,6 +189,69 @@ describe("buildBridgeOutputsView", () => {
     expect(result.diagnostics).toEqual({
       platform: "win32",
       decklink: { state: "unsupported_platform" },
+    });
+    expect(result.diagnostics && "display" in result.diagnostics).toBe(false);
+  });
+
+  it("includes display diagnostics from the display module", () => {
+    const result = buildBridgeOutputsView(
+      [],
+      makeDeps({
+        platform: "win32",
+        displayModule: displayModule(() => ({
+          kind: "display",
+          state: "missing_runtime",
+          message:
+            "Native display helper could not start (STATUS_DLL_NOT_FOUND). The Microsoft Visual C++ runtime is missing; install vc_redist.x64 or reinstall the bridge.",
+          exitCode: 3_221_225_781,
+        })),
+      }),
+    );
+
+    expect(result.diagnostics).toEqual({
+      platform: "win32",
+      decklink: { state: "unsupported_platform" },
+      display: {
+        state: "missing_runtime",
+        message:
+          "Native display helper could not start (STATUS_DLL_NOT_FOUND). The Microsoft Visual C++ runtime is missing; install vc_redist.x64 or reinstall the bridge.",
+        exitCode: 3_221_225_781,
+      },
+    });
+    expect(result.diagnostics?.display).not.toHaveProperty("kind");
+  });
+
+  it("derives display ok from the device list when the module has no diagnostics yet", () => {
+    const result = buildBridgeOutputsView(
+      [makeDisplayDevice()],
+      makeDeps({
+        platform: "darwin",
+        decklinkModule: decklinkModule(() => ({ kind: "decklink", apiAvailable: true })),
+        displayModule: displayModule(() => null),
+      }),
+    );
+
+    expect(result.diagnostics).toEqual({
+      platform: "darwin",
+      decklink: { state: "no_devices" },
+      display: { state: "ok" },
+    });
+  });
+
+  it("ignores diagnostics of the wrong kind", () => {
+    const result = buildBridgeOutputsView(
+      [],
+      makeDeps({
+        platform: "darwin",
+        decklinkModule: decklinkModule(() => ({ kind: "display", state: "missing_runtime" })),
+        displayModule: displayModule(() => ({ kind: "decklink", helperMissing: true })),
+      }),
+    );
+
+    expect(result.diagnostics).toEqual({
+      platform: "darwin",
+      decklink: { state: "no_devices" },
+      display: { state: "no_devices" },
     });
   });
 });

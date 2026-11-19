@@ -532,14 +532,17 @@ void MeetingRecorder::stop() {
         dispatch_semaphore_signal(sem);
       }];
       const long finishTimedOut = dispatch_semaphore_wait(
-          sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)));
+          sem, dispatch_time(DISPATCH_TIME_NOW,
+                             (int64_t)kRecorderFinalizeTimeoutMs *
+                                 (int64_t)NSEC_PER_MSEC));
       if (finishTimedOut != 0 &&
           writer.status != AVAssetWriterStatusCompleted) {
         // Previously this fell through silently: no rename, no error - the
         // recording just vanished. Report it like any other finalize failure.
         logRecorderEvent("finalize_timeout",
-                         "finishWriting exceeded 15s (" +
-                             std::string("status=") +
+                         "finishWriting exceeded " +
+                             std::to_string(kRecorderFinalizeTimeoutMs) +
+                             "ms (status=" +
                              std::to_string((long)writer.status) + ")");
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (impl_->lastError.empty()) {

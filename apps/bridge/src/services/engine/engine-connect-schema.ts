@@ -87,6 +87,51 @@ export function normalizeEngineConnectPayload(
 }
 
 /**
+ * Inverse of normalizeEngineConnectPayload: turn an adapter config back into
+ * the wire/on-disk payload shape that EngineConnectPayloadSchema accepts.
+ *
+ * USB configs carry ip/port sentinels ("", 0) that the schema rejects, so
+ * they are dropped entirely; the result for USB has no ip/port keys at all.
+ * Network configs keep ip and port. The transport is always explicit.
+ *
+ * @param config Adapter connection config.
+ * @returns Schema-valid payload suitable for persistence.
+ */
+export function toEngineConnectPayload(
+  config: EngineConnectConfig
+): EngineConnectPayloadT {
+  const transport = config.transport ?? "network";
+  if (transport === "usb") {
+    return { type: config.type, transport };
+  }
+  return { type: config.type, transport, ip: config.ip, port: config.port };
+}
+
+/**
+ * Drop the ip/port sentinels that older bridges persisted for USB
+ * connections ({ ..., transport: "usb", ip: "", port: 0 }) so legacy files
+ * pass EngineConnectPayloadSchema without a rewrite on disk.
+ *
+ * Anything that is not an object with transport === "usb" is returned as-is
+ * (same reference); the schema decides whether it is valid.
+ *
+ * @param raw Parsed JSON of unknown shape.
+ * @returns A shallow copy without ip/port for USB input, else `raw`.
+ */
+export function stripLegacyUsbSentinels(raw: unknown): unknown {
+  if (
+    typeof raw !== "object" ||
+    raw === null ||
+    Array.isArray(raw) ||
+    (raw as { transport?: unknown }).transport !== "usb"
+  ) {
+    return raw;
+  }
+  const { ip: _ip, port: _port, ...rest } = raw as Record<string, unknown>;
+  return rest;
+}
+
+/**
  * Human-readable connection target for logs (never leaks USB sentinels).
  */
 export function describeEngineConnectTarget(

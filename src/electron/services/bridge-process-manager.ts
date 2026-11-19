@@ -5,12 +5,17 @@ import fs from "fs";
 import { isDev } from "../util.js";
 import type { BridgeConfig } from "../types.js";
 import { isPortAvailable, findAvailablePort } from "./port-checker.js";
+import { checkBridgeHealth } from "./bridge-health-check.js";
 import {
   buildBridgeProcessArgs,
   buildBridgeSpawnEnv,
+  classifyBusyPortOccupant,
   resolveBridgeStartConfig,
+  SAME_BRIDGE_PORT_POLL_MS,
+  SAME_BRIDGE_PORT_RELEASE_TIMEOUT_MS,
 } from "./bridge-process-contract.js";
 import { stopChildProcessGracefully } from "./bridge-process-stop.js";
+import { BRIDGE_STOP_GRACE_MS } from "./shutdown-budget.js";
 import { quitVcamHelperApp } from "./vcam-helper-app.js";
 
 /**
@@ -105,17 +110,43 @@ export class BridgeProcessManager {
 
     try {
       // Check if port is available, if not and autoFindPort is enabled, find next available
-      const portAvailable = await isPortAvailable(config.port, config.host);
+      let portAvailable = await isPortAvailable(config.port, config.host);
       let availablePort: number | null = null;
-      if (!portAvailable && autoFindPort) {
-        console.log(
-          `[BridgeManager] Port ${config.port} is not available, searching for alternative...`
-        );
-        availablePort = await findAvailablePort(
-          config.port,
-          config.port + 10, // Check next 10 ports
-          config.host
-        );
+      if (!portAvailable) {
+        // Same-bridge port guard: a previous instance of THIS bridge may
+        // still be shutting down (it keeps the port until its HTTP server
+        // closes last, up to ~30 s when a recording is being finalized).
+        // Starting on port+1 meanwhile would register a second bridge with
+        // the same identity at the relay. Wait for the port instead; only a
+        // foreign occupant gets the port+N fallback below.
+        const occupant = await checkBridgeHealth({
+          host: config.host,
+          port: config.port,
+        });
+        const classification = classifyBusyPortOccupant({ occupant, bridgeId });
+        if (classification === "same_bridge") {
+          console.log(
+            `[BridgeManager] Port ${config.port} is still held by a previous instance of this bridge; waiting up to ${SAME_BRIDGE_PORT_RELEASE_TIMEOUT_MS}ms for it to shut down...`
+          );
+          portAvailable = await this.waitForPortRelease(config.port, config.host);
+          if (!portAvailable) {
+            const error = `A Broadify Bridge with this identity is still running on port ${config.port}; it did not shut down within ${SAME_BRIDGE_PORT_RELEASE_TIMEOUT_MS / 1000} s. Please wait a moment and try again.`;
+            console.error(`[BridgeManager] ${error}`);
+            return { success: false, error };
+          }
+          console.log(
+            `[BridgeManager] Port ${config.port} was released by the previous instance`
+          );
+        } else if (autoFindPort) {
+          console.log(
+            `[BridgeManager] Port ${config.port} is not available, searching for alternative...`
+          );
+          availablePort = await findAvailablePort(
+            config.port,
+            config.port + 10, // Check next 10 ports
+            config.host
+          );
+        }
       }
 
       const resolvedConfig = resolveBridgeStartConfig({
@@ -298,10 +329,10 @@ export class BridgeProcessManager {
     }
 
     try {
-      // 25s before SIGKILL: the bridge's graceful shutdown finalizes an
-      // in-flight recording (up to ~20s); SIGKILLing the process group any
-      // earlier would destroy the MP4 mid-finalization.
-      await stopChildProcessGracefully(this.bridgeProcess, 25000);
+      // The grace before SIGKILL covers the bridge's graceful shutdown, which
+      // finalizes an in-flight recording; see shutdown-budget.ts for the
+      // invariant that ties it to the app shutdown and install budgets.
+      await stopChildProcessGracefully(this.bridgeProcess, BRIDGE_STOP_GRACE_MS);
       quitVcamHelperApp();
 
       // Close log stream if open
@@ -319,6 +350,23 @@ export class BridgeProcessManager {
         error instanceof Error ? error.message : String(error);
       return { success: false, error: errorMessage };
     }
+  }
+
+  /**
+   * Poll until the given port is free or the same-bridge release budget is
+   * spent. Returns true once the port is available.
+   */
+  private async waitForPortRelease(port: number, host: string): Promise<boolean> {
+    const deadline = Date.now() + SAME_BRIDGE_PORT_RELEASE_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, SAME_BRIDGE_PORT_POLL_MS)
+      );
+      if (await isPortAvailable(port, host)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

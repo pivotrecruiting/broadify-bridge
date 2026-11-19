@@ -1,11 +1,12 @@
-import type { DeviceModule, DeviceController } from "../device-module.js";
+import type {
+  DeviceModule,
+  DeviceController,
+  DeviceModuleDiagnosticsT,
+} from "../device-module.js";
 import type { DeviceDescriptorT } from "@broadify/protocol";
 import { DecklinkDetector, parseDecklinkHelperDevices } from "./decklink-detector.js";
 import { DecklinkDevice } from "./decklink-device.js";
-import {
-  type DecklinkDiagnosticsT,
-  watchDecklinkDevices,
-} from "./decklink-helper.js";
+import { watchDecklinkDevices } from "./decklink-helper.js";
 import { getBridgeContext } from "../../services/bridge-context.js";
 
 /**
@@ -25,8 +26,9 @@ export class DecklinkModule implements DeviceModule {
     return this.detector.detect();
   }
 
-  getLastDiagnostics(): DecklinkDiagnosticsT | null {
-    return this.detector.getLastDiagnostics();
+  getLastDiagnostics(): DeviceModuleDiagnosticsT | null {
+    const diagnostics = this.detector.getLastDiagnostics();
+    return diagnostics ? { kind: "decklink", ...diagnostics } : null;
   }
 
   /**

@@ -24,6 +24,16 @@ jest.mock("./engine-adapter.js", () => ({
   },
 }));
 
+const mockModeActivate = jest.fn(async (mode: string) => ({
+  mode,
+  restored: mode === "meeting" ? [] : ["engine_autoconnect", "graphics_output"],
+}));
+jest.mock("./mode/mode-activation-service.js", () => ({
+  modeActivationService: {
+    activate: (mode: string) => mockModeActivate(mode),
+  },
+}));
+
 jest.mock("./device-cache.js", () => ({
   deviceCache: {
     getDevices: jest.fn().mockResolvedValue([]),
@@ -38,6 +48,9 @@ jest.mock("./output-diagnostics.js", () => ({
   })),
   getDecklinkDeviceCount: jest.fn((devices: Array<{ type?: string }>) =>
     devices.filter((device) => device.type === "decklink").length
+  ),
+  getDisplayDeviceCount: jest.fn((devices: Array<{ type?: string }>) =>
+    devices.filter((device) => device.type === "display").length
   ),
 }));
 
@@ -209,6 +222,67 @@ describe("command-router", () => {
           decklink: process.platform === "darwin",
         },
       });
+    });
+
+    it("get_status advertises the mode_activation capability", async () => {
+      const result = await commandRouter.handleCommand("get_status", {});
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        capabilities: expect.objectContaining({ mode_activation: true }),
+      });
+    });
+
+    it("mode_activate dispatches a valid mode to the mode activation service", async () => {
+      mockModeActivate.mockClear();
+      const result = await commandRouter.handleCommand("mode_activate", {
+        mode: "studio",
+      });
+
+      expect(mockModeActivate).toHaveBeenCalledWith("studio");
+      expect(result).toEqual({
+        success: true,
+        data: {
+          mode: "studio",
+          restored: ["engine_autoconnect", "graphics_output"],
+        },
+      });
+    });
+
+    it("mode_activate returns an empty restore list for meeting", async () => {
+      mockModeActivate.mockClear();
+      const result = await commandRouter.handleCommand("mode_activate", {
+        mode: "meeting",
+      });
+
+      expect(mockModeActivate).toHaveBeenCalledWith("meeting");
+      expect(result).toEqual({
+        success: true,
+        data: { mode: "meeting", restored: [] },
+      });
+    });
+
+    it("mode_activate rejects an unknown mode with a validation error", async () => {
+      mockModeActivate.mockClear();
+      const result = await commandRouter.handleCommand("mode_activate", {
+        mode: "broadcast",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid payload for mode_activate");
+      expect(mockModeActivate).not.toHaveBeenCalled();
+    });
+
+    it("mode_activate rejects a payload without mode or with unknown keys", async () => {
+      mockModeActivate.mockClear();
+      const missing = await commandRouter.handleCommand("mode_activate", {});
+      const extra = await commandRouter.handleCommand("mode_activate", {
+        mode: "studio",
+        force: true,
+      });
+
+      expect(missing.success).toBe(false);
+      expect(extra.success).toBe(false);
+      expect(mockModeActivate).not.toHaveBeenCalled();
     });
 
     it("list_outputs without refresh returns cached outputs without detection", async () => {
@@ -1055,8 +1129,91 @@ describe("command-router", () => {
       );
 
       expect(result.success).toBe(true);
+      expect(result.data).toEqual({ ok: true, presets: [] });
       expect(canonXCService.recallPreset).toHaveBeenCalledWith("canon-1", 3, {
         ptzspeed: 30,
+      });
+    });
+
+    describe("Canon XC failure mapping", () => {
+      const canonFailure = {
+        ok: false,
+        message: "Preset recall failed",
+        rawError: "ETIMEDOUT",
+        diagnostic: { code: "timeout", hint: "Check the network cable." },
+        device: null,
+        status: null,
+        presets: [],
+        result: {},
+      };
+
+      const cameraInput = {
+        name: "Stage Canon",
+        host: "192.168.0.100",
+        port: 80,
+        protocol: "http",
+        type: "camera",
+        enabled: true,
+      };
+
+      const expectMappedFailure = (result: {
+        success: boolean;
+        error?: string;
+        errorCode?: string;
+        data?: unknown;
+      }) => {
+        expect(result.success).toBe(false);
+        expect(result.error).toBe("ETIMEDOUT");
+        expect(result.errorCode).toBe("timeout");
+        expect((result.data as { ok?: unknown }).ok).toBe(false);
+      };
+
+      it("canon_xc_test_connection maps ok:false to success:false", async () => {
+        const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+        canonXCService.testConnection.mockResolvedValueOnce(canonFailure);
+
+        const result = await commandRouter.handleCommand(
+          "canon_xc_test_connection",
+          cameraInput,
+        );
+
+        expectMappedFailure(result);
+      });
+
+      it("canon_xc_test_device maps ok:false to success:false", async () => {
+        const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+        canonXCService.testDevice.mockResolvedValueOnce(canonFailure);
+
+        const result = await commandRouter.handleCommand(
+          "canon_xc_test_device",
+          { deviceId: "canon-1" },
+        );
+
+        expectMappedFailure(result);
+      });
+
+      it("canon_xc_list_presets maps ok:false to success:false", async () => {
+        const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+        canonXCService.listPresets.mockResolvedValueOnce(canonFailure);
+
+        const result = await commandRouter.handleCommand(
+          "canon_xc_list_presets",
+          { deviceId: "canon-1" },
+        );
+
+        expectMappedFailure(result);
+      });
+
+      it("canon_xc_recall_preset maps ok:false to success:false", async () => {
+        const { canonXCService } = require("./canon-xc/canon-xc-service.js");
+        canonXCService.recallPreset.mockResolvedValueOnce(canonFailure);
+
+        const result = await commandRouter.handleCommand(
+          "canon_xc_recall_preset",
+          { deviceId: "canon-1", preset: 3 },
+        );
+
+        expectMappedFailure(result);
       });
     });
 
