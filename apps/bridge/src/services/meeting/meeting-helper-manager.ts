@@ -37,7 +37,7 @@ import {
 } from "../intelligence/call-detector.js";
 import { graphicsUsageRecorder } from "../intelligence/usage-event-recorder.js";
 import { diffMeetingSummary, summarizeMeetingStatus, type MeetingSessionSummaryT } from "../session-log/meeting-session-events.js";
-import { recordSwitcherEvent } from "../session-log/session-log-service.js";
+import { isSessionLogEnabled, recordSwitcherEvent } from "../session-log/session-log-service.js";
 import { ciSessionCoordinator } from "../intelligence/ci-session-coordinator.js";
 
 const HELPER_PATH_ENV = "BRIDGE_MEETING_HELPER_PATH";
@@ -1644,6 +1644,10 @@ export class MeetingHelperManager {
 
   /** Post-production SessionEventLog: meeting recorder and program changes (observability only). */
   private recordSessionEvents(status: Record<string, unknown>): void {
+    // Off by default (ADR-0008): no status summary, no diff.
+    if (!isSessionLogEnabled()) {
+      return;
+    }
     try {
       const next = summarizeMeetingStatus(status);
       for (const event of diffMeetingSummary(this.lastSessionSummary, next)) {

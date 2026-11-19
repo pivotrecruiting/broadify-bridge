@@ -78,7 +78,7 @@ import {
   graphicsUsageRecorder,
   type GraphicsUsageRecorderLikeT,
 } from "../intelligence/usage-event-recorder.js";
-import { recordSwitcherEvent } from "../session-log/session-log-service.js";
+import { isSessionLogEnabled, recordSwitcherEvent } from "../session-log/session-log-service.js";
 import { ReconnectScheduler } from "../shared/backoff.js";
 import { formatZodError } from "../shared/zod-error-message.js";
 import { deviceCache } from "../device-cache.js";
@@ -467,6 +467,10 @@ export class GraphicsManager {
     templateId: string | null,
     values: Record<string, unknown> | null,
   ): void {
+    // Off by default (ADR-0008): on-air text fields are not even read.
+    if (!isSessionLogEnabled()) {
+      return;
+    }
     try {
       const fields: Record<string, string> = {};
       if (values) {

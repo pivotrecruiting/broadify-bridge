@@ -34,7 +34,7 @@ import {
 } from "./engine/engine-connection-supervisor.js";
 import { ReconnectScheduler } from "./shared/backoff.js";
 import { isSameEngineConnectConfig } from "./engine/engine-connect-schema.js";
-import { recordSwitcherEvent } from "./session-log/session-log-service.js";
+import { isSessionLogEnabled, recordSwitcherEvent } from "./session-log/session-log-service.js";
 import type { SwitcherEventT } from "./session-log/session-log-types.js";
 import { modeActivationState } from "./mode/mode-activation-state.js";
 
@@ -55,6 +55,12 @@ type EngineAdapterServiceDepsT = {
   /** Sink for switcher events (post-production SessionEventLog). */
   switcherEventSink?: (event: SwitcherEventT) => void;
   /**
+   * Whether the SessionEventLog is on (ADR-0008). Adapters are subscribed for
+   * switcher events only then: the subscription is what starts their extra
+   * polling/connections (ATEM timecode, vMix TCP 8099).
+   */
+  isSessionLogEnabled?: () => boolean;
+  /**
    * Whether a Studio-restoring mode (studio/conference) is active. Failures
    * of the persisted startup restore publish `engine_error` only then; without
    * an active mode (e.g. an operator in a meeting) they are logged at info.
@@ -65,6 +71,7 @@ type EngineAdapterServiceDepsT = {
 const defaultDeps: EngineAdapterServiceDepsT = {
   createAdapter: (type, transport) => createEngineAdapter(type, transport),
   switcherEventSink: (event) => recordSwitcherEvent(event),
+  isSessionLogEnabled: () => isSessionLogEnabled(),
   broadcast: (topic, message) => websocketManager.broadcast(topic, message),
   persistConnection: (config) => engineConnectionStore.save(config),
   loadPersistedConnection: () => engineConnectionStore.load(),
@@ -304,7 +311,9 @@ export class EngineAdapterService {
       );
       const sink = this.deps.switcherEventSink;
       const unsubscribeSwitcherEvents =
-        sink && adapter.onSwitcherEvent ? adapter.onSwitcherEvent((event) => sink(event)) : null;
+        sink && adapter.onSwitcherEvent && this.deps.isSessionLogEnabled?.() === true
+          ? adapter.onSwitcherEvent((event) => sink(event))
+          : null;
       unsubscribeAdapterState = () => {
         unsubscribe();
         unsubscribeSwitcherEvents?.();

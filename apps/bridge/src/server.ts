@@ -22,6 +22,7 @@ import {
   resolveUserDataDir,
   setBridgeContext,
 } from "./services/bridge-context.js";
+import { initializeSessionLog } from "./services/session-log/session-log-service.js";
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
 import { graphicsUsageRecorder } from "./services/intelligence/usage-event-recorder.js";
 import { ciSessionCoordinator } from "./services/intelligence/ci-session-coordinator.js";
@@ -112,6 +113,8 @@ export async function createServer(config: BridgeConfigT) {
     pairingExpiresAt: config.pairingExpiresAt,
   };
   setBridgeContext(baseContext);
+  // Off unless a post-production URL is configured (ADR-0008); then: retention + upload of leftovers.
+  initializeSessionLog();
   logRuntimeDiagnostics(baseContext.logger);
 
   // Device modules FIRST: graphicsManager.initialize() loads the persisted
