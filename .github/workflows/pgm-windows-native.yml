@@ -19,6 +19,10 @@ name: PGM Windows Native
 #            the vcpkg manifest, libdatachannel, publisher.cpp on top of the
 #            encoder, and the in-process WebRTC loopback test. The only job
 #            with network dependencies; both are cached.
+#   helper   compile only: the portable pgm-helper sources (main.cpp,
+#            pgm_engine.cpp) and the Windows platform host as an object
+#            library (PGM_HELPER_WINDOWS_COMPILE_CHECK=ON). No executable yet,
+#            no network dependency.
 # Later units of the chain extend `full` with pgm-helper.exe and add
 # meeting (meeting-helper program stream).
 
@@ -181,6 +185,35 @@ jobs:
         run: >
           ctest --test-dir "$env:LIVE_STREAM_DIR/build-mf" --build-config Release
           --timeout 120 --output-on-failure --verbose
+
+  helper:
+    name: helper (portable pgm-helper sources, compile only, MSVC)
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: 2022
+
+      # The engine only needs the headers of the publisher and the encoder, so
+      # neither WebRTC nor OpenSSL is configured here.
+      - name: Configure pgm-helper (portable sources)
+        run: >
+          cmake -S $env:PGM_HELPER_DIR -B "$env:PGM_HELPER_DIR/build-portable"
+          -DPGM_HELPER_WINDOWS_COMPILE_CHECK=ON
+          -DLIVE_STREAM_WITH_WEBRTC=OFF
+          -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+
+      - name: Compile pgm-helper (portable sources + Windows platform host)
+        run: >
+          cmake --build "$env:PGM_HELPER_DIR/build-portable" --config Release
+          --target pgm_helper_portable_objects
 
   full:
     name: full (WebRTC + static OpenSSL, MSVC)

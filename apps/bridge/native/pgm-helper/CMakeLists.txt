@@ -89,6 +89,21 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
   )
 endif()
 
+# Windows (ADR-0009): the helper executable follows with the Windows capture
+# sources. Until then the portable entry point, the engine and the Windows
+# platform host can be compiled on request (object library: nothing is linked,
+# nothing ships) so the CI workflow keeps them MSVC-clean.
+option(PGM_HELPER_WINDOWS_COMPILE_CHECK "Compile the portable pgm-helper sources and the Windows platform host (no executable)" OFF)
+if(WIN32 AND PGM_HELPER_WINDOWS_COMPILE_CHECK)
+  add_library(pgm_helper_portable_objects OBJECT
+    src/main.cpp
+    src/pgm_engine.cpp
+    src/platform/platform_host_win.cpp
+  )
+  target_include_directories(pgm_helper_portable_objects PRIVATE src)
+  target_link_libraries(pgm_helper_portable_objects PRIVATE pgm_core)
+endif()
+
 if(PGM_HELPER_BUILD_TESTS)
   foreach(pgm_test IN ITEMS video_signal_tracker_test pgm_rpc_dispatch_test recording_signal_gate_test pgm_options_test)
     add_executable(${pgm_test} tests/${pgm_test}.cpp)
