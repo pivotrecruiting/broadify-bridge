@@ -28,8 +28,9 @@ Aufnahme (ADR-0006).
   `MFVideoFormat_H264`. Findet sich kein Hardware-MFT oder lässt sich keiner konfigurieren, scheitert der Start
   sichtbar mit `encoder_unavailable`. Das gilt wie auf macOS für Vorschau und (später) Aufnahme.
 - Der Microsoft-Software-MFT („H264 Encoder MFT“, `CLSID_CMSH264EncoderMFT`) ist **nur in Tests** zulässig (ctest auf
-  dem GPU-losen CI-Runner, hinter einem ausdrücklichen Test-Schalter des Encoders). Im Helper-Binary ist dieser Weg
-  nicht erreichbar: weder über Umgebungsvariable noch über RPC.
+  dem GPU-losen CI-Runner, über eine interne Test-Naht des Encoders: der Test reicht den MFT selbst hinein, der
+  Encoder-Quelltext kennt ihn nicht). Im Helper-Binary ist dieser Weg nicht erreichbar: weder über Umgebungsvariable
+  noch über RPC.
 - Die Auswahl- und Fehlerlogik (Reihenfolge der Kandidaten, Abbruchgründe) liegt in einem reinen Policy-Modul, das
   auf macOS mit einem Fake getestet wird.
 - Der Name des gewählten MFT wird gemeldet (`EncoderInfo.name`, `--probe`), damit der Gerätetest die Hardware-Matrix

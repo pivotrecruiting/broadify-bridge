@@ -42,6 +42,8 @@ Regeln, die unter Windows genauso gelten:
 |---|---|---|---|
 | `BROADIFY_PGM_WINDOWS=1` | Build (Umgebung beim Windows-Build) | Windows-Targets (Encoder, WebRTC mit vcpkg-OpenSSL, `pgm-helper.exe`, Meeting-`ProgramStream`) werden gebaut und `pgm-helper.exe` in die Packaging-/Signierlisten aufgenommen | aus |
 | `BRIDGE_PGM_WINDOWS=1` | Laufzeit (Umgebung der Bridge) | Bridge meldet unter Windows `capabilities.live_program.supported = true` und startet den Helper | aus |
+| `LIVE_STREAM_WITH_MF=ON` | Build (CMake-Option oder Umgebung, nur `live-stream`) | Baut allein den Media-Foundation-Encoder und seine Tests, ohne WebRTC/OpenSSL. Wird von `BROADIFY_PGM_WINDOWS=1` mit eingeschaltet | aus |
+| `BRIDGE_PGM_ENCODER_VENDOR=nvidia\|intel\|amd` | Laufzeit (Umgebung des Helpers) | Zieht die Hardware-MFTs dieses Herstellers in der Reihenfolge nach vorn (Gerätetest auf Hybrid-Laptops). Die übrigen bleiben Ausweichkandidaten; welcher Encoder läuft, steht in `EncoderInfo.name` | nicht gesetzt |
 
 - Ohne Build-Schalter bleibt das Windows-Release bytegleich. Neue Windows-Targets sind opt-in, weil
   `npm run test:meeting-helper-native` in `dist:win` alle Targets des Build-Verzeichnisses baut.
@@ -71,7 +73,8 @@ npm run test:meeting-helper-native
 ```
 
 CI: Workflow `pgm-windows-native.yml` (D1; `windows-2022`, Push auf `feature/pgm-win-*` und manuell) kompiliert und
-fährt ctest. Der Encoder-Smoke-Test überspringt dort mangels Hardware-MFT. Grün im CI heißt: es kompiliert und die
+fährt ctest: Job `core` ohne jeden Schalter (das, was ein Windows-Release heute kompiliert), Job `encoder` mit
+`LIVE_STREAM_WITH_MF=ON`. Der Encoder-Smoke-Test überspringt dort mangels Hardware-MFT. Grün im CI heißt: es kompiliert und die
 Media-Foundation-Verdrahtung hält gegen den Software-MFT. Es heißt nicht: auf Hardware geprüft.
 
 Start aus einem Dev-Build:
@@ -81,6 +84,71 @@ $env:BRIDGE_PGM_WINDOWS = "1"
 $env:BRIDGE_LOG_PERF = "1"
 $env:BRIDGE_PGM_HELPER_PATH = "<repo>\apps\bridge\native\pgm-helper\pgm-helper.exe"
 ```
+
+## Encoder (D4)
+
+`live-stream/src/mf_encoder.cpp` ist das Windows-Gegenstück zu `vt_encoder.mm` hinter derselben Schnittstelle
+(`VideoEncoder`, `createHardwareEncoder()`). Gebaut wird es nur mit `LIVE_STREAM_WITH_MF` (Ziel `live_stream_mf`);
+ohne den Schalter enthält ein Windows-Build nichts davon. Die Entscheidungen liegen in reinen Modulen von
+`live_stream_core`, die auf jeder Plattform getestet werden:
+
+| Datei | Inhalt |
+|---|---|
+| `mf_encoder_policy` | Reihenfolge der Kandidaten, Ratensteuerung, Attribute je `EncodeTarget`, Text für `encoder_unavailable`, Zuordnung Ausgabe → Capture-Zeitstempel |
+| `frame_to_nv12` | Bringt ein Bild im Systemspeicher (NV12, YUY2, UYVY, BGRA, RGBA) auf NV12 in Zielgröße; der MFT wandelt und skaliert nicht selbst |
+| `mf_encoder.cpp` | Führt die Pläne gegen den MFT aus (nur Windows) |
+
+Ablauf und Regeln:
+- **Suche**: genau ein `MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
+  NV12 → H264)`. Reihenfolge: NVIDIA, AMD, Intel, unbekannt; innerhalb eines Herstellers die Reihenfolge der
+  Aufzählung. Ein MFT, der nicht asynchron ist, wird abgelehnt (`async_required`), bevor er angefasst wird.
+- **Kein Kandidat nutzbar**: `configure` scheitert mit `encoder_unavailable`; die Meldung nennt jeden versuchten
+  Encoder mit Schritt und HRESULT, z. B. `tried NVIDIA H.264 Encoder MFT: output_type 0xC00D36B4`. Es gibt keinen
+  Software-Weg in der Datei; `scripts/pgm-mf-encoder-contract.test.cjs` (Teil von `test:release-contracts`) prüft das
+  am Quelltext.
+- **Einrichtung je Kandidat**: `MF_TRANSFORM_ASYNC_UNLOCK`, `MF_LOW_LATENCY`, ICodecAPI-Einstellungen, Ausgabetyp
+  (H.264, Profil Main bzw. High, mittlere Bitrate), dann Eingabetyp (NV12, BT.709, 16–235; lehnt der Treiber die
+  Farbattribute ab, ohne sie), ICodecAPI-Einstellungen ein zweites Mal (Treiber unterscheiden sich darin, wann sie
+  sie annehmen), `NOTIFY_BEGIN_STREAMING`, `NOTIFY_START_OF_STREAM`.
+- **ICodecAPI**, jede Einstellung nur nach `IsSupported`: Ratensteuerung (Vorschau: Peak-VBR mit Mittel, Maximum und
+  1-s-Puffer, sonst CBR; Aufnahme: VBR ohne Deckel, sonst Peak-VBR, sonst CBR), Low-Latency, GOP = fps × 2 s,
+  keine B-Frames, CABAC, Qualität gegen Geschwindigkeit. Was gegriffen hat, steht als JSON in
+  `EncoderInfo.settings`, z. B. `{"codec_api":true,"rate_control":"peak_vbr","low_latency":true,"gop_frames":120,
+  "b_frames_off":true,"cabac":true,"quality_vs_speed":true,"force_keyframe":true,"color_signalled":true}`.
+- **Keyframe auf Anforderung**: `CODECAPI_AVEncVideoForceKeyFrame` unmittelbar vor dem `ProcessInput` des Bildes.
+  Kann der MFT das nicht, wird er trotzdem genommen, mit 1 s GOP und `"force_keyframe":false` im Bericht.
+- **Threads**: ein Encoder-Thread je Encoder besitzt den MFT (COM-MTA, `MFStartup` gezählt). Ereignisse des MFT
+  reicht ein kleiner `IMFAsyncCallback` in dessen Warteschlange. `encode()` läuft auf dem Capture-Thread und wartet
+  nie auf den Encoder: Bild nach NV12 bringen, in ein Postfach mit einem Platz legen. Liegt dort noch ein Bild, wird
+  es ersetzt und als verworfen gezählt; ein angeforderter Keyframe wandert auf das ersetzende Bild.
+- **Eingabe**: NV12-`IMFSample` in Zielgröße (`CapturedFrame.nativeHandle`) wird ohne Kopie weitergereicht, und zwar
+  als neues Sample um dieselben Puffer, damit das Sample des Capturers seine Zeitstempel behält. Alles andere wird
+  in ein Sample aus einem kleinen Vorrat (6 Stück) umgewandelt. Ungerade Zielgrößen werden auf gerade gekürzt.
+- **Ausgabe**: Annex B; SPS/PPS aus `MF_MT_MPEG_SEQUENCE_HEADER` vor jedem Keyframe, sofern der MFT sie nicht selbst
+  mitliefert. `MFT_OUTPUT_STREAM_PROVIDES_SAMPLES` und `MF_E_TRANSFORM_STREAM_CHANGE` werden behandelt. Der
+  Zeitstempel jedes Bildes ist wieder der Capture-Zeitstempel in Nanosekunden.
+- **`flush()`**: `MFT_MESSAGE_COMMAND_DRAIN`, wartet höchstens 2 s auf `METransformDrainComplete`, startet den Strom
+  neu; das nächste Bild ist ein Keyframe.
+- **Abbau**: begrenzt auf 3 s (Einrichtung: 15 s). Kehrt ein Treiberaufruf nicht zurück, wird der Encoder-Thread
+  zurückgelassen statt den Helper zu blockieren (`mf_encoder_error`, `stage: teardown_timeout`).
+
+Tests:
+
+| Test | Wo | Was |
+|---|---|---|
+| `mf_encoder_policy_test`, `frame_to_nv12_test` | alle Plattformen | die reinen Module |
+| `mf_encoder_fake_mft_test` | Windows mit `LIVE_STREAM_WITH_MF` | Encoder gegen einen asynchronen MFT im Test: Reihenfolge der Einrichtung, Ereignisschleife, Postfach, erzwungener Keyframe, Formatwechsel, Drain, Ausweichen auf den nächsten Kandidaten, Abbau |
+| `mf_encoder_software_seam_test` | wie oben | Microsofts Software-H.264-MFT, in den Test-MFT eingewickelt und nur über die Test-Naht (`src/mf_encoder_internal.h`) erreichbar: echte H.264-Daten durch die Media-Foundation-Verdrahtung. Überspringt (77), wenn der MFT fehlt |
+| `mf_encoder_smoke_test` | wie oben | echter Hardware-MFT über `createHardwareEncoder()`, 60 NV12-Bilder 720p30. Überspringt (77) ohne Hardware-MFT, also auf dem CI-Runner |
+
+Offen bis zur Sitzung am Gerät (im CI nicht prüfbar):
+- Einheit von `CODECAPI_AVEncCommonBufferSize`: gesetzt wird die Spitzenrate über 1 s in Bit (verbreitete Praxis);
+  die Dokumentation nennt an einer Stelle Byte. Am Gerät prüfen, ob die Spitzen im Rahmen bleiben (Abschnitt 3).
+- Reihenfolge NVIDIA/AMD vor Intel ist eine Annahme nach Hersteller, nicht nach tatsächlicher Leistung oder danach,
+  an welcher GPU ein Bildschirm hängt. Auf Hybrid-Laptops mit `BRIDGE_PGM_ENCODER_VENDOR` gegenprüfen.
+- Ob jeder Treiber die ICodecAPI-Einstellungen vor oder nach den Medientypen annimmt, zeigt `EncoderInfo.settings`.
+- Verhalten bei Geräteverlust (Treiber-Update, GPU-Wechsel): der MFT meldet `MEError`, der Encoder nimmt danach
+  keine Bilder mehr an (`encode()` gibt `false` zurück). Den Neuaufbau muss der Aufrufer anstoßen.
 
 ## Runbook: gemeinsame Sitzung am Windows-Gerät
 
