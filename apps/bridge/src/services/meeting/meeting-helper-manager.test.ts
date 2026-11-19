@@ -54,6 +54,77 @@ describe("meeting-helper-manager", () => {
     });
   });
 
+  describe("program_format", () => {
+    type InternalsT = {
+      state: string;
+      lastStartOptions: { width?: number; height?: number; fps?: number };
+    };
+
+    it("is null while the engine is not running", async () => {
+      const manager = new MeetingHelperManager();
+
+      expect(manager.getProgramFormat()).toBeNull();
+      expect(manager.getStatus().program_format).toBeNull();
+      await expect(manager.getFullStatus()).resolves.toMatchObject({
+        program_format: null,
+        manager: { program_format: null },
+      });
+    });
+
+    it("reports the start options with the engine defaults filled in", () => {
+      const manager = new MeetingHelperManager();
+      const internals = manager as unknown as InternalsT;
+      internals.state = "running";
+
+      internals.lastStartOptions = {};
+      expect(manager.getStatus().program_format).toEqual({
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      });
+
+      internals.lastStartOptions = { width: 1080, height: 1920 };
+      expect(manager.getProgramFormat()).toEqual({
+        width: 1080,
+        height: 1920,
+        fps: 30,
+      });
+    });
+
+    it("is part of the full status of a running engine", async () => {
+      const manager = new MeetingHelperManager();
+      const internals = manager as unknown as InternalsT & { client: unknown };
+      internals.state = "running";
+      internals.lastStartOptions = { width: 1080, height: 1920, fps: 25 };
+      internals.client = {
+        getState: jest.fn(async () => ({})),
+        framebusStatus: jest.fn(async () => ({})),
+        keyerGet: jest.fn(async () => ({})),
+        recordingStatus: jest.fn(async () => ({})),
+        virtualCameraStatus: jest.fn(async () => ({})),
+      };
+
+      const status = await manager.getFullStatus();
+
+      expect(status.program_format).toEqual({ width: 1080, height: 1920, fps: 25 });
+      expect(status.manager.program_format).toEqual(status.program_format);
+    });
+
+    it("a start while running keeps the options of the running engine", async () => {
+      const manager = new MeetingHelperManager();
+      const internals = manager as unknown as InternalsT;
+      internals.state = "running";
+      internals.lastStartOptions = { width: 1920, height: 1080, fps: 30 };
+
+      const status = await manager.start({ width: 1080, height: 1920 });
+
+      // A crash-recovery restart replays lastStartOptions: a no-op start must
+      // not swap the geometry underneath the running engine.
+      expect(internals.lastStartOptions).toEqual({ width: 1920, height: 1080, fps: 30 });
+      expect(status.program_format).toEqual({ width: 1920, height: 1080, fps: 30 });
+    });
+  });
+
   describe("inspectDeviceEntitlementStatuses", () => {
     const os = require("node:os");
     const fs = require("node:fs");
