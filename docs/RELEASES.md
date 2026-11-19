@@ -113,6 +113,7 @@ Ergebnis:
 
 - GitHub erstellt ein `prerelease`
 - die gepackte App verwendet den Update-Kanal `rc`
+- die gepackte App öffnet nach dem Bridge-Start die Dev-Web-App (`https://studio-control-git-dev-broadify.vercel.app`) statt `https://app.broadify.de`, passend zum RC/Test-Relay
 - aktive Nutzer auf `latest` erhalten dadurch kein Software-Update
 - nach bestandenem Live-Test veröffentlichst du separat `v0.1.0`
 
@@ -143,6 +144,7 @@ Nach dem Push des Tags wird automatisch ein GitHub Actions Workflow ausgelöst:
 - **NSIS Installer (Updater-Pfad)**: `Broadify-Bridge-{version}-x64.exe`
 - **MSI (manuelle Kundeninstallation)**: `Broadify-Bridge-{version}-x64.msi`
 - **Update-Metadaten**: `latest.yml` (muss auf die NSIS-`.exe` zeigen)
+- **Kein Auto-Update aus MSI-Installationen**: Die MSI enthält den NSIS-Elevate-Helper (`resources\elevate.exe`) nicht; die App erkennt daran eine MSI-/Portable-Installation, deaktiviert den Updater (Status `disabled`, `errorCode: "msi_install"`) und zeigt im Update-Dialog den Hinweis, die aktuelle `.exe` zu installieren. Ein NSIS-Update über eine MSI-Installation würde sonst die App ohne Installation beenden bzw. ein zweites Produkt registrieren.
 
 ### Linux
 
@@ -244,7 +246,7 @@ Hinweis:
 **Filter-Regeln für Web-App:**
 
 - ✅ Verwende: `.dmg`, `.exe`, `.msi`, `.AppImage` Dateien
-- ✅ Für Windows-Downloads bevorzugt `.msi` anzeigen; `.exe` bleibt für Auto-Update/NSIS und als Alternative erhalten.
+- ✅ Für Windows-Downloads bevorzugt die `.exe` (NSIS-Installer mit Auto-Update) anzeigen; die `.msi` nur als ausdrücklich beschrifteten Zusatz-Link „für IT-Verteilung (ohne Auto-Update)“. Hinweis: MSI-Installationen aktualisieren sich nicht selbst; neue Versionen werden dort manuell über die `.msi` eingespielt oder einmalig auf die `.exe` gewechselt (MSI deinstallieren, `.exe` installieren; die App zeigt dazu einen Hinweis im Update-Dialog).
 - ❌ Ignoriere: `.blockmap` Dateien (für Delta-Updates, nicht für Downloads)
 - ❌ Ignoriere: `.yml` / `.yaml` Dateien (Update-Metadaten, nicht für Downloads)
 

@@ -33,12 +33,19 @@ const mockSetFrameRate = jest.fn();
 // failure — exactly how this harness behaved before capturePage existed.
 const mockCapturePage = jest.fn();
 // Default: no clamp. Windows-specific clamping is opted into per test.
-const mockGetContentSize = jest.fn<number[], []>(() => [1920, 1080]);
+const mockGetContentSize = jest.fn<number[] | undefined, []>(() => undefined);
 const mockSetContentSize = jest.fn();
 let lastDidFinishLoadHandler: (() => void) | null = null;
 const paintHandlers: Array<(event: unknown, dirty: unknown, image: unknown) => void> = [];
+const renderProcessGoneHandlers: Array<
+  (event: unknown, details: { reason: string }) => void
+> = [];
+const unresponsiveHandlers: Array<() => void> = [];
+const responsiveHandlers: Array<() => void> = [];
 
-const mockBrowserWindow = jest.fn().mockImplementation(() => {
+const mockBrowserWindow = jest.fn().mockImplementation(
+  (options?: { width?: number; height?: number }) => {
+  let contentSize = [options?.width ?? 1920, options?.height ?? 1080];
   const loadURLImpl = jest.fn().mockImplementation(() => {
     setImmediate(() => {
       if (lastDidFinishLoadHandler) lastDidFinishLoadHandler();
@@ -51,6 +58,11 @@ const mockBrowserWindow = jest.fn().mockImplementation(() => {
   const webContents = {
     on: jest.fn((ev: string, fn: (event: unknown, dirty: unknown, image: unknown) => void) => {
       if (ev === "paint") paintHandlers.push(fn);
+      if (ev === "render-process-gone") {
+        renderProcessGoneHandlers.push(
+          fn as unknown as (event: unknown, details: { reason: string }) => void
+        );
+      }
     }),
     once: onceImpl,
     loadURL: loadURLImpl,
@@ -65,11 +77,18 @@ const mockBrowserWindow = jest.fn().mockImplementation(() => {
   };
   return {
     webContents,
+    on: jest.fn((ev: string, fn: () => void) => {
+      if (ev === "unresponsive") unresponsiveHandlers.push(fn);
+      if (ev === "responsive") responsiveHandlers.push(fn);
+    }),
     loadURL: loadURLImpl,
     isDestroyed: jest.fn().mockReturnValue(false),
     destroy: mockDestroy,
-    getContentSize: (...args: unknown[]) => (mockGetContentSize as jest.Mock)(...args),
-    setContentSize: (...args: unknown[]) => (mockSetContentSize as jest.Mock)(...args),
+    getContentSize: () => mockGetContentSize() ?? contentSize,
+    setContentSize: (...args: unknown[]) => {
+      contentSize = [args[0] as number, args[1] as number];
+      return (mockSetContentSize as jest.Mock)(...args);
+    },
   };
 });
 const mockProtocol = {
@@ -143,10 +162,204 @@ jest.mock("./async-serial-queue.js", () => ({
 
 jest.mock("./graphics-pixel-utils.js", () => ({
   bgraToRgba: jest.fn((b: Buffer) => b),
+  downsampleRgbaBox: jest.fn(
+    (
+      _buffer: Buffer,
+      _sourceWidth: number,
+      _sourceHeight: number,
+      targetWidth: number,
+      targetHeight: number,
+    ) => Buffer.alloc(targetWidth * targetHeight * 4, 0x44)
+  ),
+  resampleRgbaBilinear: jest.fn(
+    (
+      _buffer: Buffer,
+      _sourceWidth: number,
+      _sourceHeight: number,
+      targetWidth: number,
+      targetHeight: number,
+    ) => Buffer.alloc(targetWidth * targetHeight * 4, 0x55)
+  ),
 }));
 
 describe("electron-renderer-entry", () => {
   const originalEnv = process.env;
+  const validFrameBusConfig = {
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    pixelFormat: 1,
+    framebusName: "/test-shm",
+    framebusSlotCount: 2,
+    framebusSize: 16588928,
+    backgroundMode: "transparent" as const,
+  };
+  const validLayerPayload = {
+    layerId: "layer-1",
+    html: "<div>test</div>",
+    css: "",
+    values: {},
+    bindings: {},
+    layout: { x: 0, y: 0, scale: 1 },
+    backgroundMode: "transparent",
+    zIndex: 0,
+    width: 1920,
+    height: 1080,
+    fps: 30,
+  };
+
+  async function bootRendererWithPackets(
+    packets: Array<Record<string, unknown>>,
+  ): Promise<void> {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockSafeParse.mockReturnValue({ success: true, data: validFrameBusConfig });
+    for (const packet of packets) {
+      mockDecodeNextIpcPacket.mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { token: "test-token", ...packet },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      });
+    }
+    mockDecodeNextIpcPacket.mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    const readyHandler = mockApp.on.mock.calls.find(
+      ([event]) => event === "ready"
+    )?.[1] as (() => void) | undefined;
+    readyHandler?.();
+    connectionCallback!();
+    for (const handlerPacket of packets) {
+      void handlerPacket;
+      dataHandlers[0](Buffer.alloc(10));
+    }
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  }
+
+  async function bootRendererWithLayer(config: {
+    width: number;
+    height: number;
+    fps: number;
+    pixelFormat: number;
+    framebusName: string;
+    framebusSlotCount: number;
+    framebusSize: number;
+    backgroundMode: "transparent" | "green";
+  }): Promise<{ writeFrame: jest.Mock }> {
+    process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
+    process.env.BRIDGE_FRAMEBUS_NAME = config.framebusName;
+    mockSafeParse.mockReturnValue({ success: true, data: config });
+    const writeFrame = jest.fn();
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: config.framebusName,
+        size: config.framebusSize,
+        header: {
+          width: config.width,
+          height: config.height,
+          fps: config.fps,
+          slotCount: config.framebusSlotCount,
+          pixelFormat: config.pixelFormat,
+        },
+        writeFrame,
+        close: jest.fn(),
+      }),
+    });
+    let connectionCallback: (() => void) | null = null;
+    const dataHandlers: Array<(data: Buffer) => void> = [];
+    const mockSocket = {
+      on: jest.fn((ev: string, fn: (data?: Buffer) => void) => {
+        if (ev === "data") dataHandlers.push(fn as (data: Buffer) => void);
+      }),
+      write: jest.fn().mockReturnValue(true),
+      destroy: jest.fn(),
+    };
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, cb?: () => void) => {
+        if (cb) connectionCallback = cb;
+        return mockSocket;
+      }
+    );
+    mockDecodeNextIpcPacket
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: { type: "renderer_configure", token: "test-token", ...config },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValueOnce({
+        kind: "packet" as const,
+        header: {
+          type: "create_layer",
+          token: "test-token",
+          layerId: "layer-1",
+          html: "<div>test</div>",
+          css: "",
+          values: {},
+          layout: { x: 0, y: 0, scale: 1 },
+          backgroundMode: config.backgroundMode,
+          width: config.width,
+          height: config.height,
+          fps: config.fps,
+        },
+        payload: Buffer.alloc(0),
+        remaining: Buffer.alloc(0),
+      })
+      .mockReturnValue({ kind: "incomplete" as const });
+
+    await import("./electron-renderer-entry.js");
+    connectionCallback!();
+    dataHandlers[0](Buffer.alloc(10));
+    dataHandlers[0](Buffer.alloc(10));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    return { writeFrame };
+  }
+
+  function makeImage(
+    width: number,
+    height: number,
+    fill: number,
+    includeResize = true,
+  ): {
+    getSize: () => { width: number; height: number };
+    isEmpty: () => boolean;
+    toBitmap: jest.Mock<Buffer, []>;
+    resize?: jest.Mock;
+  } {
+    const image = {
+      getSize: () => ({ width, height }),
+      isEmpty: () => false,
+      toBitmap: jest.fn(() => Buffer.alloc(width * height * 4, fill)),
+    };
+    if (!includeResize) {
+      return image;
+    }
+    return {
+      ...image,
+      resize: jest.fn(({ width: nextWidth, height: nextHeight }) =>
+        makeImage(nextWidth, nextHeight, fill, false)
+      ),
+    };
+  }
 
   // Real-timer hygiene: the module under test arms real timers (captured-frame
   // retries at 120/300/700ms, the 1s FrameBus heartbeat) that individual tests
@@ -191,7 +404,10 @@ describe("electron-renderer-entry", () => {
     enqueueSerialPending = Promise.resolve();
     lastDidFinishLoadHandler = null;
     paintHandlers.length = 0;
-    mockGetContentSize.mockReturnValue([1920, 1080]);
+    renderProcessGoneHandlers.length = 0;
+    unresponsiveHandlers.length = 0;
+    responsiveHandlers.length = 0;
+    mockGetContentSize.mockReturnValue(undefined);
     mockSetContentSize.mockReset();
     mockDecodeNextIpcPacket.mockReturnValue({ kind: "incomplete" as const });
     mockIsIpcBufferWithinLimit.mockReturnValue(true);
@@ -1533,6 +1749,104 @@ describe("electron-renderer-entry", () => {
     );
   });
 
+  it("attaches to the existing FrameBus region by name without forceRecreate (studio bus)", async () => {
+    const createWriter = jest.fn().mockReturnValue({
+      name: "/test-shm",
+      size: 16588928,
+      header: {
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        slotCount: 2,
+        pixelFormat: 1,
+        seq: 0n,
+      },
+      writeFrame: jest.fn(),
+      close: jest.fn(),
+    });
+    mockLoadFrameBusModule.mockReturnValue({ createWriter });
+
+    await bootRendererWithPackets([
+      { type: "renderer_configure", ...validFrameBusConfig },
+    ]);
+
+    expect(createWriter).toHaveBeenCalledTimes(1);
+    expect(createWriter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "/test-shm",
+        forceRecreate: false,
+      })
+    );
+  });
+
+  it("skips the idle seed when the reused region already carries frames", async () => {
+    const writeFrame = jest.fn();
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: jest.fn().mockReturnValue({
+        name: "/test-shm",
+        size: 16588928,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+          seq: 5n,
+        },
+        writeFrame,
+        close: jest.fn(),
+      }),
+    });
+
+    await bootRendererWithPackets([
+      { type: "renderer_configure", ...validFrameBusConfig },
+    ]);
+
+    expect(writeFrame).not.toHaveBeenCalled();
+    expect(mockPinoInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ seededFrom: "existing_region" }),
+      "[GraphicsRenderer] FrameBus writer initialized"
+    );
+  });
+
+  it("still force-recreates an incompatible region (self-heal)", async () => {
+    const writeFrame = jest.fn();
+    const createWriter = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("Existing shared memory has incompatible header");
+      })
+      .mockReturnValue({
+        name: "/test-shm",
+        size: 16588928,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+          seq: 0n,
+        },
+        writeFrame,
+        close: jest.fn(),
+      });
+    mockLoadFrameBusModule.mockReturnValue({ createWriter });
+
+    await bootRendererWithPackets([
+      { type: "renderer_configure", ...validFrameBusConfig },
+    ]);
+
+    expect(createWriter).toHaveBeenCalledTimes(2);
+    expect(createWriter).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ forceRecreate: false })
+    );
+    expect(createWriter).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ forceRecreate: true })
+    );
+  });
+
   it("sends error IPC when FrameBus writer is still not ready after retries", async () => {
     jest.useFakeTimers();
     process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
@@ -2604,11 +2918,11 @@ describe("electron-renderer-entry", () => {
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
 
-    const firePaint = () => {
+    const firePaint = (bitmap = Buffer.alloc(width * height * 4, 0x11)) => {
       const image = {
         getSize: () => ({ width, height }),
         isEmpty: () => false,
-        toBitmap: () => Buffer.alloc(width * height * 4, 0x11),
+        toBitmap: () => bitmap,
       };
       paintHandlers.forEach((handler) => handler({}, {}, image));
     };
@@ -2665,6 +2979,33 @@ describe("electron-renderer-entry", () => {
     const { captureReasons } = await bootWithOneLayer("bfy-meet-gfx-back");
     await new Promise((r) => setTimeout(r, 500));
     expect(captureReasons()).toEqual(["create_layer_fallback"]);
+  });
+
+  it("writes a paint that differs from the last frame in a single pixel within 1 s", async () => {
+    const { writeFrame, firePaint } = await bootWithOneLayer("/test-shm");
+    const firstPaint = Buffer.alloc(8 * 4 * 4, 0x11);
+    const changedPaint = Buffer.from(firstPaint);
+    changedPaint[1] = 0x22;
+
+    firePaint(firstPaint);
+    const writesAfterFirstPaint = writeFrame.mock.calls.length;
+    firePaint(changedPaint);
+    await new Promise((r) => setImmediate(r));
+
+    expect(writeFrame.mock.calls.length).toBe(writesAfterFirstPaint + 1);
+    expect(writeFrame.mock.calls.at(-1)?.[0].equals(changedPaint)).toBe(true);
+  });
+
+  it("skips a pixel-identical paint within 1 s", async () => {
+    const { writeFrame, firePaint } = await bootWithOneLayer("/test-shm");
+    const paint = Buffer.alloc(8 * 4 * 4, 0x11);
+
+    firePaint(paint);
+    const writesAfterFirstPaint = writeFrame.mock.calls.length;
+    firePaint(Buffer.from(paint));
+    await new Promise((r) => setImmediate(r));
+
+    expect(writeFrame.mock.calls.length).toBe(writesAfterFirstPaint);
   });
 
   it("studio: drops a late paint after the last layer was removed", async () => {
@@ -2735,6 +3076,159 @@ describe("electron-renderer-entry", () => {
         "[GraphicsRenderer] Offscreen viewport still clamped; graphics are cropped and resampled"
     );
     expect(reported).toBe(true);
+  });
+
+  it("meeting bus at 1080p supersamples 2x and downsamples natively", async () => {
+    const config = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "bfy-meet-gfx-back",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+    const { writeFrame } = await bootRendererWithLayer(config);
+    const image = makeImage(3840, 2160, 0x33);
+
+    paintHandlers[0]({}, {}, image);
+    await new Promise((r) => setImmediate(r));
+
+    expect(mockBrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 3840, height: 2160 })
+    );
+    expect(image.resize).toHaveBeenCalledWith({
+      width: 1920,
+      height: 1080,
+      quality: "best",
+    });
+    expect(image.toBitmap).not.toHaveBeenCalled();
+    expect(writeFrame.mock.calls.at(-1)?.[0]).toHaveLength(1920 * 1080 * 4);
+    expect(mockPinoInfo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        renderScale: 2,
+        resizePath: "native",
+      }),
+      "[GraphicsRenderer] First FrameBus frame written"
+    );
+  });
+
+  it("studio 1080p keeps scale 1", async () => {
+    const config = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "/test-shm",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+    const { writeFrame } = await bootRendererWithLayer(config);
+    const image = makeImage(1920, 1080, 0x33);
+
+    paintHandlers[0]({}, {}, image);
+    await new Promise((r) => setImmediate(r));
+
+    expect(mockBrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 1920, height: 1080 })
+    );
+    expect(writeFrame.mock.calls.at(-1)?.[0]).toHaveLength(1920 * 1080 * 4);
+    expect(mockPinoInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ renderScale: 1 }),
+      "[GraphicsRenderer] First FrameBus frame written"
+    );
+  });
+
+  it("falls back to scale 1 when Windows clamps the supersampled window", async () => {
+    mockGetContentSize.mockReturnValue([1920, 1032]);
+    const config = {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "bfy-meet-gfx-front",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    };
+
+    await bootRendererWithLayer(config);
+
+    expect(mockBrowserWindow).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ width: 3840, height: 2160 })
+    );
+    expect(mockBrowserWindow).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ width: 1920, height: 1080 })
+    );
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 1920, height: 1080, renderScale: 2 }),
+      "[GraphicsRenderer] Supersampling disabled after work-area clamp"
+    );
+  });
+
+  it("meeting supersample env 1 disables the meeting 1080p override", async () => {
+    process.env.BRIDGE_GRAPHICS_MEETING_SUPERSAMPLE = "1";
+    await bootRendererWithLayer({
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "bfy-meet-gfx-back",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    });
+
+    expect(mockBrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 1920, height: 1080 })
+    );
+  });
+
+  it("global supersample env wins over the meeting env", async () => {
+    process.env.BRIDGE_GRAPHICS_SUPERSAMPLE = "1";
+    process.env.BRIDGE_GRAPHICS_MEETING_SUPERSAMPLE = "2";
+    await bootRendererWithLayer({
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "bfy-meet-gfx-back",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    });
+
+    expect(mockBrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 1920, height: 1080 })
+    );
+  });
+
+  it("uses the JS downscale fallback when native resize is missing", async () => {
+    const { writeFrame } = await bootRendererWithLayer({
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      pixelFormat: 1,
+      framebusName: "bfy-meet-gfx-front",
+      framebusSlotCount: 2,
+      framebusSize: 0,
+      backgroundMode: "transparent" as const,
+    });
+    const image = makeImage(3840, 2160, 0x33, false);
+
+    paintHandlers[0]({}, {}, image);
+    await new Promise((r) => setImmediate(r));
+
+    expect(image.toBitmap).toHaveBeenCalled();
+    expect(writeFrame.mock.calls.at(-1)?.[0]).toHaveLength(1920 * 1080 * 4);
+    expect(mockPinoInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ resizePath: "js" }),
+      "[GraphicsRenderer] First FrameBus frame written"
+    );
   });
 
   it("shutdown after create_layer calls stopPainting and destroy on window", async () => {
@@ -3609,6 +4103,205 @@ describe("electron-renderer-entry", () => {
     expect(mockInvalidate).toHaveBeenCalled();
   });
 
+  it("recreates the offscreen window and replays layers after render-process-gone", async () => {
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "/test-shm",
+        size: 16588928,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+          seq: 0n,
+        },
+        writeFrame: jest.fn(),
+        close: jest.fn(),
+      }),
+    });
+
+    await bootRendererWithPackets([
+      { type: "renderer_configure", ...validFrameBusConfig },
+      { type: "create_layer", ...validLayerPayload },
+    ]);
+
+    expect(renderProcessGoneHandlers).toHaveLength(1);
+    renderProcessGoneHandlers[0]({}, { reason: "crashed" });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(mockDestroy).toHaveBeenCalled();
+    expect(mockBrowserWindow).toHaveBeenCalledTimes(2);
+    const createLayerCalls = mockExecuteJS.mock.calls.filter(([script]) =>
+      String(script).includes("__createLayer")
+    );
+    expect(createLayerCalls.length).toBeGreaterThanOrEqual(2);
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "render_process_gone:crashed" }),
+      "[GraphicsRenderer] Recovering offscreen renderer window"
+    );
+  });
+
+  it("exits the process on the second render-process-gone within 60s", async () => {
+    const exitSpy = jest
+      .spyOn(process, "exit")
+      .mockImplementation((() => undefined) as never);
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "/test-shm",
+        size: 16588928,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+          seq: 0n,
+        },
+        writeFrame: jest.fn(),
+        close: jest.fn(),
+      }),
+    });
+
+    await bootRendererWithPackets([
+      { type: "renderer_configure", ...validFrameBusConfig },
+      { type: "create_layer", ...validLayerPayload },
+    ]);
+
+    expect(renderProcessGoneHandlers).toHaveLength(1);
+    renderProcessGoneHandlers[0]({}, { reason: "crashed" });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 80));
+    renderProcessGoneHandlers[0]({}, { reason: "crashed" });
+
+    expect(mockPinoError).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "render_process_gone:crashed" }),
+      "[GraphicsRenderer] Repeated offscreen renderer failures; exiting"
+    );
+    expect(exitSpy).toHaveBeenCalledWith(3);
+    exitSpy.mockRestore();
+  });
+
+  it("ignores render-process-gone while a recovery is in flight and does not exit", async () => {
+    const exitSpy = jest
+      .spyOn(process, "exit")
+      .mockImplementation((() => undefined) as never);
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "/test-shm",
+        size: 16588928,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+          seq: 0n,
+        },
+        writeFrame: jest.fn(),
+        close: jest.fn(),
+      }),
+    });
+
+    await bootRendererWithPackets([
+      { type: "renderer_configure", ...validFrameBusConfig },
+      { type: "create_layer", ...validLayerPayload },
+    ]);
+
+    mockBrowserWindow.mockImplementationOnce(() => {
+      const pendingLoadURL = jest.fn().mockResolvedValue(undefined);
+      const webContents = {
+        on: jest.fn(
+          (
+            ev: string,
+            fn: (event: unknown, dirty: unknown, image: unknown) => void,
+          ) => {
+            if (ev === "paint") paintHandlers.push(fn);
+            if (ev === "render-process-gone") {
+              renderProcessGoneHandlers.push(
+                fn as unknown as (
+                  event: unknown,
+                  details: { reason: string },
+                ) => void
+              );
+            }
+          }
+        ),
+        once: jest.fn(),
+        loadURL: pendingLoadURL,
+        executeJavaScript: mockExecuteJS,
+        invalidate: mockInvalidate,
+        startPainting: mockStartPainting,
+        stopPainting: mockStopPainting,
+        setFrameRate: mockSetFrameRate,
+        capturePage: (...args: unknown[]) => (mockCapturePage as jest.Mock)(...args),
+        isDestroyed: () => false,
+        isPainting: () => true,
+      };
+      return {
+        webContents,
+        on: jest.fn((ev: string, fn: () => void) => {
+          if (ev === "unresponsive") unresponsiveHandlers.push(fn);
+          if (ev === "responsive") responsiveHandlers.push(fn);
+        }),
+        loadURL: pendingLoadURL,
+        isDestroyed: jest.fn().mockReturnValue(false),
+        destroy: mockDestroy,
+        getContentSize: (...args: unknown[]) => (mockGetContentSize as jest.Mock)(...args),
+        setContentSize: (...args: unknown[]) => (mockSetContentSize as jest.Mock)(...args),
+      };
+    });
+
+    expect(renderProcessGoneHandlers).toHaveLength(1);
+    renderProcessGoneHandlers[0]({}, { reason: "crashed" });
+    renderProcessGoneHandlers[0]({}, { reason: "crashed" });
+    await new Promise((r) => setImmediate(r));
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockBrowserWindow).toHaveBeenCalledTimes(2);
+    expect(mockPinoWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "render_process_gone:crashed" }),
+      "[GraphicsRenderer] Offscreen renderer recovery already in flight"
+    );
+    exitSpy.mockRestore();
+  });
+
+  it("stops the heartbeat while the window is gone", async () => {
+    const writeFrame = jest.fn();
+    mockLoadFrameBusModule.mockReturnValue({
+      createWriter: () => ({
+        name: "/test-shm",
+        size: 16588928,
+        header: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          slotCount: 2,
+          pixelFormat: 1,
+          seq: 0n,
+        },
+        writeFrame,
+        close: jest.fn(),
+      }),
+    });
+
+    await bootRendererWithPackets([
+      { type: "renderer_configure", ...validFrameBusConfig },
+      { type: "create_layer", ...validLayerPayload },
+    ]);
+    await new Promise((r) => setTimeout(r, 1050));
+    const writesBeforeRecovery = writeFrame.mock.calls.length;
+
+    expect(renderProcessGoneHandlers).toHaveLength(1);
+    renderProcessGoneHandlers[0]({}, { reason: "crashed" });
+    await new Promise((r) => setTimeout(r, 1050));
+
+    expect(writeFrame).toHaveBeenCalledTimes(writesBeforeRecovery);
+  });
+
   it("creates the offscreen renderer with content-sized frameless bounds", async () => {
     process.env.BRIDGE_GRAPHICS_IPC_PORT = "9999";
     process.env.BRIDGE_FRAMEBUS_NAME = "/test-shm";
@@ -4021,7 +4714,13 @@ describe("electron-renderer-entry", () => {
       paintHandlers[0]({}, {}, mockImage);
       await new Promise((r) => setImmediate(r));
       expect(mockPinoWarn).toHaveBeenCalledWith(
-        "[GraphicsRenderer] Source frame buffer length mismatch (single)"
+        expect.objectContaining({
+          imageWidth: 1920,
+          imageHeight: 1080,
+          width: 1920,
+          height: 1080,
+        }),
+        "[GraphicsRenderer] Frame downsample failed (single)"
       );
     }
   });

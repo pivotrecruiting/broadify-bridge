@@ -8,17 +8,21 @@ tensor helpers unless MODNet is explicitly selected.
 
 ```text
 camera frame
-  -> MODNet input tensor
-       - aspect-preserving square letterbox
-       - mean-color padding, normalized to 0
+  -> MODNet input tensor (N x N, N = 512 / 320 / 256)
+       - default (fill): whole frame stretched over the full square, no bars
+         (same geometry as the macOS CoreML path and the training data)
+       - kill switch BROADIFY_MEETING_KEYER_LETTERBOX=1: aspect-preserving
+         square letterbox with mean-color padding, normalized to 0
        - area-average downsample
   -> MODNet inference
        - prebuilt 512 / 320 / 256 sessions when enabled
        - DirectML by default, OpenVINO when selected and compiled in
   -> alpha readback
-       - crop out letterbox padding
-       - emit the model-resolution content crop; compositor/guided refine
-         resample it against the live camera
+       - fill: bilinear resample of the full model alpha to the letterbox
+         content size (e.g. 512x288 / 320x180 / 256x144 for 16:9)
+       - letterbox: crop out the padding
+       - either way the emitted mask has the same size; compositor/guided
+         refine resample it against the live camera
   -> fused or async-lite governor path
        - fused: current-frame inference when sustainable
        - async-lite: worker publishes mask/frame pairs
@@ -43,7 +47,8 @@ camera frame
 | --- | --- | --- |
 | `BROADIFY_MEETING_GPU_PIPELINE` | `1` | Enables the fused Windows GPU keyer path. Set `0` for async worker path. |
 | `BROADIFY_MEETING_AUTO_DEGRADE` | `1` | Enables the fused tier governor. |
-| `BROADIFY_MEETING_OVERRUN_STEPDOWN` | `1` | Lets a sustained program-loop budget overrun step one fused tier down (CPU overload the GPU-cost samples miss). Set `0` to keep overruns log-only. |
+| `BROADIFY_MEETING_OVERRUN_STEPDOWN` | unset (measured) | Sustained program-loop budget overrun handling. Default: step one fused tier down only when the measured-cost projection of the lower tier (`program_frame_ema_ms - savings` from the smaller session and tensor) fits the budget; otherwise keep the tier and log `keyer_overrun_stepdown_skipped`. Cost ratios between fused tiers use the live session costs remembered per tier (refreshed only when the governor visits a tier), else the build-time probes; fused step-ups are not taken when they would push an in-budget program frame over budget; a measured step-down within 30 s of a fused climb doubles the step-up holdoff. `always` is the full rollback to the pre-2026-10-17 governor (unconditional one-tier step-down, area cost ratios, no live-cost memory, no step-up guard, no wrong-estimate net); `0` keeps overruns log-only. |
+| `BROADIFY_MEETING_KEYER_PERFORMANCE` | unset | Pins the MODNet input resolution (`high_quality` / `balanced` / `performance`) for A/B tests. The fused path now runs and reports the pinned mode (`apply()`, warmups, `active_performance_mode`); the governor keeps sampling but no longer drives the mode. The pin also wins over the webapp mode with `BROADIFY_MEETING_AUTO_DEGRADE=0`. |
 | `BROADIFY_MEETING_WARM_HANDOVER` | `1` | Keeps make-before-break transitions between fused and async-lite. |
 | `BROADIFY_MEETING_KEYER_PREBUILD_TIERS` | `512,320,256` | Prebuilds all three fused tiers on first load so the governor has a fine 320 middle step (avoids the coarse-256 edge flicker). Accepts `all`, `active`, `512`, `320`, `256`, or mode names in a comma list. |
 | `BROADIFY_MEETING_DML_QUEUE` | `compute` | DirectML DML1 command queue type. Use `direct` for A/B against rc.21. |
@@ -53,7 +58,7 @@ camera frame
 | `BROADIFY_MEETING_FUSED_POSTPROCESS` | `1` | Applies the postprocess chain on fused masks. |
 | `BROADIFY_MEETING_FUSED_SMOOTHER` | `ema` | `ema` uses motion-adaptive EMA and disables edge stabilization for fused masks; `edge` uses edge stabilization instead. |
 | `BROADIFY_MEETING_FUSED_EMA_STATIC` | `0.92` | Static-subject EMA weight for fused-mask stabilization. |
-| `BROADIFY_MEETING_MASK_WORK_WIDTH` | `512` | Guided-refine/postprocess work width cap. 16:9 defaults to 512x288. |
+| `BROADIFY_MEETING_MASK_WORK_WIDTH` | `512` | Guided-refine/postprocess work width pin. When unset, the governor caps the effective work width by tier: Full512 unrestricted, Balanced320 640, Performance256/Lite256/Off 512. 16:9 defaults to 512x288 in this PR. |
 | `BROADIFY_MEETING_GUIDED_RADIUS` | `4` | Guided-filter radius for D3D11 and CPU fallback. |
 | `BROADIFY_MEETING_GUIDED_EPSILON` | `5e-4` | Guided-filter epsilon for D3D11 and CPU fallback. |
 | `BROADIFY_MEETING_GUIDED_COEFF_EMA` | `0` | D3D11 guided-filter coefficient EMA; default off to avoid silhouette trails. |
@@ -62,6 +67,74 @@ camera frame
 | `BROADIFY_MEETING_CAMERA_MAX_HEIGHT` | `1080` | Clamps Windows MediaFoundation camera requests and reopen attempts to <=1080p at <=30 fps. `0` disables the height clamp. |
 | `BROADIFY_MEETING_EMPTY_SUBJECT` | `1` | Allows confirmed-empty subject masks after 400 ms below the foreground floor. |
 | `BROADIFY_MEETING_KEYER_DML_LEGACY` | unset | Forces legacy DirectML device 0 selection. |
+| `BROADIFY_MEETING_KEYER_LETTERBOX` | unset | `1` restores the letterbox input geometry used up to 0.27.3-rc.6 (grey bars, byte-identical tensor and mask). Any other value or unset keeps the default fill geometry. Read once per helper process. |
+
+## Input Geometry
+
+Windows feeds MODNet the whole camera frame stretched over the N x N tensor
+(`ModnetInputGeometry::Fill` in `keyer/matting_common.cpp`), like the macOS
+CoreML path (`coreml_keyer.mm`) and the training geometry
+(`broadify-keyer-training/scripts/fabrik.py`). Before, the frame was
+letterboxed with mid-grey bars: at N = 256 a 1920x1080 frame kept only
+256x144 content pixels, and the governor commonly runs 256 (`performance`) or
+320 (`balanced`) on weaker laptops.
+
+- Tensor shapes, tier sizes, prebuilt sessions and probes are unchanged
+  (DirectML compiles kernels for the first Run shape; a different shape would
+  recompile every Run).
+- The emitted `AlphaMask` keeps the letterbox content size (512x288,
+  320x180, 256x144 for 1920x1080), so everything downstream sees the same
+  dimensions as before.
+- CPU, fp16, zero-copy (including its CPU parity reference) and OpenVINO use
+  the same geometry per process. The zero-copy shader needs no change: a fill
+  mapping is a content rect covering the whole tensor.
+- The helper reports the active geometry once per process when the keyer
+  session loads, on stdout as
+  `{"type":"meeting_keyer","event":"input_geometry","geometry":"fill"}`
+  (or `"letterbox"`) and in the helper events log
+  (`%APPDATA%\Broadify Bridge RC\meeting-helper-events.log`, rewritten on
+  every helper start) as
+  `{"type":"keyer_input_geometry","geometry":"fill","backend":"modnet"}`
+  (`backend` is `openvino` for the OpenVINO keyer).
+- Kill switch: `BROADIFY_MEETING_KEYER_LETTERBOX=1`. The helper inherits the
+  bridge environment, so a line `BROADIFY_MEETING_KEYER_LETTERBOX=1` in
+  `%APPDATA%\Broadify Bridge RC\.env` restores the letterbox after restarting
+  Broadify Bridge (the `.env` is read at app start).
+- Non-Windows builds always use the letterbox helpers unchanged.
+- Frames smaller than N in a dimension (for example 640x480 or 640x360 at
+  N = 512): in fill, an empty source block is widened to its nearest source
+  row/column with the zero-copy shader's bounds rule, so every tensor element
+  averages at least one real pixel and no grey rows appear; CPU and shader use
+  identical block bounds. The letterbox kill switch keeps the old behavior
+  (empty blocks of tiny sources such as 320x240 at N = 512 stay mid-grey on
+  the CPU, so the opt-in zero-copy parity gate turns zero-copy off there).
+- Known limitation: sources with fewer rows than the tier (for example
+  768x432, 640x480 or 848x480 at tier 512) are upscaled by nearest-row
+  duplication (the GPU shader's bounds rule, kept for CPU/GPU parity) and are
+  marginally worse at 512 than letterbox (about +0.2 points on the lab set,
+  see the real-code table below). 1080p and 720p cameras are unaffected.
+
+Share of the true person cut away ("eaten", model ft-v7d, clean / webcam).
+
+Python emulation of both geometries (lab set, 60 frames each, ONNX export on
+CPU; source `broadify-keyer-training/models/results/win-fressen-20261017/`
+`BEFUND.md` plus the raw `lab*.json`, script
+`broadify-keyer-training/scripts/win_fressen.py`):
+
+| Tensor | Letterbox (before) | Fill (now) |
+| --- | --- | --- |
+| 256 | 8.84 % / 11.17 % | 3.87 % / 4.89 % |
+| 320 | 3.37 % / 5.94 % | 2.64 % / 3.48 % |
+| 512 | 1.24 % / 2.64 % | 1.19 % / 2.44 % |
+
+Real code (independent verification run: C++ `matting_common.cpp` + ft-v7d
+ONNX, lab frames 768x432, 60 + 60 frames):
+
+| Tensor | 768x432 Letterbox | 768x432 Fill | upscaled to 1080p Letterbox | upscaled to 1080p Fill |
+| --- | --- | --- | --- | --- |
+| 512 | 1.41 % / 2.76 % | 1.63 % / 2.91 % | 1.28 % / 2.72 % | 1.24 % / 2.48 % |
+| 320 | 3.70 % / 5.89 % | 2.76 % / 3.79 % | 3.33 % / 5.97 % | 2.62 % / 3.49 % |
+| 256 | 8.84 % / 11.17 % | 3.83 % / 5.31 % | 8.63 % / 11.26 % | 3.84 % / 5.01 % |
 
 ## Field A/B
 
@@ -72,6 +145,9 @@ camera frame
 | Governor disabled | `BROADIFY_MEETING_AUTO_DEGRADE=0` | `keyer_pipeline_mode` stays fused/fused_cadence unless the keyer fails. |
 | No fused cadence reuse | `BROADIFY_MEETING_FUSED_PIPELINE_DEPTH=0` | `metrics.mask_age_ms` stays near 0 on fused frames. |
 | Prebuild only 256 | `BROADIFY_MEETING_KEYER_PREBUILD_TIERS=256` | First-load memory lower; step-up to missing tiers cannot warm. |
+| Pre-2026-10-17 governor (full rollback) | `BROADIFY_MEETING_OVERRUN_STEPDOWN=always` | Every confirmed `keyer_budget_overrun` drops one fused tier again; no `keyer_overrun_stepdown_skipped` lines; step-up estimates use the area ratio again (no program-frame guard). |
+| Fixed fused resolution | `BROADIFY_MEETING_KEYER_PERFORMANCE=balanced` | `active_performance_mode` stays `balanced` on the fused path regardless of the governor tier. |
+| Letterbox input (pre-fill) | `BROADIFY_MEETING_KEYER_LETTERBOX=1` in `%APPDATA%\Broadify Bridge RC\.env`, then restart Broadify Bridge | Look for `keyer_input_geometry` in `%APPDATA%\Broadify Bridge RC\meeting-helper-events.log`: `"geometry":"letterbox"` (default: `"fill"`); more of the person is cut away at 320/256. |
 
 ## Tuning
 
@@ -116,6 +192,92 @@ Bridge status exposes:
 
 Native logs include `keyer_provider` changes and fallback-reason changes so
 provider selection and degradation transitions are visible in helper logs.
+The `meeting_keyer` `input_geometry` event reports `fill` or `letterbox` once
+per helper process.
+
+Program-loop budget events (`meeting-helper-events.log`):
+
+- `keyer_budget_overrun`: sustained program-frame overrun (reporter EMA over
+  budget for 30 frames, at most every 10 s). Fields, in order:
+  `program_frame_ms`, `session_run_ms`, `tensor_ms`, `camera_copy_ms`,
+  `camera_upload_ms`, `tier`, `cadence_n`, then the stage timings of the SAME
+  frame: `keyer_section_ms` (async submit/selection, live-snap and the whole
+  fused section), `guided_refine_ms` and `postprocess_ms` (both already
+  included in `keyer_section_ms`), `graphics_ms` (graphics-output gate, back
+  and front graphics FrameBus reads with their new-frame checks, and the
+  work-trigger checks between the two keyer spans), `render_ms`,
+  `recorder_ms`, `preview_ms`, `vcam_ms` and `other_ms` =
+  `max(0, program_frame_ms - (keyer_section + graphics + render + recorder +
+  preview + vcam))`.
+- `keyer_overrun_stepdown_skipped`: the measured-cost projection says the
+  next lower fused tier would not bring the frame into budget, so the tier
+  stays. Fields: `tier`, `program_frame_ema_ms`, `budget_ms`,
+  `session_run_ms`, `tensor_ms`, `estimated_savings_ms`, `projected_ms`.
+  A sample whose tier changed before it was consumed is discarded silently
+  (no step-down, no event). Details:
+  `docs/bridge/architecture/meeting-keyer-auto-degradation.md`
+  (Program-Loop Overrun Step-Down).
+- `keyer_budget_recovered`: the reporter EMA is back within budget.
+
+Known residual of the measured governor (loop simulation, 2026-10-17): with
+fixed per-frame costs it makes at most 2 tier transitions per 10 minutes and
+shows no periodic pattern. With frame-to-frame noise (±2 ms overhead, ±0.5 ms
+session) it still makes 5–16 tier transitions per 10 minutes in a band of
+about 18.5–21.5 ms non-model overhead (short 320 visits about every 2 minutes
+once the step-up holdoff reaches its 120 s cap; at 20.5/21.5 ms some ~10 s
+dips to 256 every 2–3 minutes outside the 30 s wrong-estimate window), where
+the previous governor stays at 256. Above ~22 ms it holds 320 with 0
+transitions.
+
+Field testers: look for repeating `keyer_policy_change` lines in
+`meeting-helper-events.log` (the tier going back and forth every few
+minutes). `BROADIFY_MEETING_OVERRUN_STEPDOWN=always` restores the previous
+governor completely; restart Broadify Bridge after setting it (the `.env` is
+read at app start).
+
+## Paths And Encoding
+
+Every path the meeting helper handles is UTF-8, end to end:
+
+- Control JSON paths (`background_image_path`, rendered media pages, model
+  paths derived from `--models-dir`) arrive as UTF-8 from the bridge.
+- `--models-dir`, `--event-log` and the `MEETING_*` environment defaults are
+  decoded as UTF-8 too. On Windows `main(argc, argv)` and `std::getenv` are
+  ANSI, so `common/options.cpp` reads the wide command line
+  (`GetCommandLineW` + `CommandLineToArgvW`) and `GetEnvironmentVariableW`
+  instead (`processArgumentsUtf8`, `getenvUtf8`). Other platforms copy argv.
+- Every file open goes through `helper_common/path_utf8.h`
+  (`openInputFileUtf8`, `openOutputFileUtf8`, `fopenUtf8`, `fileExistsUtf8`,
+  `readFileBytesUtf8`, `pathFromUtf8`). On Windows these build a wide
+  `std::filesystem::path` / use `_wfopen`; elsewhere the bytes pass through.
+  Plain `std::ifstream(path)` / `std::fopen` with a narrow path are not used
+  for user-controlled paths any more - on MSVC they would interpret UTF-8 in
+  the ANSI code page, which is why the uploaded background image stayed
+  black for user names with umlauts (`C:\Users\Jürgen\AppData\...`).
+- UTF-8 -> UTF-16 conversion is strict (`MB_ERR_INVALID_CHARS`). After the
+  argv/env decoding every input is UTF-8, so invalid bytes are a bug and fail
+  visibly (`model_path_invalid`, recorder `invalid_arguments`, `errno`
+  `EINVAL` in `readFileBytesUtf8`) instead of opening a wrong file.
+- The event log sidecar (`--event-log`, under the bridge's userData directory)
+  is opened through the same helper; argv decoding and the UTF-8 open landed
+  together because either one alone breaks the sidecar for those users.
+- `display-helper` is a separate `cl.exe` build without `helper_common` and
+  is not covered by this.
+
+Background image events (`meeting-helper-events.log`):
+
+- `background_image_load_failed`: `{"type":"background_image_load_failed",
+  "path":"<file name>","stage":"open"|"decode","errno":N}`. `path` carries
+  only the file name (basename), never the directory: the full path lies
+  under the bridge's userData directory and would put the Windows user name
+  into the log. Emitted ONCE per path while the load keeps failing; `stage` `open` with the C `errno` (2 =
+  missing file, 13 = permission, 22 = invalid UTF-8 on Windows), `decode`
+  with `errno` 0 when the bytes are not a PNG/JPEG. The helper retries with a
+  400 ms * 2^n backoff (max 2 s), so a file that appears later is picked up
+  without restarting the helper.
+- `background_image_loaded`: `{"type":"background_image_loaded",
+  "path":"<file name>"}` once per successful load (initial load or after a
+  failed period); same basename-only `path`.
 
 ## Teams Grey Triage
 

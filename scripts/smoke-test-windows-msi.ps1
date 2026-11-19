@@ -11,6 +11,14 @@ $installLog = Join-Path $env:RUNNER_TEMP "broadify-bridge-msi-smoke-install.log"
 $uninstallLog = Join-Path $env:RUNNER_TEMP "broadify-bridge-msi-smoke-uninstall.log"
 $installed = $false
 
+# Microsoft Visual C++ runtime packaged next to both helpers; list from the
+# Node single source of truth (scripts/lib/windows-vc-runtime.cjs).
+$vcRuntimeListScript = Join-Path $PSScriptRoot "list-windows-vc-runtime-paths.cjs"
+$vcRuntimePaths = @(& node $vcRuntimeListScript)
+if ($LASTEXITCODE -ne 0 -or $vcRuntimePaths.Count -eq 0) {
+  throw "Unable to resolve the packaged MSVC runtime DLL list from $vcRuntimeListScript."
+}
+
 if (Test-Path -LiteralPath $installDir) {
   Remove-Item -Recurse -Force $installDir
 }
@@ -56,6 +64,11 @@ try {
     (Join-Path $installDir "resources\native\vcam-helper\broadify-vcam.dll"),
     (Join-Path $installDir "resources\bridge\native\framebus\build\Release\framebus.node")
   )
+  $expectedPaths += @(
+    $vcRuntimePaths | ForEach-Object {
+      Join-Path (Join-Path $installDir "resources") ($_ -replace '/', '\')
+    }
+  )
   $mainExe = Get-ChildItem -Path $installDir -File -Filter "BroadifyBridge*.exe" |
     Select-Object -First 1
   if (-not $mainExe) {
@@ -65,6 +78,17 @@ try {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
       throw "MSI smoke install missing expected packaged file: $path"
     }
+  }
+
+  # The MSI is expected to ship WITHOUT the NSIS elevate helper: electron-builder
+  # copies resources\elevate.exe only for the nsis target. The desktop updater
+  # (src/electron/services/updater-utils.ts, resolveWindowsInstallKind) relies
+  # on exactly this to recognise MSI installs and disable auto-update there.
+  # If electron-builder ever starts shipping elevate.exe in the MSI, this must
+  # fail so the detection is re-evaluated instead of silently enabling updates.
+  $elevateHelperPath = Join-Path $installDir "resources\elevate.exe"
+  if (Test-Path -LiteralPath $elevateHelperPath -PathType Leaf) {
+    throw "MSI smoke install unexpectedly contains the NSIS elevate helper: $elevateHelperPath (updater MSI detection would break)"
   }
 
   $displayHelperPath = Join-Path $installDir "resources\native\display-helper\display-helper.exe"

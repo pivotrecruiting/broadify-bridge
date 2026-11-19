@@ -1,7 +1,20 @@
 import { spawn } from "node:child_process";
 import type { DeviceDescriptorT } from "@broadify/protocol";
-import type { DeviceController, DeviceModule } from "../device-module.js";
+import type {
+  DeviceController,
+  DeviceModule,
+  DeviceModuleDiagnosticsT,
+  UnsubscribeFunction,
+} from "../device-module.js";
 import { getBridgeContext } from "../../services/bridge-context.js";
+import {
+  createPollingDeviceWatch,
+  resolvePollingIntervalMs,
+} from "../polling-device-watch.js";
+import {
+  displayDiagnosticsFromError,
+  type DisplayDiagnosticsT,
+} from "./display-diagnostics.js";
 import {
   normalizeConnectionType,
   parseResolution,
@@ -57,6 +70,53 @@ const MAX_SERIAL_SEARCH_KEYS = [
 ];
 
 const SYSTEM_PROFILER_TIMEOUT_MS = 5_000;
+
+/** Environment override for the display hotplug poll interval. */
+export const DISPLAY_WATCH_INTERVAL_ENV = "BRIDGE_DISPLAY_WATCH_INTERVAL_MS";
+/**
+ * Default poll interval. `system_profiler SPDisplaysDataType -json` measured
+ * 0.4-0.5 s per call on Apple Silicon (2026-10), so 15 s keeps the load
+ * negligible while a plugged HDMI display shows up within one period.
+ */
+export const DEFAULT_DISPLAY_WATCH_INTERVAL_MS = 15_000;
+/** Lower bound for the override; protects the helpers from being hammered. */
+export const MIN_DISPLAY_WATCH_INTERVAL_MS = 2_000;
+
+const isSupportedDisplayPlatform = (platform: NodeJS.Platform): boolean =>
+  platform === "darwin" || platform === "win32";
+
+/**
+ * Stable, order-independent fingerprint of a display device set.
+ *
+ * Covers identity, presence and the advertised modes; deliberately excludes
+ * `status.lastSeen`, which changes on every detection.
+ */
+export const fingerprintDisplayDevices = (
+  devices: DeviceDescriptorT[],
+): string =>
+  devices
+    .map((device) => {
+      const ports = device.ports
+        .map((port) => {
+          const modes = (port.capabilities.modes ?? [])
+            .map((mode) => `${mode.width}x${mode.height}@${mode.fps}`)
+            .join(",");
+          return `${port.id}:${port.type}:${port.status.available ? 1 : 0}:${modes}`;
+        })
+        .sort()
+        .join("+");
+      const status = device.status;
+      return `${device.id}|${device.displayName}|${status.present ? 1 : 0}${status.ready ? 1 : 0}${status.inUse ? 1 : 0}|${ports}`;
+    })
+    .sort()
+    .join(";");
+
+export type DisplayModuleOptionsT = {
+  /** Poll interval; defaults to the env override or 15 s. */
+  watchIntervalMs?: number;
+  setIntervalFn?: typeof setInterval;
+  clearIntervalFn?: typeof clearInterval;
+};
 
 // Prefer known keys over scanning all values to avoid false positives.
 const getStringField = (
@@ -287,6 +347,30 @@ class DisplayController implements DeviceController {
   }
 }
 
+const detectMacOsDisplays = async (): Promise<DeviceDescriptorT[]> => {
+  const rawDisplays = await getSystemProfilerDisplays();
+  return mapRawDisplaysToDevices(rawDisplays, {
+    outputRuntimeSupported: true,
+  });
+};
+
+const detectWindowsDisplays = async (): Promise<DeviceDescriptorT[]> => {
+  const rawDisplays = await listNativeWindowsDisplays();
+  const devices = mapRawDisplaysToDevices(rawDisplays, {
+    outputRuntimeSupported: true,
+  });
+  displayTargetRegistry.replace(
+    devices.flatMap((device, index) => {
+      const nativeSelector = rawDisplays[index]?.nativeSelector;
+      const portId = device.ports[0]?.id;
+      return nativeSelector && portId
+        ? [[portId, { deviceName: nativeSelector }] as const]
+        : [];
+    }),
+  );
+  return devices;
+};
+
 /**
  * Display detector for external monitor outputs.
  *
@@ -295,33 +379,92 @@ class DisplayController implements DeviceController {
 export class DisplayModule implements DeviceModule {
   readonly name = "display";
   readonly detectionTimeoutMs = 6_000;
+  private lastDiagnostics: DisplayDiagnosticsT | null = null;
+  private readonly options: DisplayModuleOptionsT;
+
+  constructor(options: DisplayModuleOptionsT = {}) {
+    this.options = options;
+  }
+
+  /**
+   * Last detection health, surfaced as `outputs.diagnostics.display`.
+   * Null until the first `detect()` call completes or fails.
+   */
+  getLastDiagnostics(): DeviceModuleDiagnosticsT | null {
+    return this.lastDiagnostics
+      ? { kind: "display", ...this.lastDiagnostics }
+      : null;
+  }
 
   async detect(): Promise<DeviceDescriptorT[]> {
-    if (process.platform === "darwin") {
-      const rawDisplays = await getSystemProfilerDisplays();
-      return mapRawDisplaysToDevices(rawDisplays, {
-        outputRuntimeSupported: true,
-      });
+    const platform = process.platform;
+    if (platform !== "darwin" && platform !== "win32") {
+      this.lastDiagnostics = { state: "unsupported_platform" };
+      return [];
     }
 
-    if (process.platform === "win32") {
-      const rawDisplays = await listNativeWindowsDisplays();
-      const devices = mapRawDisplaysToDevices(rawDisplays, {
-        outputRuntimeSupported: true,
-      });
-      displayTargetRegistry.replace(
-        devices.flatMap((device, index) => {
-          const nativeSelector = rawDisplays[index]?.nativeSelector;
-          const portId = device.ports[0]?.id;
-          return nativeSelector && portId
-            ? [[portId, { deviceName: nativeSelector }] as const]
-            : [];
-        }),
-      );
+    try {
+      const devices =
+        platform === "darwin"
+          ? await detectMacOsDisplays()
+          : await detectWindowsDisplays();
+      this.lastDiagnostics = {
+        state: devices.length > 0 ? "ok" : "no_devices",
+      };
       return devices;
+    } catch (error) {
+      this.lastDiagnostics = displayDiagnosticsFromError(error);
+      throw error;
     }
+  }
 
-    return [];
+  /**
+   * Watch for display hotplug by polling `detect()`.
+   *
+   * Neither macOS `system_profiler` nor the Windows display helper offers a
+   * push notification, so the module polls and emits only when the device
+   * fingerprint changes. The poll shares the regular detect path, so
+   * `getLastDiagnostics()` reflects the latest poll as well.
+   *
+   * @param callback Called with the full device list after a change.
+   * @returns Unsubscribe function.
+   */
+  watch(callback: (devices: DeviceDescriptorT[]) => void): UnsubscribeFunction {
+    if (!isSupportedDisplayPlatform(process.platform)) {
+      return () => {};
+    }
+    const logger = getBridgeContext().logger;
+    const intervalMs =
+      this.options.watchIntervalMs ??
+      resolvePollingIntervalMs({
+        envName: DISPLAY_WATCH_INTERVAL_ENV,
+        envValue: process.env[DISPLAY_WATCH_INTERVAL_ENV],
+        defaultMs: DEFAULT_DISPLAY_WATCH_INTERVAL_MS,
+        minMs: MIN_DISPLAY_WATCH_INTERVAL_MS,
+        logger,
+      });
+    const watch = createPollingDeviceWatch<DeviceDescriptorT>({
+      detect: () => this.detect(),
+      intervalMs,
+      fingerprint: fingerprintDisplayDevices,
+      label: "DisplayModule",
+      logger,
+      setIntervalFn: this.options.setIntervalFn,
+      clearIntervalFn: this.options.clearIntervalFn,
+    });
+    logger.info(
+      `[DisplayModule] Display hotplug polling every ${intervalMs}ms`,
+    );
+    return watch((devices) => {
+      const deviceNames = devices
+        .map((device) => device.displayName || device.id)
+        .filter(Boolean)
+        .join(", ");
+      logger.info(
+        `[DisplayModule] Display change detected (${devices.length} device${devices.length === 1 ? "" : "s"}${deviceNames ? `: ${deviceNames}` : ""})`,
+      );
+      callback(devices);
+    });
   }
 
   createController(deviceId: string): DeviceController {

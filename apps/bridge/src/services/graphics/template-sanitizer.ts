@@ -5,7 +5,17 @@ const OBJECT_PATTERN = /<object\b/i;
 const EMBED_PATTERN = /<embed\b/i;
 const LINK_PATTERN = /<link\b/i;
 const JAVASCRIPT_URL_PATTERN = /javascript:/i;
-const EXTERNAL_URL_PATTERN = /(https?:\/\/|data:|file:|ftp:)/i;
+const EXTERNAL_URL_PATTERN = /(https?:\/\/|wss?:\/\/|data:|file:|ftp:|blob:)/i;
+// Protocol-relative URLs (//host/path) carry no scheme, so the scheme scan
+// above never sees them. They are only matched in URL-bearing positions -
+// attribute values and CSS url() - so prose like "a // b" is not hit.
+const PROTOCOL_RELATIVE_ATTRIBUTE_PATTERN =
+  /\b(?:src|href|poster|srcset|action|formaction|xlink:href)\s*=\s*["']?\s*\/\//i;
+const PROTOCOL_RELATIVE_CSS_URL_PATTERN = /url\(\s*["']?\s*\/\//i;
+// <base> rewrites every relative reference; meta refresh navigates the
+// renderer away from the template. Neither has a legitimate template use.
+const BASE_TAG_PATTERN = /<base\b/i;
+const META_REFRESH_PATTERN = /<meta\b[^>]*http-equiv\s*=\s*["']?\s*refresh/i;
 // Inline SVG carries W3C namespace IDENTIFIERS (xmlns="http://www.w3.org/...")
 // that are never fetched - templates with vector logos were rejected as
 // "external URL" over them. Only the xmlns attribute form and only w3.org.
@@ -123,6 +133,19 @@ export function validateTemplate(html: string, css: string): TemplateValidationR
   }
   if (JAVASCRIPT_URL_PATTERN.test(html) || JAVASCRIPT_URL_PATTERN.test(css)) {
     throw new Error("Template contains javascript: URLs");
+  }
+  if (BASE_TAG_PATTERN.test(html)) {
+    throw new Error("Template HTML contains <base> tags");
+  }
+  if (META_REFRESH_PATTERN.test(html)) {
+    throw new Error("Template HTML contains meta refresh");
+  }
+  if (
+    PROTOCOL_RELATIVE_ATTRIBUTE_PATTERN.test(html) ||
+    PROTOCOL_RELATIVE_CSS_URL_PATTERN.test(html) ||
+    PROTOCOL_RELATIVE_CSS_URL_PATTERN.test(css)
+  ) {
+    throw new Error("Template contains protocol-relative URLs");
   }
   // The URL scan runs on a copy with the benign identifier forms removed;
   // every structural check above ran on the ORIGINAL strings.

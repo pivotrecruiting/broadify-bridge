@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>Broadify PGM</string>
+  <key>CFBundleExecutable</key>
+  <string>BroadifyPgmHelper</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.broadify.bridge.pgm-helper</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Broadify PGM</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSCameraUsageDescription</key>
+  <string>Broadify Bridge PGM Helper benötigt Zugriff auf die Kamera, um das Programmbild des Mischers (USB-Eingang) zu erfassen und live in broadifyStudio zu zeigen.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Broadify Bridge PGM Helper benötigt Zugriff auf Audio-Eingänge, um den Programmton des Mischers mit dem Livebild zu übertragen.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Broadify Bridge PGM Helper benötigt Zugriff auf den Ordner „Dokumente“, um Programm-Aufnahmen dort zu speichern, wenn du diesen Ordner als Speicherort auswählst.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Broadify Bridge PGM Helper benötigt Zugriff auf den Schreibtisch, um Programm-Aufnahmen dort zu speichern, wenn du diesen Ordner als Speicherort auswählst.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Broadify Bridge PGM Helper benötigt Zugriff auf den Ordner „Downloads“, um Programm-Aufnahmen dort zu speichern, wenn du diesen Ordner als Speicherort auswählst.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Broadify Bridge PGM Helper benötigt Zugriff auf externe Laufwerke, um Programm-Aufnahmen dort zu speichern, wenn du ein externes Laufwerk als Speicherort auswählst.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Broadify Bridge PGM Helper benötigt Zugriff auf Netzwerklaufwerke, um Programm-Aufnahmen dort zu speichern, wenn du ein Netzwerklaufwerk als Speicherort auswählst.</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>

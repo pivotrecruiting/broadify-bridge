@@ -9,6 +9,7 @@ struct PipelineWorkTriggers {
   bool hasNewCameraFrame = false;
   bool programChanged = false;
   bool graphicsChanged = false;
+  bool hasNewScreenFrame = false;
 };
 
 bool shouldRunProgramWork(const PipelineWorkTriggers &triggers);

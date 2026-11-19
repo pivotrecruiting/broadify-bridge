@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,12 @@ struct RecordingStatus {
   double elapsedSeconds = 0.0;
   uint64_t videoFrames = 0;
   std::string lastError;
+  // Microphone sample counters (RecorderAudioRebase): samples handed to the
+  // writer at/after the session start vs. samples dropped because they were
+  // captured before it. Optional and additive: filled by the Windows recorder,
+  // absent (serialized as null) on macOS and the stub.
+  std::optional<uint64_t> audioSamplesWritten;
+  std::optional<uint64_t> audioSamplesDroppedBeforeStart;
 };
 
 // Records the composited program video plus a chosen microphone to an .mp4

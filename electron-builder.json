@@ -44,6 +44,10 @@
       "to": "native/meeting-helper/Broadify Bridge Meeting Helper.app"
     },
     {
+      "from": "apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app",
+      "to": "native/pgm-helper/Broadify Bridge PGM Helper.app"
+    },
+    {
       "from": "apps/bridge/native/vcam-helper/build/Release/BroadifyVCam.app",
       "to": "native/vcam-helper/BroadifyVCam.app"
     }

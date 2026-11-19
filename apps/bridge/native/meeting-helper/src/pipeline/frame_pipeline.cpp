@@ -14,6 +14,7 @@
 #include "pipeline/compositor_input_selection.h"
 #include "pipeline/frame_pipeline_gating.h"
 #include "pipeline/guided_mask_refine.h"
+#include "pipeline/guided_work_size.h"
 #include "pipeline/keyer_cadence.h"
 #include "pipeline/retained_mask_selection.h"
 #include "pipeline/subject_presence.h"
@@ -484,15 +485,31 @@ bool autoDegradeEnabled() {
   return enabled;
 }
 
-// Governor step-down on sustained program-loop budget overrun (default ON).
-// Set BROADIFY_MEETING_OVERRUN_STEPDOWN=0 to keep the pre-fix behavior where a
-// keyer_budget_overrun only logged and never demoted a tier. Read once.
-bool overrunStepDownEnabled() {
-  static const bool enabled = [] {
+// Governor step-down on sustained program-loop budget overrun.
+// BROADIFY_MEETING_OVERRUN_STEPDOWN:
+// - unset / anything else (default): Measured - step one fused tier down only
+//   when the measured-cost projection says the lower tier brings the program
+//   frame into budget; otherwise keep the tier and emit
+//   keyer_overrun_stepdown_skipped.
+// - "always": the pre-2026-10-17 unconditional one-tier step-down.
+// - "0": off, a keyer_budget_overrun only logs and never demotes a tier
+//   (same '0'-prefix test as the other kill-switches in this file).
+// Read once.
+enum class OverrunStepDownMode { Off, Measured, Always };
+
+OverrunStepDownMode overrunStepDownMode() {
+  static const OverrunStepDownMode mode = [] {
     const char *raw = std::getenv("BROADIFY_MEETING_OVERRUN_STEPDOWN");
-    return raw == nullptr || raw[0] != '0';
+    if (raw == nullptr) {
+      return OverrunStepDownMode::Measured;
+    }
+    if (raw[0] == '0') {
+      return OverrunStepDownMode::Off;
+    }
+    return std::string(raw) == "always" ? OverrunStepDownMode::Always
+                                        : OverrunStepDownMode::Measured;
   }();
-  return enabled;
+  return mode;
 }
 
 // Warm handover on governor tier transitions (default ON). Make-before-break
@@ -608,19 +625,27 @@ double keyerMaxInferenceOverrideMs() {
   return value;
 }
 
-// Same validation as readKeyerPerformanceOverride in keyer_chain.cpp: when the
-// resolution is pinned via env for A/B testing, the governor must not fight it
-// (it keeps sampling, but stops driving performanceMode).
-bool fusedKeyerPerformanceOverrideActive() {
-  static const bool active = [] {
+// Same validation as readKeyerPerformanceOverride in keyer_chain.cpp: the
+// validated BROADIFY_MEETING_KEYER_PERFORMANCE pin (empty when unset or
+// invalid). When the resolution is pinned via env for A/B testing, the fused
+// path runs at the pinned mode and the governor must not fight it (it keeps
+// sampling, but stops driving performanceMode). Read once.
+const std::string &fusedKeyerPerformancePin() {
+  static const std::string pin = [] {
     const char *raw = std::getenv("BROADIFY_MEETING_KEYER_PERFORMANCE");
     if (raw == nullptr) {
-      return false;
+      return std::string();
     }
     const std::string v(raw);
-    return v == "high_quality" || v == "balanced" || v == "performance";
+    return (v == "high_quality" || v == "balanced" || v == "performance")
+               ? v
+               : std::string();
   }();
-  return active;
+  return pin;
+}
+
+bool fusedKeyerPerformanceOverrideActive() {
+  return !fusedKeyerPerformancePin().empty();
 }
 
 bool fusedPipelineDepthEnabled() {
@@ -640,6 +665,10 @@ KeyerGovernorConfig makeFusedGovernorConfig(uint32_t fps) {
   // background session warmup succeeded (make-before-break). With the
   // kill-switch off this stays the historical immediate step-up.
   config.deferLiteStepUp = warmHandoverEnabled();
+  // BROADIFY_MEETING_OVERRUN_STEPDOWN=always is the full rollback: area cost
+  // ratios everywhere and no program-frame step-up guard (pre-2026-10-17).
+  config.measuredCostPolicy =
+      overrunStepDownMode() != OverrunStepDownMode::Always;
   return config;
 }
 
@@ -726,6 +755,7 @@ struct KeyerRuntimeStats {
 
 struct PipelineRuntimeState {
   bool cameraRunning = false;
+  bool screenRunning = false;
   bool keyerEnabled = false;
   bool framebusRunning = false;
   int previewClients = 0;
@@ -760,6 +790,9 @@ std::string determinePipelineMode(const PipelineRuntimeState &runtime,
                                   const CompositorSnapshot &snapshot) {
   if (runtime.cameraRunning) {
     return runtime.keyerEnabled ? "keyer_live" : "live";
+  }
+  if (runtime.screenRunning) {
+    return "live";
   }
   if (isGraphicsOutputActive(snapshot)) {
     return "live";
@@ -1869,6 +1902,7 @@ class GraphicsFrameBusReader {
 void runFramePipeline(const Options &options,
                       MeetingState &state,
                       CameraSource &camera,
+                      ScreenCaptureSource &screen,
                       PreviewFrameStore &previewFrames,
                       VcamShmRingWin *vcamShm,
 #if defined(_WIN32)
@@ -1898,8 +1932,10 @@ void runFramePipeline(const Options &options,
 #endif
   VideoFrame latestCameraFrame;
   VideoFrame latestPipFrame;
+  VideoFrame latestScreenFrame;
   uint64_t lastPipCameraTimestampNs = 0u;
   uint64_t lastCameraTimestampNs = 0u;
+  uint64_t lastScreenTimestampNs = 0u;
   uint64_t lastProgramRevision = 0u;
   uint64_t lastUsedKeyerPublishedNs = 0u;
   uint64_t lastBackGraphicsTimestampNs = 0u;
@@ -1930,16 +1966,34 @@ void runFramePipeline(const Options &options,
   AutoDirector autoDirector;
   uint64_t previousProgramStartNs = 0u;
   auto lastRenderStartAt = std::chrono::steady_clock::time_point{};
+  bool lastScreenRunning = false;
   while (running.load()) {
     PipelineRuntimeState runtime;
+    const ScreenCaptureStatus screenStatus = screen.status();
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.cameraRunning = camera.isRunning();
       state.activeCameraIndex = camera.activeCameraIndex();
+      state.screenCapture.running = screenStatus.running;
+      state.screenCapture.pickerPending = screenStatus.pickerPending;
+      state.screenCapture.sourceId = screenStatus.sourceId;
+      state.screenCapture.kind = screenStatus.kind;
+      state.screenCapture.title = screenStatus.title;
+      state.screenCapture.appName = screenStatus.appName;
+      state.screenCapture.width = screenStatus.width;
+      state.screenCapture.height = screenStatus.height;
+      state.screenCapture.capturedFrames = screenStatus.capturedFrames;
+      if (screenStatus.running != lastScreenRunning) {
+        state.programDirty = true;
+        ++state.programRevision;
+        lastScreenRunning = screenStatus.running;
+      }
       runtime.cameraRunning = state.cameraRunning;
+      runtime.screenRunning = screenStatus.running;
       runtime.keyerEnabled = state.keyerEnabled;
       runtime.framebusRunning = state.framebusRunning;
-      runtime.previewClients = state.previewClientCount;
+      // MJPEG clients and the WebRTC program stream both consume PreviewFrameStore.
+      runtime.previewClients = state.previewClientCount + state.programStreamClientCount;
       runtime.vcamClients = state.vcamClientCount;
       runtime.vcamTcpClients = state.vcamTcpClientCount;
       runtime.vcamShmReaders = state.vcamShmReaderCount;
@@ -2002,9 +2056,30 @@ void runFramePipeline(const Options &options,
     // Set at frame end when the reporter confirms a sustained overrun; consumed
     // by the governor at the top of the next frame (mirrors fusedOverheadEmaMs).
     static bool fusedProgramOverrunPending = false;
+    // Evidence of that overrun, taken from the SAME frame that confirmed it;
+    // consumed together with fusedProgramOverrunPending.
+    static ProgramOverrunSample fusedProgramOverrunSample;
+    // Tensor build time of the last frame that ran fused inference (-1 =
+    // unknown): input of the governor's program-frame step-up guard.
+    static double fusedLastInferenceTensorMs = -1.0;
+    // Per-frame stage timings (wall ms) for the keyer_budget_overrun event.
+    // Locals: they start at 0 on every program frame. guided refine and
+    // postprocess are sub-parts of the keyer section.
+    double stageKeyerSectionMs = 0.0;
+    double stageGuidedRefineMs = 0.0;
+    double stagePostprocessMs = 0.0;
+    double stageGraphicsMs = 0.0;
+    double stageRenderMs = 0.0;
+    double stageRecorderMs = 0.0;
+    double stagePreviewMs = 0.0;
+    double stageVcamMs = 0.0;
     bool fusedInferenceRanThisFrame = false;
     double fusedInferenceSessionRunMs = -1.0;
     double fusedInferenceTensorMs = -1.0;
+    // Governor tier this frame's fused inference ran at (captured with the
+    // session cost, before addSample() may step down): the overrun sample's
+    // tierAtEvent tag. Off = no fused inference this frame.
+    GovernorTier fusedInferenceTier = GovernorTier::Off;
     double fusedBudgetThresholdMs = -1.0;
     const double fusedReporterBudgetMs =
         1000.0 / static_cast<double>(targetFps == 0u ? 30u : targetFps);
@@ -2122,6 +2197,22 @@ void runFramePipeline(const Options &options,
         latestPipFrame = VideoFrame{};
         lastPipCameraTimestampNs = 0u;
       }
+      const bool screenWanted = runtime.screenRunning &&
+          snapshot.mediaLayer.enabled && snapshot.mediaLayer.source == "screen";
+      bool hasNewScreenFrame = runtime.screenRunning &&
+          screen.takeLatestFrameIfNew(lastScreenTimestampNs, latestScreenFrame) &&
+          !latestScreenFrame.rgba.empty();
+      if (hasNewScreenFrame) {
+        lastScreenTimestampNs = latestScreenFrame.timestampNs;
+      }
+      if (!runtime.screenRunning && !latestScreenFrame.rgba.empty()) {
+        latestScreenFrame = VideoFrame{};
+        lastScreenTimestampNs = 0u;
+      }
+      const VideoFrame *screenFrameForCompositor =
+          (screenWanted && !latestScreenFrame.rgba.empty()) ? &latestScreenFrame
+                                                            : nullptr;
+      hasNewScreenFrame = hasNewScreenFrame && screenWanted;
       const bool hasCameraFrame = runtime.cameraRunning && !latestCameraFrame.rgba.empty();
       const auto cameraCopyEnd = std::chrono::steady_clock::now();
       const VideoFrame *frameForCompositor = nullptr;
@@ -2144,6 +2235,9 @@ void runFramePipeline(const Options &options,
       }
 #if defined(_WIN32)
       keyerSettings.dynamicDilation = false;
+      // Keyer section, part 1: async submit + async pair selection (ends
+      // before the graphics readers, which are not keyer work).
+      const auto stageKeyerSelectStart = std::chrono::steady_clock::now();
 #endif
       // The fused path keys synchronously below; don't also run the async worker
       // (that would run the model twice per frame). While the fused keyer is
@@ -2308,6 +2402,13 @@ void runFramePipeline(const Options &options,
           state.keyerMetrics.maskAgeAvgMs = -1.0;
         }
       }
+#if defined(_WIN32)
+      // End of keyer part 1 = start of the graphics span (graphics_ms): the
+      // back/front graphics FrameBus readers and the work-trigger checks
+      // between the two keyer spans.
+      const auto stageGraphicsStart = std::chrono::steady_clock::now();
+      stageKeyerSectionMs += elapsedMs(stageKeyerSelectStart, stageGraphicsStart);
+#endif
       const bool graphicsOutputActive = isGraphicsOutputActive(snapshot);
       // Pointers alias each reader's cached frame; valid until the reader's
       // next latest() call, which does not happen again this iteration.
@@ -2330,9 +2431,16 @@ void runFramePipeline(const Options &options,
       const bool graphicsChanged = runtime.graphicsDirty ||
           hasNewBackGraphicsFrame || hasNewFrontGraphicsFrame;
       const PipelineWorkTriggers workTriggers{
-          hasNewCameraFrame, programChanged, graphicsChanged};
+          hasNewCameraFrame, programChanged, graphicsChanged, hasNewScreenFrame};
       const bool programWorkDue = shouldRunProgramWork(workTriggers);
       const bool fusedKeyerWorkDue = shouldRunFusedKeyerWork(workTriggers);
+#if defined(_WIN32)
+      // Keyer section, part 2: same-frame async re-evaluation, live-snap and
+      // the whole fused section (ends at the end of the fused block below).
+      // Its start closes the contiguous graphics span.
+      const auto stageKeyerStart = std::chrono::steady_clock::now();
+      stageGraphicsMs = elapsedMs(stageGraphicsStart, stageKeyerStart);
+#endif
       // Same-frame re-evaluation only while the async path is the active
       // source (see the gate above): while fused owns the keyer this block
       // must neither consume the parked worker's pair nor write telemetry.
@@ -2495,10 +2603,13 @@ void runFramePipeline(const Options &options,
 #if defined(_WIN32)
           // GPU guided refine (BROADIFY_MEETING_GPU_GUIDED=1): same math on
           // the D3D11 device; the CPU refine stays as fallback and reference.
+          const auto guidedStart = std::chrono::steady_clock::now();
           if (!(d3d11GuidedRefineAvailable() &&
                 guidedRefineMaskD3D11(liveRefinedMask, guide))) {
             guidedRefineMask(liveRefinedMask, guide);
           }
+          stageGuidedRefineMs +=
+              elapsedMs(guidedStart, std::chrono::steady_clock::now());
 #else
           guidedRefineMask(liveRefinedMask, guide);
 #endif
@@ -2586,6 +2697,11 @@ void runFramePipeline(const Options &options,
         KeyerResult fused = fusedKeyer.apply(latestCameraFrame, keyerSettings);
         if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
           g_fusedKeyerDegraded = false;
+          {
+            // Fused keyer healthy again: stop reporting the Vision takeover.
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.fusedDegradedReason.clear();
+          }
           fusedMask = std::move(fused.mask);
           // Dropout guard only (no EMA): keeps the tuned macOS look, but a
           // model dropout no longer blanks the presenter for a frame (KEY-03).
@@ -2609,6 +2725,14 @@ void runFramePipeline(const Options &options,
           // Vision fallback starts receiving frames (submit guard above).
           clearAppleFusedMask();
           g_fusedKeyerDegraded = true;
+          {
+            // Remember WHY the fused keyer is out so the async Vision takeover
+            // is reported as a fallback instead of "all good" (B-11).
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.fusedDegradedReason = fused.status.fallbackReason.empty()
+                                            ? "coreml_inference_failed"
+                                            : fused.status.fallbackReason;
+          }
           updateMeetingKeyerStatus(state, fused.status);
         }
       }
@@ -2710,12 +2834,15 @@ void runFramePipeline(const Options &options,
               latestCameraFrame.height, selectedMask, kWarmupRetainedMaskAgeMs);
         };
         const auto refineLiveFusedFallbackMask =
-            [&latestCameraFrame](AlphaMask &selectedMask) {
+            [&latestCameraFrame, &stageGuidedRefineMs](AlphaMask &selectedMask) {
           if (!selectedMask.alpha.empty() && !selectedMask.emptyValid) {
+            const auto guidedStart = std::chrono::steady_clock::now();
             if (!(d3d11GuidedRefineAvailable() &&
                   guidedRefineMaskD3D11(selectedMask, latestCameraFrame))) {
               guidedRefineMask(selectedMask, latestCameraFrame);
             }
+            stageGuidedRefineMs +=
+                elapsedMs(guidedStart, std::chrono::steady_clock::now());
             selectedMask.timestampNs = latestCameraFrame.timestampNs;
           }
         };
@@ -2760,12 +2887,46 @@ void runFramePipeline(const Options &options,
           }
           const bool governorAutoEnabled = autoDegradeEnabled();
           if (governorAutoEnabled) {
+            // Program-frame state for the step-up guard: a fused climb that
+            // would push an in-budget program frame over budget is not taken
+            // (the measured overrun step-down would undo it).
+            fusedGovernor.setProgramFrameState(fusedBudgetOverrunReporter.emaMs(),
+                                               fusedReporterBudgetMs,
+                                               fusedLastInferenceTensorMs);
             fusedGovernor.maybeStepUp(fusedNow);
             // Sustained program-loop budget overrun observed last frame: shed
             // one fused tier (CPU overload the GPU-cost samples cannot see).
+            // Default (Measured): only when the measured-cost projection of
+            // the lower tier fits the budget; "always" keeps the
+            // unconditional step-down.
             if (fusedProgramOverrunPending) {
               fusedProgramOverrunPending = false;
-              fusedGovernor.noteProgramBudgetOverrun(fusedNow);
+              if (overrunStepDownMode() == OverrunStepDownMode::Always) {
+                fusedGovernor.noteProgramBudgetOverrun(fusedNow);
+              } else {
+                const OverrunOutcome overrunOutcome =
+                    fusedGovernor.noteProgramBudgetOverrun(
+                        fusedNow, fusedProgramOverrunSample);
+                if (overrunOutcome.decision == OverrunDecision::NotTierBound) {
+                  // Tier unchanged by construction: report the tier the
+                  // projection was made for.
+                  emitHelperEvent(
+                      "{\"type\":\"keyer_overrun_stepdown_skipped\",\"tier\":\"" +
+                      std::string(governorTierLabel(fusedGovernor.tier())) +
+                      "\",\"program_frame_ema_ms\":" +
+                      std::to_string(fusedProgramOverrunSample.programFrameEmaMs) +
+                      ",\"budget_ms\":" +
+                      std::to_string(fusedProgramOverrunSample.budgetMs) +
+                      ",\"session_run_ms\":" +
+                      std::to_string(fusedProgramOverrunSample.sessionRunMs) +
+                      ",\"tensor_ms\":" +
+                      std::to_string(fusedProgramOverrunSample.tensorMs) +
+                      ",\"estimated_savings_ms\":" +
+                      std::to_string(overrunOutcome.estimatedSavingsMs) +
+                      ",\"projected_ms\":" +
+                      std::to_string(overrunOutcome.projectedMs) + "}");
+                }
+              }
             }
             // Seed once from the session-build warmup probe (median steady
             // inference cost at the 512 shape); available after the first
@@ -2798,12 +2959,23 @@ void runFramePipeline(const Options &options,
                 fusedGovernor.seedProbe(keyerStatus.probeInferenceMs);
               }
             }
-            // The governor drives the fused input resolution; the env
-            // performance pin (A/B testing) wins. ModnetKeyer rebuilds its
-            // DML session safely on a size change.
-            if (!fusedKeyerPerformanceOverrideActive()) {
+            // The governor drives the fused input resolution unless the env
+            // performance pin is set (applied right below). ModnetKeyer
+            // rebuilds its DML session safely on a size change.
+            if (fusedKeyerPerformancePin().empty()) {
               keyerSettings.performanceMode = fusedGovernor.performanceModeForTier();
             }
+            setGuidedWorkWidthTierCap(
+                guidedWorkWidthCapForTier(fusedGovernor.tier()));
+          }
+          // The env performance pin (A/B testing) wins over the governor AND
+          // over the webapp mode, with or without auto-degradation. Applied
+          // before the warmups below, so the fused apply(), the warmups and
+          // the telemetry (fusedActiveMode, active_performance_mode) all
+          // run/report the pinned mode.
+          const std::string &performancePin = fusedKeyerPerformancePin();
+          if (!performancePin.empty()) {
+            keyerSettings.performanceMode = performancePin;
           }
           // Warm-handover step-up management (make-before-break): poll the
           // one-shot warmup thread, commit/cancel the governor's deferred
@@ -2917,8 +3089,9 @@ void runFramePipeline(const Options &options,
               governorAutoEnabled &&
               (fusedGovernor.wantsAsyncLite() || fusedGovernor.wantsOff()));
           // What actually drives the keyer now: the governor's tier (which is
-          // also the async-lite floor, "performance"), or the webapp mode
-          // when auto-degradation is off / the env pin is active.
+          // also the async-lite floor, "performance"), the env pin when it is
+          // active (applied above, with or without auto-degradation), or the
+          // webapp mode when auto-degradation is off.
           fusedActiveMode = keyerSettings.performanceMode;
           if (governorAutoEnabled && fusedGovernor.wantsOff()) {
             // Even async 256 inference is too slow for normal cadence. Keep
@@ -2968,10 +3141,13 @@ void runFramePipeline(const Options &options,
                   fusedMask);
             }
             if (!fusedMask.alpha.empty() && !fusedMask.emptyValid) {
+              const auto guidedStart = std::chrono::steady_clock::now();
               if (!(d3d11GuidedRefineAvailable() &&
                     guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
                 guidedRefineMask(fusedMask, latestCameraFrame);
               }
+              stageGuidedRefineMs +=
+                  elapsedMs(guidedStart, std::chrono::steady_clock::now());
               fusedMask.timestampNs = latestCameraFrame.timestampNs;
             }
             maskForCompositor = &fusedMask;
@@ -3071,14 +3247,20 @@ void runFramePipeline(const Options &options,
                 fusedMask = std::move(fused.mask);
                 stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled());
                 lastGoodMask = fusedMask;
+                const auto guidedStart = std::chrono::steady_clock::now();
                 if (!(d3d11GuidedRefineAvailable() &&
                       guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
                   guidedRefineMask(fusedMask, latestCameraFrame);
                 }
+                stageGuidedRefineMs +=
+                    elapsedMs(guidedStart, std::chrono::steady_clock::now());
                 if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
+                  const auto postprocessStart = std::chrono::steady_clock::now();
                   postprocessAlpha(fusedMask, lastFusedPublishedMask,
                                    keyerSettings, 0.0, /*fusedPath=*/true,
                                    fused.status.metrics);
+                  stagePostprocessMs += elapsedMs(
+                      postprocessStart, std::chrono::steady_clock::now());
                   lastFusedPublishedMask = fusedMask;
                 }
                 frameForCompositor = &latestCameraFrame;
@@ -3089,6 +3271,7 @@ void runFramePipeline(const Options &options,
                     fused.status.metrics.sessionRunMs > 0.0;
                 fusedInferenceSessionRunMs = fused.status.metrics.sessionRunMs;
                 fusedInferenceTensorMs = fused.status.metrics.tensorMs;
+                fusedInferenceTier = fusedGovernor.tier();
                 fusedPipelineModeLabel = "fused";
                 std::lock_guard<std::mutex> lock(state.mutex);
                 state.keyerMetrics.maskAgeMs = 0.0;
@@ -3183,10 +3366,13 @@ void runFramePipeline(const Options &options,
                 lastFusedInferredLuma = currentFrameLuma;
                 // Edge glue LAST: re-align the EMA-stabilized matte's edge to the
                 // CURRENT frame so the visible boundary stays crisp on motion.
+                const auto guidedStart = std::chrono::steady_clock::now();
                 if (!(d3d11GuidedRefineAvailable() &&
                       guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
                   guidedRefineMask(fusedMask, latestCameraFrame);
                 }
+                stageGuidedRefineMs +=
+                    elapsedMs(guidedStart, std::chrono::steady_clock::now());
                 // Postprocess parity with the async worker: apply the
                 // user-facing erode/dilate/feather/edge-stabilization chain
                 // to the fused matte too (it was silently ignored here).
@@ -3195,9 +3381,12 @@ void runFramePipeline(const Options &options,
                 // this matte was inferred from the CURRENT frame. Skipped
                 // for confirmed-empty mattes (nothing to shape).
                 if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
+                  const auto postprocessStart = std::chrono::steady_clock::now();
                   postprocessAlpha(fusedMask, lastFusedPublishedMask,
                                    keyerSettings, 0.0, /*fusedPath=*/true,
                                    fused.status.metrics);
+                  stagePostprocessMs += elapsedMs(
+                      postprocessStart, std::chrono::steady_clock::now());
                   lastFusedPublishedMask = fusedMask;
                 }
                 frameForCompositor = &latestCameraFrame;
@@ -3208,6 +3397,9 @@ void runFramePipeline(const Options &options,
                     fused.status.metrics.sessionRunMs > 0.0;
                 fusedInferenceSessionRunMs = fused.status.metrics.sessionRunMs;
                 fusedInferenceTensorMs = fused.status.metrics.tensorMs;
+                // Tier the costs were measured at, read BEFORE addSample()
+                // can step down.
+                fusedInferenceTier = fusedGovernor.tier();
                 if (governorAutoEnabled) {
                   fusedGovernor.addSample(fused.status.metrics.sessionRunMs,
                                           fusedNow);
@@ -3256,10 +3448,13 @@ void runFramePipeline(const Options &options,
               // CURRENT frame. Booked honestly: the mask body is
               // maskAgeMs old ("fused_reused"), only the edge is fresh.
               fusedMask = lastFusedRawMask;
+              const auto guidedStart = std::chrono::steady_clock::now();
               if (!(d3d11GuidedRefineAvailable() &&
                     guidedRefineMaskD3D11(fusedMask, latestCameraFrame))) {
                 guidedRefineMask(fusedMask, latestCameraFrame);
               }
+              stageGuidedRefineMs +=
+                  elapsedMs(guidedStart, std::chrono::steady_clock::now());
               // The GPU compositors cache mask uploads by timestampNs; the
               // refined mask belongs to the CURRENT frame now (KEY-02).
               fusedMask.timestampNs = latestCameraFrame.timestampNs;
@@ -3270,10 +3465,13 @@ void runFramePipeline(const Options &options,
               // sees monotonic stamps.
               KeyerMetrics reusedPostprocessMetrics;
               if (fusedPostprocessEnabled() && !fusedMask.emptyValid) {
+                const auto postprocessStart = std::chrono::steady_clock::now();
                 postprocessAlpha(fusedMask, lastFusedPublishedMask,
                                  keyerSettings, cadenceDecision.maskAgeMs,
                                  /*fusedPath=*/true,
                                  reusedPostprocessMetrics);
+                stagePostprocessMs += elapsedMs(
+                    postprocessStart, std::chrono::steady_clock::now());
                 lastFusedPublishedMask = fusedMask;
               }
               frameForCompositor = &latestCameraFrame;
@@ -3301,9 +3499,12 @@ void runFramePipeline(const Options &options,
           // a re-enable starts from a clean probe (spec'd reset point). Not
           // reset on camera hiccups - those must not wipe governor learning.
           fusedGovernor.reset();
+          setGuidedWorkWidthTierCap(
+              guidedWorkWidthCapForTier(fusedGovernor.tier()));
           fusedCadence.reset();
           fusedBudgetOverrunReporter.reset();
           fusedProgramOverrunPending = false;
+          fusedLastInferenceTensorMs = -1.0;
           fusedOverheadEmaMs = 0.0;
           lastFusedRawMask = AlphaMask{};
           lastGoodMask = AlphaMask{};
@@ -3381,12 +3582,17 @@ void runFramePipeline(const Options &options,
           refineLiveFusedFallbackMask(fusedMask);
           maskForCompositor = &fusedMask;
         }
+        stageKeyerSectionMs +=
+            elapsedMs(stageKeyerStart, std::chrono::steady_clock::now());
       }
 #else
       (void)fusedMask;
 #endif  // __APPLE__
 
       if (shouldRenderProgram) {
+#if defined(_WIN32)
+        const auto stageRenderStart = std::chrono::steady_clock::now();
+#endif
         renderProgramFrame(
             options,
             snapshot,
@@ -3396,8 +3602,13 @@ void runFramePipeline(const Options &options,
             frontGraphicsFrameForCompositor,
             (pipActive && !latestPipFrame.rgba.empty()) ? &latestPipFrame
                                                         : nullptr,
+            screenFrameForCompositor,
             frameIndex++,
             programFrame);
+#if defined(_WIN32)
+        stageRenderMs =
+            elapsedMs(stageRenderStart, std::chrono::steady_clock::now());
+#endif
         if (selectedPair != nullptr) {
           lastUsedKeyerPublishedNs = selectedPair->publishedAtNs;
         }
@@ -3417,8 +3628,15 @@ void runFramePipeline(const Options &options,
       // recording is active; runs every tick so the file keeps a steady
       // timeline (and holds the last image) even during static periods.
       if (!programFrame.empty()) {
+#if defined(_WIN32)
+        const auto stageRecorderStart = std::chrono::steady_clock::now();
+#endif
         recorder.appendVideoFrame(programFrame.data(), options.width,
                                   options.height);
+#if defined(_WIN32)
+        stageRecorderMs =
+            elapsedMs(stageRecorderStart, std::chrono::steady_clock::now());
+#endif
       }
 
       shouldWriteFramebus = shouldWriteFramebusFrame(
@@ -3439,7 +3657,14 @@ void runFramePipeline(const Options &options,
 
       shouldPublishPreview = previewConsumerActive && shouldRenderProgram && !programFrame.empty();
       if (shouldPublishPreview) {
+#if defined(_WIN32)
+        const auto stagePreviewStart = std::chrono::steady_clock::now();
+#endif
         previewFrames.publish(options.width, options.height, programFrame.data(), programFrame.size());
+#if defined(_WIN32)
+        stagePreviewMs =
+            elapsedMs(stagePreviewStart, std::chrono::steady_clock::now());
+#endif
         std::lock_guard<std::mutex> lock(state.mutex);
         ++state.publishedPreviewFrames;
       }
@@ -3451,12 +3676,15 @@ void runFramePipeline(const Options &options,
           runtime.vcamTransport == "shm" &&
           runtime.vcamRawRunning && shouldRenderProgram && !programFrame.empty()) {
 #if defined(_WIN32)
+        const auto stageVcamStart = std::chrono::steady_clock::now();
         vcamSubmitFrame.resize(programFrame.size());
         std::memcpy(vcamSubmitFrame.data(), programFrame.data(),
                     programFrame.size());
         vcamShmPublisher->submitRgba(
             options.width, options.height, vcamSubmitFrame,
             hasCameraFrame ? latestCameraFrame.captureQpc : 0u);
+        stageVcamMs =
+            elapsedMs(stageVcamStart, std::chrono::steady_clock::now());
 #else
         (void)vcamShm;
 #endif
@@ -3471,11 +3699,20 @@ void runFramePipeline(const Options &options,
         const double frameOverheadMs =
             std::max(0.0, programFrameMs - fusedInferenceSessionRunMs);
         fusedOverheadEmaMs = 0.2 * frameOverheadMs + 0.8 * fusedOverheadEmaMs;
+        fusedLastInferenceTensorMs = fusedInferenceTensorMs;
         const BudgetOverrunEvent budgetEvent =
             fusedBudgetOverrunReporter.update(programFrameMs,
                                               fusedReporterBudgetMs,
                                               programEnd);
         if (budgetEvent == BudgetOverrunEvent::Overrun) {
+          // Stage breakdown of THIS frame. guided refine and postprocess are
+          // sub-parts of the keyer section, so they are not subtracted again;
+          // other_ms covers camera copy, FrameBus write and the remaining
+          // loop overhead.
+          const double stageOtherMs = std::max(
+              0.0, programFrameMs - (stageKeyerSectionMs + stageGraphicsMs +
+                                     stageRenderMs + stageRecorderMs +
+                                     stagePreviewMs + stageVcamMs));
           emitHelperEvent(
               "{\"type\":\"keyer_budget_overrun\",\"program_frame_ms\":" +
               std::to_string(programFrameMs) + ",\"session_run_ms\":" +
@@ -3484,13 +3721,32 @@ void runFramePipeline(const Options &options,
               ",\"camera_copy_ms\":" + std::to_string(cameraCopyMs) +
               ",\"camera_upload_ms\":" + std::to_string(cameraUploadMs) +
               ",\"tier\":\"" + fusedTierForEvent + "\",\"cadence_n\":" +
-              std::to_string(fusedCadenceNForEvent) + "}");
+              std::to_string(fusedCadenceNForEvent) +
+              ",\"keyer_section_ms\":" + std::to_string(stageKeyerSectionMs) +
+              ",\"guided_refine_ms\":" + std::to_string(stageGuidedRefineMs) +
+              ",\"postprocess_ms\":" + std::to_string(stagePostprocessMs) +
+              ",\"graphics_ms\":" + std::to_string(stageGraphicsMs) +
+              ",\"render_ms\":" + std::to_string(stageRenderMs) +
+              ",\"recorder_ms\":" + std::to_string(stageRecorderMs) +
+              ",\"preview_ms\":" + std::to_string(stagePreviewMs) +
+              ",\"vcam_ms\":" + std::to_string(stageVcamMs) +
+              ",\"other_ms\":" + std::to_string(stageOtherMs) + "}");
           // Ask the governor to shed one fused tier: the program frame is over
           // budget even though the inference EMA (sessionRunMs) still fits, so
           // the GPU-only addSample() path would never demote. Consumed next
           // frame. The reporter's 30-frame + 10s debounce rate-limits this.
-          if (overrunStepDownEnabled()) {
+          // The sample travels with the request so the default (Measured)
+          // mode judges the step-down on THIS frame's costs.
+          if (overrunStepDownMode() != OverrunStepDownMode::Off) {
             fusedProgramOverrunPending = true;
+            fusedProgramOverrunSample.programFrameEmaMs =
+                fusedBudgetOverrunReporter.emaMs();
+            fusedProgramOverrunSample.budgetMs = fusedReporterBudgetMs;
+            fusedProgramOverrunSample.sessionRunMs = fusedInferenceSessionRunMs;
+            fusedProgramOverrunSample.tensorMs = fusedInferenceTensorMs;
+            // Stale-sample guard: the governor ignores the sample when its
+            // tier differs from this tag on the consuming frame.
+            fusedProgramOverrunSample.tierAtEvent = fusedInferenceTier;
           }
         } else if (budgetEvent == BudgetOverrunEvent::Recovered) {
           emitHelperEvent("{\"type\":\"keyer_budget_recovered\"}");
@@ -3543,6 +3799,8 @@ void runFramePipeline(const Options &options,
             std::this_thread::sleep_until(nextFrameAt);
           }
         }
+      } else if (runtime.screenRunning) {
+        screen.waitForFrameOrTimeout(lastScreenTimestampNs, nextFrameAt);
       } else {
         std::this_thread::sleep_until(nextFrameAt);
       }
@@ -3553,6 +3811,8 @@ void runFramePipeline(const Options &options,
     if (nextFrameAt > now) {
       if (runtime.cameraRunning) {
         camera.waitForFrameOrTimeout(lastCameraTimestampNs, nextFrameAt);
+      } else if (runtime.screenRunning) {
+        screen.waitForFrameOrTimeout(lastScreenTimestampNs, nextFrameAt);
       } else {
         std::this_thread::sleep_until(nextFrameAt);
       }

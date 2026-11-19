@@ -3,6 +3,7 @@
 #include "capture/camera_source.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -79,7 +80,12 @@ struct KeyerStatus {
   bool tierBuilt512 = false;
   bool tierBuilt320 = false;
   bool tierBuilt256 = false;
-  bool modelHashOk = false;
+  // Tri-state model integrity flag: true/false = the backend verified the model
+  // file against the manifest hash (Windows ONNX/OpenVINO MODNet);
+  // std::nullopt = no hash check performed by this backend, e.g. CoreML on
+  // macOS. Serialized as true/false/null ("model_hash_ok") so a backend that
+  // never checks does not look like a hash mismatch.
+  std::optional<bool> modelHashOk;
   std::string gpuAdapter;
   // Windows/DirectML diagnostics: which command queue the session uses and
   // which of the append paths actually attached the provider. Field debugging

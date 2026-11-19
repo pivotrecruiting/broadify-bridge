@@ -62,7 +62,12 @@ export type EventPayloadMapping = {
   };
   bridgeAcceptTerms: { success: boolean; error?: string };
   bridgeSetName: { success: boolean; error?: string };
-  bridgeStart: { success: boolean; error?: string; actualPort?: number };
+  bridgeStart: {
+    success: boolean;
+    error?: string;
+    actualPort?: number;
+    webAppUrl?: string;
+  };
   bridgeStop: { success: boolean; error?: string };
   bridgeGetStatus: BridgeStatus;
   bridgeStatus: BridgeStatus;

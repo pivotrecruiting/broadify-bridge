@@ -163,11 +163,11 @@ ueber den offiziellen `systemextensionsctl uninstall`-Flow entfernen.
 Diese Verzeichnisse nicht per `rm` loeschen; macOS besitzt und bereinigt
 `/Library/SystemExtensions` nach Replacement/Uninstall, oft erst nach Reboot.
 
-Der Production-Meeting-Start darf keine bestehende VCam-Installation automatisch
-upgraden. Eine neue embedded Helper-Version wird zur Laufzeit nur mit
-`BRIDGE_VCAM_AUTO_UPGRADE_ON_START=0` schaltet das automatische VCam-Upgrade beim Start ab (Standard: an, damit Bridge-Updates auch die VCam-Fixes ausliefern).
-`/Applications/BroadifyVCam.app` kopiert; normaler Meeting-Betrieb verwendet die
-bereits aktivierte Camera Extension.
+Der Production-Meeting-Start installiert eine neuere embedded Helper-App nach
+`/Applications/BroadifyVCam.app` und fordert ab Build 20 auch die Ersetzung einer
+älteren aktiven Camera Extension an. `BRIDGE_VCAM_AUTO_UPGRADE_ON_START=0`
+schaltet dieses automatische VCam-Upgrade beim Start ab; Standard ist an, damit
+Bridge-Updates auch die VCam-Fixes ausliefern.
 
 Im Dev-Flow installiert `npm run dev` die VCam nicht automatisch. Nach VCam-
 Codeaenderungen oder wenn `/Applications/BroadifyVCam.app` fehlt:

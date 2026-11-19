@@ -84,7 +84,13 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   get_status: readOnly("get_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["bridge.status"]),
   bridge_pair_validate: readOnly("bridge_pair_validate", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["bridge.identity"]),
   list_outputs: readOnly("list_outputs", "list_outputs", 15_000, 11_000, ["outputs"]),
-  engine_connect: sideEffect("engine_connect", "engine_connect", 18_000, 11_000, "engine", ["engine.status"], "after_state_check"),
+  // Mode activation triggers the persisted engine auto-connect (scheduled, not
+  // awaited) and awaits the persisted graphics output apply (helper start), so
+  // it shares the engine_connect timeout class. Idempotent: a replay after a
+  // reconnect re-runs no-ops, hence after_state_check. Own lane so it never
+  // queues behind an operator's manual engine_connect.
+  mode_activate: sideEffect("mode_activate", "engine_connect", 18_000, 17_000, "mode", ["engine.status", "graphics", "outputs"], "after_state_check"),
+  engine_connect: sideEffect("engine_connect", "engine_connect", 18_000, 17_000, "engine", ["engine.status"], "after_state_check"),
   engine_disconnect: sideEffect("engine_disconnect", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "engine", ["engine.status"], "after_state_check"),
   engine_get_status: readOnly("engine_get_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["engine.status"]),
   engine_get_macros: readOnly("engine_get_macros", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["engine.macros"]),
@@ -113,6 +119,13 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   meeting_camera_pip_set: sideEffect("meeting_camera_pip_set", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.camera", ["meeting.camera"]),
   meeting_camera_audio_levels: readOnly("meeting_camera_audio_levels", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.camera"]),
   meeting_camera_auto_director: sideEffect("meeting_camera_auto_director", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.camera", ["meeting.camera"]),
+  // Pick returns immediately while the operator may spend minutes in the OS
+  // picker. Completion is observed through engine.screen_capture.running, and
+  // relay retries must never open a second system dialog.
+  meeting_screen_list: readOnly("meeting_screen_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.screen"]),
+  meeting_screen_start: sideEffect("meeting_screen_start", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.screen", ["meeting.screen", "meeting.program"], "after_state_check"),
+  meeting_screen_stop: sideEffect("meeting_screen_stop", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.screen", ["meeting.screen", "meeting.program"], "after_state_check"),
+  meeting_screen_pick: sideEffect("meeting_screen_pick", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.screen", ["meeting.screen"], "never"),
   meeting_recording_microphones: readOnly("meeting_recording_microphones", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.recording"]),
   meeting_recording_pick_path: sideEffect("meeting_recording_pick_path", "helper_start", 130_000, 125_000, "meeting.recording.dialog", ["meeting.recording"]),
   meeting_recording_start: sideEffect("meeting_recording_start", "helper_start", 35_000, 30_000, "meeting.recording", ["meeting.recording"], "after_state_check"),
@@ -166,6 +179,29 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   power_socket_delete: sideEffect("power_socket_delete", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "power", ["power.sockets"]),
   power_socket_set: sideEffect("power_socket_set", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "power", ["power.sockets"], "never"),
   power_socket_test: readOnly("power_socket_test", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["power.sockets"]),
+  // Live program preview. The offer answers synchronously after ICE gathering
+  // (bounded at 3 s on the bridge), so it stays inside the fast class; one
+  // "pgm" lane keeps offer/close ordered per bridge. Replaying an offer would
+  // build a second PeerConnection for a dead viewer: same request id only.
+  pgm_get_status: readOnly("pgm_get_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.status"]),
+  pgm_inputs_list: readOnly("pgm_inputs_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.inputs"]),
+  pgm_source_select: sideEffect("pgm_source_select", "helper_start", 35_000, 30_000, "pgm", ["pgm.status", "pgm.inputs"], "after_state_check"),
+  pgm_source_clear: sideEffect("pgm_source_clear", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm", ["pgm.status", "pgm.inputs"], "after_state_check"),
+  pgm_session_list: readOnly("pgm_session_list", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.sessions"]),
+  pgm_webrtc_offer: sideEffect("pgm_webrtc_offer", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm", ["pgm.sessions"]),
+  pgm_webrtc_close: sideEffect("pgm_webrtc_close", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm", ["pgm.sessions"]),
+  // Snapshot is a read (JPEG in the result, < 2 MB); recording start/stop
+  // touch the file system, the save panel can stay open for minutes.
+  pgm_snapshot: readOnly("pgm_snapshot", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["pgm.snapshot"]),
+  pgm_recording_pick_path: sideEffect("pgm_recording_pick_path", "helper_start", 130_000, 125_000, "pgm.recording.dialog", ["pgm.status"]),
+  pgm_recording_start: sideEffect("pgm_recording_start", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "pgm.recording", ["pgm.status"], "after_state_check"),
+  pgm_recording_stop: sideEffect("pgm_recording_stop", "helper_start", 35_000, 30_000, "pgm.recording", ["pgm.status"], "after_state_check"),
+  // Meeting program stream: the composited camera picture over WebRTC, same
+  // bounded ICE answer as pgm_webrtc_offer, on its own lane.
+  meeting_program_status: readOnly("meeting_program_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.program"]),
+  meeting_program_sessions: readOnly("meeting_program_sessions", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.program.sessions"]),
+  meeting_program_offer: sideEffect("meeting_program_offer", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.program", ["meeting.program.sessions"]),
+  meeting_program_close: sideEffect("meeting_program_close", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.program", ["meeting.program.sessions"]),
 };
 
 /**

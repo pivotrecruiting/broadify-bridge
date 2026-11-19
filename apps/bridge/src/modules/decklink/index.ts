@@ -1,4 +1,8 @@
-import type { DeviceModule, DeviceController } from "../device-module.js";
+import type {
+  DeviceModule,
+  DeviceController,
+  DeviceModuleDiagnosticsT,
+} from "../device-module.js";
 import type { DeviceDescriptorT } from "@broadify/protocol";
 import { DecklinkDetector, parseDecklinkHelperDevices } from "./decklink-detector.js";
 import { DecklinkDevice } from "./decklink-device.js";
@@ -10,6 +14,7 @@ import { getBridgeContext } from "../../services/bridge-context.js";
  */
 export class DecklinkModule implements DeviceModule {
   readonly name = "decklink";
+  readonly detectionTimeoutMs = 12_000;
   private readonly detector = new DecklinkDetector();
 
   /**
@@ -19,6 +24,11 @@ export class DecklinkModule implements DeviceModule {
    */
   async detect(): Promise<DeviceDescriptorT[]> {
     return this.detector.detect();
+  }
+
+  getLastDiagnostics(): DeviceModuleDiagnosticsT | null {
+    const diagnostics = this.detector.getLastDiagnostics();
+    return diagnostics ? { kind: "decklink", ...diagnostics } : null;
   }
 
   /**
@@ -35,6 +45,9 @@ export class DecklinkModule implements DeviceModule {
         return;
       }
       const devices = parseDecklinkHelperDevices(event.devices);
+      if (event.type === "device_added" || event.type === "device_removed") {
+        this.detector.invalidateModeCache();
+      }
       const logger = getBridgeContext().logger;
       const deviceNames = devices
         .map((device) => device.displayName || device.id)

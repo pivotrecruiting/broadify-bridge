@@ -26,6 +26,8 @@ export function publishGraphicsStatusEvent(
       rendererLifecycleState: status.rendererLifecycleState,
       lastOutputError: status.lastOutputError,
       outputConfig: status.outputConfig,
+      pendingOutputConfig: status.pendingOutputConfig,
+      outputRecovery: status.outputRecovery,
       browserInput: status.browserInput,
       activePreset: status.activePreset,
       activePresets: status.activePresets,

@@ -43,6 +43,50 @@ Aktiv async umgesetzt ist in diesem Bridge-Repo aktuell
 `meeting_camera_start` sind in Relay/WebApp als Async-Kandidaten vorbereitet,
 aber in der Bridge noch keine akzeptierten Relay-Commands.
 
+## Budget: serielle Output-Transition (Bridge lokal)
+
+`GraphicsOutputTransitionService.applyAtomic()`
+(`apps/bridge/src/services/graphics/graphics-output-transition-service.ts`)
+fuehrt einen Output-Wechsel strikt seriell aus; jede Stufe hat ein eigenes
+hartes Zeitbudget. Die Helper-Ready-Budgets liegen zentral in
+`apps/bridge/src/services/graphics/output-adapters/output-helper-timeouts.ts`
+(`DISPLAY_OUTPUT_HELPER_READY_TIMEOUT_MS` = 8s,
+`DECKLINK_OUTPUT_HELPER_READY_TIMEOUT_MS` = 12s); die Stop-Budgets stehen als
+`stopStrategy` in den Adaptern, das Renderer-Budget als
+`CONFIG_READY_TIMEOUT_MS` im `electron-renderer-client.ts`.
+
+| Stufe (`stage`) | Display-Helper | DeckLink-Helper | Quelle |
+| --- | ---: | ---: | --- |
+| `next_adapter_select` | ~0s | ~0s | Device-Cache-Lookup |
+| `renderer_configure` | 15s | 15s | `CONFIG_READY_TIMEOUT_MS` |
+| `previous_adapter_stop` (graceful + force) | 2s + 2s = 4s | 4s + 2s = 6s | Adapter-`stopStrategy` |
+| `next_adapter_configure` (Ready-Handshake) | 8s | 12s | `output-helper-timeouts.ts` |
+| `persist` | ~0s | ~0s | Config-Store |
+| **Happy Path worst case** | **27s** | **33s** | Summe |
+
+Schlaegt eine Stufe fehl, laeuft `rollback()` ebenfalls seriell und addiert
+sich auf die bereits verbrauchte Zeit:
+
+| Rollback-Schritt | Display-Helper | DeckLink-Helper |
+| --- | ---: | ---: |
+| `stop()` des neuen Adapters | 4s | 6s |
+| `configureSession()` des Renderers mit alter Konfiguration | 15s | 15s |
+| `configure()` des alten Adapters (Ready-Handshake) | 8s | 12s |
+| **Rollback worst case** | **27s** | **33s** |
+
+Worst case gesamt (Transition scheitert erst beim Ready-Handshake, danach
+voller Rollback mit erneut haengendem Helper): Display ≈ 54s, DeckLink ≈ 66s.
+Allein die Helper-Anteile (Stop + Ready, Hin- und Rueckweg) summieren sich auf
+24s (Display) bzw. 36s (DeckLink); die beiden Renderer-Konfigurationen tragen
+weitere 30s bei. Diese Zahlen sind Obergrenzen; im Normalfall sind Helper in
+unter 2s bereit.
+
+Konsequenz fuer die Timeout-Tabelle oben: Graphics-Configure hat eine Bridge-SLA
+von 16s und eine Relay-Execution-SLA von 20s. Ein einzelner DeckLink-Helper, der
+in sein Ready-Timeout laeuft (12s) plus der vorangehende Stop (bis 6s), reisst
+diese SLA bereits ohne Rollback. Der Relay meldet dann `execution_timeout`,
+waehrend die Bridge die Transition lokal noch zu Ende fuehrt (Dataflow 6).
+
 ## Dataflow 1: Success
 
 ```mermaid
@@ -353,6 +397,9 @@ WebApp:
   reale ATEM/vMix/TriCaster-Netzwerke?
 - Soll `list_outputs` bei kaltem Cache weiterhin eine Bridge-SLA von 11s haben,
   oder braucht Device-Discovery eine eigene laengere Klasse?
+- Passt die Graphics-Configure-SLA (16s Bridge / 20s Relay-Execution) zur
+  seriellen Output-Transition, deren Helper-Budgets allein bis 36s und mit
+  Renderer-Konfiguration bis 66s erreichen koennen (siehe Budget-Abschnitt)?
 - Welche Commands duerfen nach `delivery_timeout` replayed werden, ohne
   unerwuenschte Side-Effects zu riskieren?
 - Sind die aktuellen `invalidates`-Scopes pro Command granular genug, oder

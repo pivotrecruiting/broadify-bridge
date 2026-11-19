@@ -152,6 +152,85 @@ describe("decklink-helper", () => {
       );
     });
 
+    it("parses the diagnostics envelope", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const { listDecklinkDevicesWithDiagnostics } = require("./decklink-helper.js");
+      const promise = listDecklinkDevicesWithDiagnostics();
+
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit(
+          "data",
+          JSON.stringify({
+            devices: [{ id: "decklink-1" }],
+            diagnostics: {
+              apiAvailable: true,
+              apiVersion: "12.8",
+              helperVersion: "0.1.0",
+              message: "ok",
+            },
+          })
+        );
+        child.emit("close", 0);
+      });
+
+      await expect(promise).resolves.toEqual({
+        devices: [{ id: "decklink-1" }],
+        diagnostics: {
+          apiAvailable: true,
+          helperMissing: false,
+          apiVersion: "12.8",
+          helperVersion: "0.1.0",
+          message: "ok",
+        },
+      });
+    });
+
+    it("falls back to array output from older helpers", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const { listDecklinkDevicesWithDiagnostics } = require("./decklink-helper.js");
+      const promise = listDecklinkDevicesWithDiagnostics();
+
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", JSON.stringify([{ id: "decklink-1" }]));
+        child.emit("close", 0);
+      });
+
+      await expect(promise).resolves.toEqual({
+        devices: [{ id: "decklink-1" }],
+        diagnostics: { apiAvailable: true, helperMissing: false },
+      });
+    });
+
+    it("reports api_unavailable when the helper prints the iterator hint on stderr with exit 0", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const { listDecklinkDevicesWithDiagnostics } = require("./decklink-helper.js");
+      const promise = listDecklinkDevicesWithDiagnostics();
+
+      setImmediate(() => {
+        (child.stdout as EventEmitter).emit("data", "[]");
+        (child.stderr as EventEmitter).emit(
+          "data",
+          "DeckLink iterator could not be created. Is Desktop Video installed?"
+        );
+        child.emit("close", 0);
+      });
+
+      const result = await promise;
+      expect(result.devices).toEqual([]);
+      expect(result.diagnostics).toMatchObject({
+        apiAvailable: false,
+        helperMissing: false,
+        message: expect.stringContaining("DeckLink iterator could not be created"),
+        error: expect.stringContaining("DeckLink iterator could not be created"),
+      });
+    });
+
     it("returns empty array when helper exits with non-zero code", async () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
@@ -525,6 +604,64 @@ describe("decklink-helper", () => {
       expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining("Helper failed")
       );
+    });
+
+    it("logs once when the watch process exits", () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const { watchDecklinkDevices } = require("./decklink-helper.js");
+      watchDecklinkDevices(() => {});
+
+      child.emit("exit", 1, null);
+      child.emit("close", 1, null);
+
+      expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Watch process exited")
+      );
+    });
+
+    it("restarts the watch helper with backoff after exit", async () => {
+      jest.useFakeTimers();
+      const first = createMockChild();
+      const second = createMockChild();
+      mockSpawn.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+      const { watchDecklinkDevices } = require("./decklink-helper.js");
+      watchDecklinkDevices(() => {});
+      first.emit("exit", 1, null);
+
+      await jest.advanceTimersByTimeAsync(1_000);
+
+      expect(mockSpawn).toHaveBeenCalledTimes(2);
+      expect(mockSpawn).toHaveBeenLastCalledWith(
+        "/fake/helper/path",
+        ["--watch"],
+        expect.any(Object),
+      );
+      jest.useRealTimers();
+    });
+
+    it("stops restarting after maxAttempts", async () => {
+      jest.useFakeTimers();
+      const children = Array.from({ length: 9 }, () => createMockChild());
+      mockSpawn.mockImplementation(
+        () => children[mockSpawn.mock.calls.length - 1],
+      );
+
+      const { watchDecklinkDevices } = require("./decklink-helper.js");
+      watchDecklinkDevices(() => {});
+      for (let index = 0; index < 9; index += 1) {
+        children[index]?.emit("exit", 1, null);
+        await jest.advanceTimersByTimeAsync(30_000);
+      }
+
+      expect(mockSpawn).toHaveBeenCalledTimes(9);
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining("Watch process restart attempts exhausted"),
+      );
+      jest.useRealTimers();
     });
 
     it("uses console when getBridgeContext throws", () => {

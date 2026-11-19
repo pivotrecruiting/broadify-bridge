@@ -30,6 +30,8 @@ export function publishEngineStatusEvent(
       macroExecution: state.macroExecution ?? null,
       lastCompletedMacroExecution: state.lastCompletedMacroExecution ?? null,
       error: state.error ?? null,
+      errorCode: state.errorCode ?? null,
+      reconnect: state.reconnect ?? null,
       lastUpdate: state.lastUpdate ?? null,
     },
   });

@@ -30,11 +30,15 @@ int main() {
   ok &= expect(shouldRunProgramWork({true, false, false}), "new camera runs");
   ok &= expect(shouldRunProgramWork({false, true, false}), "program change runs");
   ok &= expect(shouldRunProgramWork({false, false, true}), "graphics change runs");
+  ok &= expect(shouldRunProgramWork({false, false, false, true}),
+               "new screen frame runs program work");
 
   ok &= expect(shouldRunFusedKeyerWork({true, false, false}),
                "fused keyer runs on new camera");
   ok &= expect(!shouldRunFusedKeyerWork({false, true, true}),
                "fused keyer does not run on reused camera");
+  ok &= expect(!shouldRunFusedKeyerWork({false, false, false, true}),
+               "fused keyer ignores screen-only frames");
 
   ok &= expect(!shouldWriteFramebusFrame(false, true, true, true),
                "framebus kill switch blocks writes");

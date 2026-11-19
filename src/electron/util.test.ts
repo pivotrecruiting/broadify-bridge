@@ -9,7 +9,9 @@ jest.mock("./services/env-loader.js", () => ({
 }));
 
 const mockIpcMainHandle = jest.fn();
+const mockApp = { isPackaged: false };
 jest.mock("electron", () => ({
+  app: mockApp,
   ipcMain: {
     handle: mockIpcMainHandle,
   },
@@ -24,6 +26,7 @@ const originalEnv = process.env;
 describe("util", () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
+    mockApp.isPackaged = false;
   });
 
   afterAll(() => {
@@ -31,13 +34,25 @@ describe("util", () => {
   });
 
   describe("isDev", () => {
-    it("returns true when NODE_ENV is development", () => {
+    it("returns true when NODE_ENV is development and the app is not packaged", () => {
       process.env.NODE_ENV = "development";
+      mockApp.isPackaged = false;
       expect(isDev()).toBe(true);
+    });
+
+    it("returns false when NODE_ENV is development but the app is packaged", () => {
+      process.env.NODE_ENV = "development";
+      mockApp.isPackaged = true;
+      expect(isDev()).toBe(false);
     });
 
     it("returns false when NODE_ENV is production", () => {
       process.env.NODE_ENV = "production";
+      expect(isDev()).toBe(false);
+    });
+
+    it("returns false when NODE_ENV is unset", () => {
+      delete process.env.NODE_ENV;
       expect(isDev()).toBe(false);
     });
   });

@@ -65,7 +65,28 @@ Run **Test Release Build** (Windows matrix job) or re-run a failed release build
 
 `MODNet.mlpackage` (tracked in git) history:
 
-- **2026-09-15 — fine-tune ft-v5d** (current, macOS AND Windows): winner of the
+- **2026-10-11 — fine-tune ft-v7d** (introduced by this change, macOS AND Windows):
+  replaces ft-v6f, which made head/ear/shoulder edges flicker more in the field.
+  Root cause: the own greenscreen labels used by every v6 run marked the black office
+  chair behind the shoulders as person (in 6-98 % of the frames per clip), plus a dark
+  seam and label noise; the v6f field advantage was a selection bias (picked on the
+  same clips it adapted to). ft-v7d = ft-v5d + framed "pictures of people" pasted into
+  training backgrounds with alpha 0 (share 0.15 for 3000 iters, then 0.30 for 2000
+  iters), NO own labels, NO SOC. Acceptance gate written down before the first
+  candidate result (broadify-keyer-training, models/results/gate-20261010/
+  GATE-KRITERIEN.md; one tie-break rule was added before the v7c/v7d results; ft-v6f
+  fails the gate): out-of-domain VM240K test sequences through the simulated Mac
+  chain, head and shoulder edge flicker and band MAD within +/-1.3 % of ft-v5d (raw
+  matte shoulder MAD +1.6 %), dark objects behind the person keyed 0.86x, framed
+  person picture on the wall keyed 0.71x, benchmark 512 clean 5.7 / webcam 8.8
+  (ft-v5d CoreML 6.3 / 9.2). Windows: ONNX export matches the checkpoint within float
+  noise (benchmark 5.8 / 8.8); manifest.json sha256 updated here. PENDING before the
+  next RC: attach modnet-ft-v7d.onnx to a broadify-bridge release and repoint
+  MODNET_MODEL_URL, otherwise the Windows release job stops at the sha256 check.
+- **2026-10-05 — fine-tune ft-v6f** (v0.27.3-rc.5): ft-v5d + own chroma-keyed
+  greenscreen labels (25 %), SOC adaptation on own webcam frames, framed picture
+  distractors. Superseded by ft-v7d after field feedback (edge flicker, see above).
+- **2026-09-15 — fine-tune ft-v5d** (macOS AND Windows, v0.27.1-rc.15 .. v0.27.2 and v0.27.3-rc.1 .. rc.4): winner of the
   2026-09-12 autonomous training night (weighted multi-resolution 512/384/320/256
   + SD/HD VideoMatte240K composites + hardened webcam degradation, cooldown
   segments with decaying LR). Benchmark: 512 clean 6.5 / webcam 9.2 (ft-v3: 6.8 /

@@ -11,7 +11,8 @@ import type {
  * @returns Output lists for output1 (fill/video) and output2 (key).
  */
 export function transformDevicesToOutputs(
-  devices: DeviceDescriptorT[]
+  devices: DeviceDescriptorT[],
+  options: { ownedPortIds?: ReadonlySet<string> } = {},
 ): BridgeOutputsT {
   const output1Devices: OutputDeviceT[] = [];
   const output2Devices: OutputDeviceT[] = [];
@@ -35,6 +36,7 @@ export function transformDevicesToOutputs(
         continue;
       }
 
+      const owned = options.ownedPortIds?.has(port.id) ?? false;
       const available =
         device.status.present &&
         device.status.ready &&
@@ -44,7 +46,8 @@ export function transformDevicesToOutputs(
         id: port.id,
         name: `${device.displayName} - ${port.displayName}`,
         type: mapDeviceTypeToOutputType(device.type),
-        available,
+        available: available || owned,
+        ownedByBridge: owned || undefined,
         deviceId: device.id,
         portType: port.type,
         portRole: port.role,

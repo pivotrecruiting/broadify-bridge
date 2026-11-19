@@ -129,6 +129,7 @@ export class TricasterAdapter extends EventEmitter implements EngineAdapter {
       this.setState({
         status: "error",
         error: engineError.message,
+        errorCode: engineError.code,
       });
       throw engineError;
     }
@@ -148,6 +149,7 @@ export class TricasterAdapter extends EventEmitter implements EngineAdapter {
       port: undefined,
       type: undefined,
       error: undefined,
+      errorCode: undefined,
     });
 
     this.baseUrl = "";

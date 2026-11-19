@@ -4,7 +4,7 @@
     {
       "name": "modnet",
       "file": "modnet.onnx",
-      "sha256": "7ece666ea70a1860ceca6e61797a152d9d123465e28c9f80a8aa8e08ba6d0eab",
+      "sha256": "e318d98297bd32ac9ac8493a31395a1f3f2119f779bab0b563ee848ff50d6e70",
       "required": true
     },
     {

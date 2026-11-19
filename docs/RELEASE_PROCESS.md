@@ -38,6 +38,7 @@ Wirkung:
 - aktive Nutzer auf `latest` bekommen dadurch kein Auto-Update
 - erst das spätere finale Tag ohne `-rc` triggert den echten Produktions-Rollout
 - RC-Builds werden mit dem RC/Test-Relay verpackt, Live-Builds mit dem Production-Relay
+- RC-Builds öffnen nach dem Bridge-Start die Dev-Web-App (`https://studio-control-git-dev-broadify.vercel.app`), Live-Builds die Production-Web-App (`https://app.broadify.de`)
 - RC-Builds verwenden eine eigene App-ID und einen eigenen App-Namen (`Broadify Bridge RC`), damit sie die Live-App bei der Installation nicht ersetzen
 
 ## NPM-Release-Skript
@@ -114,6 +115,12 @@ Relay-Routing:
 - `release:test` bzw. `vX.Y.Z-rc.N` nutzt `RELAY_URL_RC` und `BRIDGE_RELAY_JWKS_URL_RC`
 - `release:live` bzw. `vX.Y.Z` nutzt `RELAY_URL` und `BRIDGE_RELAY_JWKS_URL`
 - die gepackte App überschreibt diese releaseverwalteten Werte bewusst gegen alte `userData/.env`-Werte, damit ein installierter Live-Build einen RC-Build nicht auf Production zurückzieht
+
+Web-App-Routing:
+
+- der Workflow-Schritt „Resolve release channel and relay config" setzt zusätzlich `RESOLVED_WEBAPP_URL` (Konstante im Workflow, kein Secret): `rc` → `https://studio-control-git-dev-broadify.vercel.app`, `latest` → `https://app.broadify.de`
+- der Schritt „Prepare Bridge config for packaging" schreibt den Wert als `PRODUCTION_STUDIO_CONTROL_WEBAPP_URL` in `apps/bridge/dist/.env` (gepackt unter `resources/bridge/dist/.env`); `test-release.yml` schreibt immer die Dev-Web-App
+- `PRODUCTION_STUDIO_CONTROL_WEBAPP_URL` ist wie die Relay-Werte releaseverwaltet (`src/electron/services/env-loader.ts`) und gewinnt über `userData/.env`; Vertrag gepinnt in `scripts/release-webapp-url-contract.test.cjs` (`npm run test:release-contracts`)
 
 ## DeckLink Helper Hosting (ohne SDK) - Einmalig vorbereiten
 
@@ -327,6 +334,18 @@ Der Display Helper wird **nicht** separat gehostet wie der DeckLink Helper. Er w
 - **Signing:** Bei gesetztem `APPLE_SIGNING_IDENTITY` werden Runtime-Dylib und Binary automatisch mit `codesign` signiert (für Notarization).
 - **Kein separater Release nötig** – das Binary landet in der gepackten App.
 
+## MSVC-Runtime neben den Windows-Helfern (CI-Build)
+
+`display-helper.exe` und `meeting-helper.exe` (plus SDL2/ONNX-Runtime/OpenVINO-DLLs) sind `/MD`-Builds. Ohne installiertes VC++-Redistributable startet der Helfer auf dem Kunden-PC mit `0xC0000135` (`STATUS_DLL_NOT_FOUND`) nicht (Feldbefund 19.10.). Der Windows-Runner hat das Redistributable installiert und sieht das Problem in den Smoke-Tests nicht. Entscheidung (26.10.): den kompletten `Microsoft.VC143.CRT`-Satz als `extraResources` neben **beide** Helfer packen – nicht `/MT`, nicht `vc_redist` im NSIS (das MSI-Ziel bliebe kaputt).
+
+- **Single Source of Truth:** `scripts/lib/windows-vc-runtime.cjs` (DLL-Liste, Helfer-Ordner `native/display-helper` und `native/meeting-helper`, Staging-Ordner `build/windows-vc-runtime/`). PowerShell/Bash lesen die Liste über `node scripts/list-windows-vc-runtime-paths.cjs [--staged|--dlls]`.
+- **Staging:** `npm run prepare:vc-runtime:windows` (`scripts/prepare-windows-vc-runtime.ps1`) läuft in `dist:win` direkt nach `build:meeting-helper`; Quelle ist `$env:VCToolsRedistDir\x64\Microsoft.VC143.CRT` (von `ilammy/msvc-dev-cmd` gesetzt, Fallback `vswhere`). Fehlt eine DLL, bricht der Build ab.
+- **Fail-Fast Check:** `scripts/verify-release-artifacts.sh --arch x64` verlangt die gestagten DLLs vor `electron-builder`.
+- **Packaging:** `electron-builder.config.cjs` kopiert den Satz nach `resources/native/display-helper/` und `resources/native/meeting-helper/` (Dopplung gewollt: Windows sucht zuerst im Exe-Ordner).
+- **Dependency-Gate:** Workflow-Step „Verify Windows native helper dependencies (dumpbin)" nach „Build Electron App" ruft `scripts/verify-windows-native-dependencies.cjs` auf: `dumpbin /DEPENDENTS` auf jede gepackte Helfer-Exe/-DLL; jeder Import muss eine Windows-System-DLL (Allowlist in `scripts/lib/windows-native-dependency-policy.cjs`) oder eine Datei im selben Ordner sein. So fällt eine fehlende CRT-DLL auch auf einem Runner **mit** Redistributable auf.
+- **Signaturen:** Die CRT-DLLs tragen Microsofts Authenticode-Signatur und werden **nicht** mit dem Broadify-Zertifikat nachsigniert (nicht in `scripts/sign-windows-native-resources.cjs`). `scripts/verify-windows-release-signatures.ps1` prüft Existenz, gültige Signatur und Signer `CN=Microsoft Corporation`; beide Smoke-Tests (MSI, NSIS) verlangen die installierten Dateien.
+- **Contract-Tests:** `npm run test:release-contracts` (`scripts/windows-vc-runtime.test.cjs`, `scripts/windows-native-dependencies.test.cjs`).
+
 ## Release-Prozess
 
 ### Schritt 1: Feature-Branch zu dev mergen
@@ -437,6 +456,10 @@ Für Windows zusätzlich prüfen:
 - Der Workflow-Schritt `Verify Windows signatures` ist erfolgreich für `.exe` und `.msi`.
 - Der Workflow-Schritt `Smoke test Windows MSI install` ist erfolgreich.
 - `latest.yml` verweist auf die NSIS-`.exe`; die `.msi` ist nur manueller Download.
+
+Für macOS zusätzlich prüfen:
+
+- Der Build-Schritt `verify-macos-release-signing.sh` ist erfolgreich und loggt `[MacSignVerify] Main executable LC_UUID -> <uuid>`. Die UUID muss sich zwischen Prod und RC unterscheiden (Local-Network-Privacy, siehe `docs/signing/apple-signing.md`, Abschnitt "Main executable UUID"). Manuell: `dwarfdump --uuid "<App>.app/Contents/MacOS/<Name>"` gegen `node scripts/patch-macos-main-executable-uuid.cjs --print-expected ...`.
 
 Für RC-Releases zusätzlich prüfen:
 

@@ -136,7 +136,7 @@ describe("graphics-framebus-session-service", () => {
   });
 
   describe("applyFrameBusSessionConfig", () => {
-    it("resolves config, applies env, logs change, and returns config", () => {
+    it("resolves config, applies env without overrides, logs change, and returns config", () => {
       const next = { ...baseFrameBusConfig, name: "fb-next" };
       mockBuildFrameBusConfig.mockReturnValue(next);
 
@@ -144,6 +144,27 @@ describe("graphics-framebus-session-service", () => {
 
       expect(result).toEqual(next);
       expect(mockApplyFrameBusEnv).toHaveBeenCalledWith(next);
+      expect(mockLogger.info).toHaveBeenCalled();
+    });
+
+    it("does not apply env when overrides carry a manager-owned bus name", () => {
+      const next = { ...baseFrameBusConfig, name: "bfy-meet-gfx-front" };
+      const overrides = { name: "bfy-meet-gfx-front", slotCount: 3 };
+      mockBuildFrameBusConfig.mockReturnValue(next);
+
+      const result = applyFrameBusSessionConfig(
+        baseOutputConfig,
+        null,
+        overrides,
+      );
+
+      expect(result).toEqual(next);
+      expect(mockBuildFrameBusConfig).toHaveBeenCalledWith(
+        baseOutputConfig,
+        null,
+        overrides,
+      );
+      expect(mockApplyFrameBusEnv).not.toHaveBeenCalled();
       expect(mockLogger.info).toHaveBeenCalled();
     });
   });

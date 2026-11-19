@@ -26,7 +26,8 @@ export const VmixActionRequestSchema = z.discriminatedUnion("actionType", [
 export function mapEngineErrorToStatusCode(code: EngineErrorCode): number {
   if (
     code === EngineErrorCode.ALREADY_CONNECTED ||
-    code === EngineErrorCode.ALREADY_CONNECTING
+    code === EngineErrorCode.ALREADY_CONNECTING ||
+    code === EngineErrorCode.DEVICE_BUSY
   ) {
     return 409; // Conflict
   }
@@ -50,6 +51,10 @@ export function mapEngineErrorToStatusCode(code: EngineErrorCode): number {
     code === EngineErrorCode.INVALID_PORT
   ) {
     return 400; // Bad Request
+  }
+
+  if (code === EngineErrorCode.NOT_CONNECTED) {
+    return 503; // Service Unavailable
   }
 
   return 500;

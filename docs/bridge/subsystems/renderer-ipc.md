@@ -83,6 +83,19 @@ sequenceDiagram
 ## Startparameter (Renderer‑Process)
 - CLI: `--graphics-renderer --renderer-entry <path>`\n
 - Env: `BRIDGE_GRAPHICS_IPC_PORT`, `BRIDGE_GRAPHICS_IPC_TOKEN`, `BRIDGE_GRAPHICS_USER_DATA_DIR`
+- Beide CLI-Flags sind Pflicht. `--graphics-renderer` allein beendet den Prozess mit Exit 1 (`Missing --renderer-entry argument`); ein positionaler Pfad ohne Flag wird nie als Entry interpretiert.
+
+## Renderer-Entry-Allowlist (Desktop Main, Aux Mode)
+Die gepackte Desktop-Binary importiert im Aux Mode die per `--renderer-entry` angegebene Datei in ihren eigenen (signierten, TCC-berechtigten) Main-Prozess. Damit kein lokaler Prozess beliebigen Code in die App laden kann, prueft `src/electron/renderer-entry-policy.ts` (`resolveAllowedRendererEntry`) jeden Entry vor dem `import()`:
+
+- Der Entry muss eine regulaere Datei sein (`not_a_file`).
+- Der Entry muss nach Symlink-Aufloesung (`realpath`) **innerhalb** von `process.resourcesPath` oder `app.getAppPath()` liegen; `..`-Traversal, absolute Fremdpfade und Symlinks nach aussen werden abgelehnt (`outside_allowed_roots`). Der Root selbst zaehlt nicht als "innerhalb".
+- Der aufgeloeste Basename muss in `ALLOWED_RENDERER_ENTRY_BASENAMES` stehen: `electron-renderer-entry.js` (Graphics-Renderer) oder `display-output-entry.js` (Conference-Display-Fenster) (`disallowed_basename`).
+- Fehler bei `realpath`/`stat` fuehren zu `unresolvable`.
+
+Jede Ablehnung loggt nur den Grund (`[GraphicsRenderer] Rejected renderer entry (<reason>)`), nie den untrusted Pfad, und beendet den Prozess mit `app.exit(1)`. Legitime Spawner sind ausschliesslich `electron-renderer-client.ts` (Graphics-Renderer) und `conference/conference-display-output.ts` (Display-Fenster); beide uebergeben Entries aus `<bridge-cwd>/dist/...`, also `<resources>/bridge/dist/...` im Paket bzw. `apps/bridge/dist/...` im Dev-Repo (= unter `app.getAppPath()`).
+
+Im Dev-Modus (Electron-Binary aus `node_modules`) greift die Policy nicht: Electrons Default-App laedt den ersten Nicht-Options-Parameter (`<path>`) direkt als App, `main.ts` wird dort nicht ausgefuehrt.
 - Session-Setup: `renderer_configure` enthält `framebusName`, `framebusSlotCount`, `framebusSize`, `pixelFormat`
 - FrameBus-Namen im `ready`-ACK werden für den Vergleich kanonisiert: POSIX kann ein führendes `/`, Windows den Object-Namespace `Local\` oder `Global\` ergänzen. Alle übrigen Config-Metadaten und der kanonische Segmentname müssen weiterhin exakt zur ausstehenden Konfiguration passen.
 
@@ -91,3 +104,5 @@ sequenceDiagram
 - `apps/bridge/src/services/graphics/renderer/electron-renderer-entry.ts`
 - `apps/bridge/src/services/graphics/renderer/graphics-renderer.ts`
 - `apps/bridge/src/services/graphics/renderer/animation-css.ts`
+- `src/electron/renderer-entry-policy.ts` (Allowlist fuer `--renderer-entry`)
+- `apps/bridge/src/services/conference/conference-display-output.ts` (zweiter Spawner im Aux Mode)

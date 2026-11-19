@@ -5,6 +5,10 @@
 #include <vector>
 
 using broadify::meeting::extractStringArrayField;
+using broadify::meeting::extractBoolField;
+using broadify::meeting::extractDoubleField;
+using broadify::meeting::extractIntField;
+using broadify::meeting::extractStringField;
 
 namespace {
 
@@ -19,6 +23,40 @@ bool expect(bool condition, const char *what) {
 
 int main() {
   bool ok = true;
+
+  // Field names can also appear as string values before the actual key.
+  {
+    const std::string body =
+        R"({"enabled":true,"source":"page","mode":"pip","page":3})";
+    ok &= expect(extractIntField(body, "page", 0) == 3,
+                 "value equal to later int key");
+    ok &= expect(extractStringField(body, "mode") == "pip",
+                 "mode string parsed");
+    ok &= expect(extractStringField(body, "source") == "page",
+                 "source string value parsed");
+  }
+
+  // Bool and double fields should also ignore earlier matching values.
+  {
+    ok &= expect(extractBoolField(R"({"label":"enabled","enabled":false})",
+                                  "enabled", true) == false,
+                 "bool key after matching string value");
+    ok &= expect(extractDoubleField(R"({"note":"width","width":1.5})",
+                                    "width", 0.0) == 1.5,
+                 "double key after matching string value");
+  }
+
+  // Whitespace before the key/value colon is accepted.
+  {
+    ok &= expect(extractIntField(R"({"page" : 7})", "page", 0) == 7,
+                 "whitespace before colon");
+  }
+
+  // A name that appears only as a string value must not be treated as a key.
+  {
+    ok &= expect(extractIntField(R"({"source":"page"})", "page", 9) == 9,
+                 "string value only returns fallback");
+  }
 
   // Plain array.
   {

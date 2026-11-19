@@ -1,3 +1,5 @@
+import { getLiveProgramCapabilities } from "./services/pgm/pgm-command-handler.js";
+import { pgmHelperManager } from "./services/pgm/pgm-helper-manager.js";
 import { isAllowedOrigin } from "./routes/origin-allowlist.js";
 
 import type { RelayClient } from "./services/relay-client.js";
@@ -76,7 +78,18 @@ export async function registerServerRoutes(
   await server.register(routes.registerOutputsRoute);
   await server.register(routes.registerConfigRoute);
   await server.register(routes.registerEngineRoute);
-  await server.register(routes.registerVideoRoute);
+  await server.register(routes.registerVideoRoute, {
+    // Local diagnostics for the live program preview (no relay needed).
+    getStatus: () => {
+      const liveProgram = pgmHelperManager.getStatus();
+      return {
+        status: liveProgram.input ? "configured" : "not-configured",
+        message: liveProgram.input ? "Live program source selected" : "No live program source selected",
+        live_program: liveProgram,
+        capabilities: { live_program: getLiveProgramCapabilities() },
+      };
+    },
+  });
   await server.register(routes.registerGraphicsBrowserInputRoute);
   await server.register(routes.registerMeetingCameraRoute);
   await server.register(routes.registerMeetingMediaRoute);

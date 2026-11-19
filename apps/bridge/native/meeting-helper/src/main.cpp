@@ -1,4 +1,5 @@
 #include "capture/camera_source.h"
+#include "capture/screen_capture_source.h"
 #include "common/options.h"
 #include "control/control_server.h"
 #include "keyer/matting_backend.h"
@@ -6,6 +7,7 @@
 #if BROADIFY_ENABLE_OPENVINO && defined(_WIN32)
 #include "keyer/openvino_keyer.h"
 #endif
+#include "live/program_stream.h"
 #include "pipeline/frame_pipeline.h"
 #include "preview/preview_frame_store.h"
 #include "preview/mjpeg_server.h"
@@ -21,6 +23,7 @@
 #include "state/meeting_state.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
+#include "util/path_utf8.h"
 #include "util/win_qos.h"
 
 #if defined(__APPLE__)
@@ -360,13 +363,14 @@ bool benchmarkKeyerBackend(
     // A/B quality support (e.g. fp16 vs fp32): dump the last mask of each
     // mode as a binary PGM so an external diff can quantify the deviation.
     // Self-test only, off unless the directory env is set.
-    if (const char *dumpDir =
-            std::getenv("BROADIFY_MEETING_KEYER_SELF_TEST_MASK_DUMP_DIR");
-        dumpDir != nullptr && dumpDir[0] != '\0' && !lastMask.alpha.empty()) {
+    if (const std::string dumpDir =
+            getenvUtf8("BROADIFY_MEETING_KEYER_SELF_TEST_MASK_DUMP_DIR");
+        !dumpDir.empty() && !lastMask.alpha.empty()) {
       std::ostringstream dumpPath;
       dumpPath << dumpDir << "/mask_" << backendName << "_" << mode.inputSize
                << ".pgm";
-      std::ofstream dump(dumpPath.str(), std::ios::binary);
+      std::ofstream dump =
+          openOutputFileUtf8(dumpPath.str(), std::ios::out | std::ios::binary);
       if (dump) {
         dump << "P5\n" << lastMask.width << " " << lastMask.height << "\n255\n";
         dump.write(reinterpret_cast<const char *>(lastMask.alpha.data()),
@@ -742,9 +746,14 @@ int main(int argc, char **argv) {
 
   MeetingState state;
   std::unique_ptr<CameraSource> camera = createCameraSource();
+  std::unique_ptr<ScreenCaptureSource> screen =
+      createScreenCaptureSource(options.parentPid);
   PreviewFrameStore previewFrames;
   VcamShmRingWin vcamShm;
   MeetingRecorder recorder;
+  // WebRTC program stream for the web app's viewer; idle (no copies, no encoder) without viewers.
+  ProgramStream programStream(previewFrames, state, ProgramStreamConfig{options.width, options.height, options.fps});
+  programStream.start();
 
   std::promise<void> controlListening;
   std::future<void> controlListeningFuture = controlListening.get_future();
@@ -811,7 +820,7 @@ int main(int argc, char **argv) {
 #if defined(_WIN32)
   VcamShmPublisher vcamShmPublisher;
 #endif
-  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(previewFrames), &vcamShm,
+  std::thread frames(runFramePipeline, std::cref(options), std::ref(state), std::ref(*camera), std::ref(*screen), std::ref(previewFrames), &vcamShm,
 #if defined(_WIN32)
                      &vcamShmPublisher,
 #endif
@@ -953,12 +962,14 @@ int main(int argc, char **argv) {
       options.controlSocket,
       std::ref(state),
       std::ref(*camera),
+      std::ref(*screen),
       std::ref(previewFrames),
       std::ref(recorder),
       std::cref(options),
       std::ref(g_running),
       [&controlListening]() { controlListening.set_value(); },
-      &vcamShm);
+      &vcamShm,
+      &programStream);
 
   controlListeningFuture.wait();
 
@@ -985,6 +996,7 @@ int main(int argc, char **argv) {
 
   stopVirtualCamera();
   camera->stop();
+  screen->stop();
   previewFrames.clear();
   {
     std::lock_guard<std::mutex> lock(state.mutex);
@@ -1001,6 +1013,8 @@ int main(int argc, char **argv) {
   // runs after the frame pipeline has stopped, so no appendVideoFrame can
   // race the writer teardown. stop() is a no-op when nothing is recording.
   recorder.stop();
+  // Close viewer PeerConnections and flush the stream encoder (joins its thread).
+  programStream.stop();
   // The preview/vcam/control servers block in accept() and never observe
   // g_running; joining them would hang forever (the historical reason this
   // helper survived every shutdown). Their sockets are closed by the OS.

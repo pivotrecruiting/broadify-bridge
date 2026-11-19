@@ -6,6 +6,7 @@ import { DecklinkVideoOutputAdapter } from "./output-adapters/decklink-video-out
 import { DisplayVideoOutputAdapter } from "./output-adapters/display-output-adapter.js";
 import type { GraphicsOutputAdapter } from "./output-adapter.js";
 import { findCachedDevicePortById } from "./graphics-device-port-resolver.js";
+import { GraphicsError } from "./graphics-errors.js";
 
 /**
  * Select the output adapter for the active graphics output configuration.
@@ -36,9 +37,21 @@ export async function selectOutputAdapter(
     const portMatch = outputId
       ? await findCachedDevicePortById(outputId)
       : null;
-    if (portMatch?.device.type === "display") {
+    if (!portMatch) {
+      // No DeckLink fallback for a display target: a persisted display output
+      // whose monitor is unplugged used to resolve to the DeckLink adapter,
+      // whose helper does not even exist on Windows ("DeckLink helper not
+      // executable", recovery attempts exhausted). The caller keeps the
+      // persisted config and the output supervisor waits for the device.
+      throw new GraphicsError(
+        "output_device_not_found",
+        `Display output ${outputId ?? "(none)"} is not connected`,
+      );
+    }
+    if (portMatch.device.type === "display") {
       return new DisplayVideoOutputAdapter();
     }
+    // An HDMI port on a DeckLink card (e.g. UltraStudio) is a DeckLink output.
     return new DecklinkVideoOutputAdapter();
   }
   return new StubOutputAdapter();

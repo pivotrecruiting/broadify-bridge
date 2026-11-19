@@ -51,7 +51,7 @@ Schema: `GraphicsConfigureOutputsSchema`
     "output1Id": "<device>-sdi-a",
     "output2Id": "<device>-sdi-b"
   },
-  "format": { "width": 1920, "height": 1080, "fps": 50 },
+  "format": { "width": 1920, "height": 1080, "fps": 50, "displayModeId": 13 },
   "range": "legal",
   "colorspace": "auto"
 }
@@ -64,6 +64,19 @@ Schema: `GraphicsConfigureOutputsSchema`
 - `video_hdmi`: ein HDMI/DisplayPort/Thunderbolt‑Port.
 - `key_fill_ndi` & `stub`: keine zusätzliche Port‑Validierung.
 - `format` wird gegen unterstützte Modes geprüft (DeckLink und Display-Ports).
+- `format.displayModeId` ist optional und nur für DeckLink relevant. Wenn gesetzt,
+  muss der Helper diesen Mode für den Zielport melden; die Adapter übergeben ihn
+  als `--display-mode`.
+- Display-Targets tragen Listen-Indizes ab `0`; die Bridge akzeptiert diese
+  Werte, ignoriert sie fuer Display-Ausgaben und meldet ungueltige Payloads als
+  lesbares `output_config_error`.
+
+## Read-only Output/Status Commands
+- `get_status` liefert zusätzlich `platform` und
+  `outputCapabilities.decklink`.
+- `list_outputs` liefert zusätzlich `diagnostics.platform` und
+  `diagnostics.decklink.state` (`ok`, `unsupported_platform`,
+  `helper_missing`, `api_unavailable`, `no_devices`).
 
 ## 2) graphics_send
 Schema: `GraphicsSendSchema`
@@ -94,6 +107,7 @@ Schema: `GraphicsSendSchema`
 - `durationMs` erfordert `presetId`.
 - `presetId` ist **exklusiv**: ein Send mit `presetId` räumt konkurrierende Ebenen derselben Replace-Gruppe (alle Nicht-`backgrounds`) weg (`prepareBeforeRender` → `removeLayersNotInPreset`) und setzt das aktive Preset.
 - `reportPresetId` ist **reporting-only**: es lässt die Ebene unter `graphics_status.activePresets` erscheinen (damit Steuer-Clients den aktiven Preset-Zustand spiegeln), nimmt aber **nie** am exklusiven Ownership-Pfad teil und setzt kein aktives Preset. Additive Ebenen (Meeting-Presets, die mit der Content-Ebene und über Kategorien hinweg koexistieren) senden `reportPresetId` statt `presetId`. Nicht mit `durationMs` kombinieren (nur `presetId` erfüllt die durationMs-Regel).
+- Interne Meeting-Content-Layer (`meeting-content-video`, `meeting-browser-source`) werden nicht ueber `graphics_status` gemeldet. Ihr autoritativer Zustand steht in `meeting_status.content_source` (siehe [Meeting Status Contract](./meeting-status-contract.md)).
 - `manifest.render` wird auf das aktive Output-Format normalisiert (`outputConfig.format`).
 - Bei Abweichung zwischen Payload und aktivem Output-Format wird ein Warn-Log geschrieben, der Send wird nicht abgebrochen.
 - HTML/CSS wird gesäubert und gegen gefährliche Inhalte geprüft.

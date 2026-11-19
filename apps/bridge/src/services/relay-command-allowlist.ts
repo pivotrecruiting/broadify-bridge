@@ -5,6 +5,8 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "get_status",
   "bridge_pair_validate",
   "list_outputs",
+  // Mode-driven Studio restore – see docs/bridge/features/mode-activation.md
+  "mode_activate",
   "engine_connect",
   "engine_disconnect",
   "engine_get_status",
@@ -34,6 +36,10 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "meeting_camera_pip_set",
   "meeting_camera_audio_levels",
   "meeting_camera_auto_director",
+  "meeting_screen_list",
+  "meeting_screen_start",
+  "meeting_screen_stop",
+  "meeting_screen_pick",
   "meeting_recording_microphones",
   "meeting_recording_pick_path",
   "meeting_recording_start",
@@ -81,6 +87,22 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "power_socket_delete",
   "power_socket_set",
   "power_socket_test",
+  // Live program (PGM) preview – see docs/bridge/features/pgm-live-preview.md
+  "pgm_get_status",
+  "pgm_inputs_list",
+  "pgm_source_select",
+  "pgm_source_clear",
+  "pgm_session_list",
+  "pgm_webrtc_offer",
+  "pgm_webrtc_close",
+  "pgm_snapshot",
+  "pgm_recording_pick_path",
+  "pgm_recording_start",
+  "pgm_recording_stop",
+  "meeting_program_status",
+  "meeting_program_sessions",
+  "meeting_program_offer",
+  "meeting_program_close",
 ] as const;
 
 const RELAY_COMMAND_ALLOWLIST_SET = new Set<string>(RELAY_COMMAND_ALLOWLIST);

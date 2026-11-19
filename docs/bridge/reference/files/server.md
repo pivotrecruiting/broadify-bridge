@@ -19,13 +19,22 @@ Erstellt und startet den Fastify‑Server, initialisiert Logger/Context, Device�
 - Startet Device‑Watcher
 - Optional: startet Relay‑Client
 - Registriert CORS/WebSocket Plugins
+- Delegiert den verzögerten Engine-Startup-Reconnect an
+  `engineAdapter.startPersistedAutoConnect()` nach `listen()` und optionalem
+  Relay-Connect. Die Timer-/Retry-Logik liegt damit im EngineAdapterService,
+  nicht mehr in `server.ts`.
 
 ## Shutdown-Reihenfolge
-- `meetingHelperManager.beginShutdown()` ist das ERSTE Statement im
-  Shutdown-Handler (vor Logging und allen Stop-Schritten): Das
-  Prozessgruppen-SIGTERM kann den Meeting-Helper töten, bevor der
+- `engineAdapter.beginShutdown()` ist das ERSTE Statement im Shutdown-Handler.
+  Dadurch werden Engine-Reconnects unterdrückt, bevor weitere Stop-Schritte
+  laufen.
+- Direkt danach setzt `meetingHelperManager.beginShutdown()` sein Shutdown-Flag:
+  Das Prozessgruppen-SIGTERM kann den Meeting-Helper töten, bevor der
   Meeting-Stop-Schritt läuft; ohne das Flag würde dieser Exit als Crash
   klassifiziert und mitten im Shutdown ein Restart-Timer gestellt.
+- Nach `stopCommandRouter()` wird `engineAdapter.disconnect()` mit 7 s Budget
+  ausgeführt, bevor der Relay-Client getrennt wird. So kann der finale
+  `engine_status disconnected` noch über Relay gesendet werden.
 
 ## Fehlerfälle
 - Port belegt (`EADDRINUSE`)

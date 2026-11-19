@@ -4,6 +4,7 @@ import {
   getArgMap,
   resolveRendererEntry,
 } from "./main-argv.js";
+import { resolveAllowedRendererEntry } from "./renderer-entry-policy.js";
 import { ipcMainHandle, isDev, ipcWebContentsSend } from "./util.js";
 import { getPreloadPath, getUIPath, getIconPath } from "./pathResolver.js";
 import { getStaticData, pollResources } from "./test.js";
@@ -26,12 +27,14 @@ import {
   logAppWarn,
 } from "./services/app-logger.js";
 import { appUpdaterService } from "./services/app-updater.js";
+import { APP_SHUTDOWN_TIMEOUT_MS } from "./services/shutdown-budget.js";
 import {
   isPortAvailable,
   checkPortsAvailability,
 } from "./services/port-checker.js";
 import { validateEngineConnectInput } from "./services/engine-connect-contract.js";
 import { isAllowedExternalUrl } from "./services/external-url.js";
+import { createWebAppOpenGate } from "./services/web-app-open-gate.js";
 import {
   detectNetworkInterfaces,
   resolveBindAddress,
@@ -56,15 +59,12 @@ const DISABLED_CHROMIUM_FEATURES = [
   "WebGPU",
   "WebGPUDeveloperFeatures",
 ];
-// Must exceed the bridge's own graceful-shutdown budget (~22s meeting stop:
-// an in-flight recording is finalized before the helper is killed). Without a
-// recording the whole chain completes in about a second.
-const APP_SHUTDOWN_TIMEOUT_MS = 30000;
 
 const argMap = getArgMap(process.argv);
 const rendererEntry = resolveRendererEntry(process.argv);
-const isRendererProcess =
-  argMap.has("graphics-renderer") || Boolean(rendererEntry);
+// Aux mode is opted into by the explicit flag only; a renderer entry on its
+// own never switches the desktop binary into aux mode.
+const isRendererProcess = argMap.has("graphics-renderer");
 
 if (!isRendererProcess) {
   app.commandLine.appendSwitch(
@@ -78,15 +78,33 @@ if (isRendererProcess) {
     console.error("[GraphicsRenderer] Missing --renderer-entry argument");
     app.exit(1);
   } else {
-    console.log(
-      `[GraphicsRenderer] Aux mode enabled (entry: ${rendererEntry})`,
+    // Security: the entry comes from argv and is untrusted. Only files that
+    // ship with the app (under the resources dir or the app path) and carry
+    // an allowlisted basename may be imported into this signed process. The
+    // rejected path is deliberately not logged.
+    const allowedRoots = [process.resourcesPath, app.getAppPath()].filter(
+      Boolean,
     );
-    const entryUrl = pathToFileURL(rendererEntry).toString();
-    import(entryUrl).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[GraphicsRenderer] Failed to load entry: ${message}`);
-      app.exit(1);
+    const resolution = resolveAllowedRendererEntry({
+      entry: rendererEntry,
+      allowedRoots,
     });
+    if (!resolution.ok) {
+      console.error(
+        `[GraphicsRenderer] Rejected renderer entry (${resolution.reason})`,
+      );
+      app.exit(1);
+    } else {
+      console.log(
+        `[GraphicsRenderer] Aux mode enabled (entry: ${resolution.path})`,
+      );
+      const entryUrl = pathToFileURL(resolution.path).toString();
+      import(entryUrl).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[GraphicsRenderer] Failed to load entry: ${message}`);
+        app.exit(1);
+      });
+    }
   }
 }
 
@@ -101,6 +119,54 @@ const PORT = process.env.PORT || "5173"; // Default to Vite's default port
 
 let healthCheckCleanup: (() => void) | null = null;
 let powerSaveBlockerId: number | null = null;
+
+/**
+ * Open an external URL in the default browser. Shared by the `openExternal`
+ * IPC handler and the web app open gate: only http(s) URLs pass, and the
+ * browser is asked to come to the front (`activate`), which matters when
+ * the desktop window is still activating itself after a bridge start.
+ */
+function openExternalUrl(url: unknown): Promise<void> | undefined {
+  if (!isAllowedExternalUrl(url)) {
+    return undefined;
+  }
+  return shell.openExternal(url, { activate: true });
+}
+
+/**
+ * Step the bridge window back once the gated web app open succeeded.
+ *
+ * On macOS `shell.openExternal(url, { activate: true })` activates the
+ * browser, but with Safari the bridge window still ends up in front after a
+ * bridge start (field finding rc.22). Hiding the app right after the open
+ * resolved leaves the just-activated browser front-most; the window stays
+ * open and the Dock icon / Cmd-Tab brings it back. Only for the automatic
+ * open after a bridge start: user-initiated `openExternal` IPC clicks keep
+ * the window where it is, and Windows is not affected.
+ */
+function hideBridgeWindowBehindBrowser(): void {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  logAppInfo("[WebApp] Hiding bridge window so the browser is in front");
+  app.hide();
+}
+
+/**
+ * Opens the web app once per bridge start, but only after the health check
+ * reports the bridge reachable and relay-authenticated (fallback after
+ * WEB_APP_OPEN_RELAY_TIMEOUT_MS). Armed in `bridgeStart`, fed from the health
+ * polling callback, disarmed in `bridgeStop` and on app shutdown. A URL the
+ * external URL policy rejects counts as a failed open (logged by the gate),
+ * so the window is never hidden without a browser having been opened.
+ */
+const webAppOpenGate = createWebAppOpenGate({
+  open: (url) =>
+    openExternalUrl(url) ??
+    Promise.reject(new Error("web app URL rejected by the external URL policy")),
+  afterOpen: hideBridgeWindowBehindBrowser,
+  logger: { info: logAppInfo, warn: logAppWarn },
+});
 // Outputs are now configured in the web app, not stored here
 let currentNetworkBindingId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -356,7 +422,8 @@ const DEFAULT_NETWORK_CONFIG: NetworkConfigT = {
  *
  * Priority:
  * 1. User's saved config in Electron's userData directory
- * 2. Template config from config/network-config.json (copied to userData on first run)
+ * 2. Dev only: template config from config/network-config.json in the cwd
+ *    (copied to userData on first run)
  * 3. Hardcoded DEFAULT_NETWORK_CONFIG as final fallback
  */
 function loadNetworkConfig(): NetworkConfigT {
@@ -377,38 +444,42 @@ function loadNetworkConfig(): NetworkConfigT {
     console.error("[NetworkConfig] Error loading user config:", error);
   }
 
-  // On first run, try to use config/network-config.json as template
-  // This is the project's default config file
-  try {
-    const templateConfigPath = path.join(
-      process.cwd(),
-      "config",
-      "network-config.json",
-    );
+  // On first run in dev, try to use config/network-config.json as template
+  // (the project's default config file). Packaged builds never ship this
+  // template and their cwd is not meaningful ("/" on macOS, install dir or a
+  // shortcut's "Start in" folder on Windows), so the cwd is only consulted in dev.
+  if (isDev()) {
+    try {
+      const templateConfigPath = path.join(
+        process.cwd(),
+        "config",
+        "network-config.json",
+      );
 
-    if (fs.existsSync(templateConfigPath)) {
-      const templateData = fs.readFileSync(templateConfigPath, "utf-8");
-      const templateConfig = JSON.parse(templateData) as NetworkConfigT;
+      if (fs.existsSync(templateConfigPath)) {
+        const templateData = fs.readFileSync(templateConfigPath, "utf-8");
+        const templateConfig = JSON.parse(templateData) as NetworkConfigT;
 
-      // Copy template to Electron's userData directory for future use
-      // This allows users to customize their config without modifying the project file
-      try {
-        fs.writeFileSync(
-          userDataConfigPath,
-          JSON.stringify(templateConfig, null, 2),
-          "utf-8",
-        );
-      } catch (writeError) {
-        console.warn(
-          "[NetworkConfig] Could not write user config, using template in memory:",
-          writeError,
-        );
+        // Copy template to Electron's userData directory for future use
+        // This allows users to customize their config without modifying the project file
+        try {
+          fs.writeFileSync(
+            userDataConfigPath,
+            JSON.stringify(templateConfig, null, 2),
+            "utf-8",
+          );
+        } catch (writeError) {
+          console.warn(
+            "[NetworkConfig] Could not write user config, using template in memory:",
+            writeError,
+          );
+        }
+
+        return templateConfig;
       }
-
-      return templateConfig;
+    } catch (error) {
+      console.error("[NetworkConfig] Error loading template config:", error);
     }
-  } catch (error) {
-    console.error("[NetworkConfig] Error loading template config:", error);
   }
 
   // Final fallback to hardcoded default config
@@ -484,6 +555,7 @@ function runAppShutdownCleanup(): Promise<void> {
       healthCheckCleanup();
       healthCheckCleanup = null;
     }
+    webAppOpenGate.disarm();
     const result = await bridgeProcessManager.stop();
     if (!result.success) {
       logAppError(`Bridge shutdown failed during app quit: ${result.error ?? "unknown error"}`);
@@ -493,14 +565,17 @@ function runAppShutdownCleanup(): Promise<void> {
   return appShutdownPromise;
 }
 
-async function shutdownAndExit(): Promise<void> {
-  if (appShutdownStarted) {
-    return;
-  }
-  appShutdownStarted = true;
-
+/**
+ * Run the app cleanup (updater timers, health polling, bridge stop) raced
+ * against APP_SHUTDOWN_TIMEOUT_MS and release the quit guard afterwards.
+ * Never throws: whether the cleanup finished, failed or timed out, the
+ * close/before-quit handlers stand down so the app can actually quit. Shared
+ * by the regular quit path and the updater's pre-install hook.
+ */
+async function awaitAppShutdownCleanup(): Promise<void> {
+  let timeoutTimer: NodeJS.Timeout | null = null;
   const timeout = new Promise<void>((resolve) => {
-    setTimeout(() => {
+    timeoutTimer = setTimeout(() => {
       logAppWarn(
         `[Shutdown] Cleanup timed out after ${APP_SHUTDOWN_TIMEOUT_MS}ms; forcing app exit`,
       );
@@ -514,7 +589,22 @@ async function shutdownAndExit(): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     logAppError(`[Shutdown] Cleanup failed: ${message}`);
   } finally {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+    }
     appShutdownCompleted = true;
+  }
+}
+
+async function shutdownAndExit(): Promise<void> {
+  if (appShutdownStarted) {
+    return;
+  }
+  appShutdownStarted = true;
+
+  try {
+    await awaitAppShutdownCleanup();
+  } finally {
     app.exit(0);
   }
 }
@@ -548,11 +638,24 @@ if (!isRendererProcess) {
   const gotTheLock = app.requestSingleInstanceLock();
 
   if (!gotTheLock) {
-    // Another instance is already running, quit this one
+    // Another instance is already running, quit this one. Log it: without
+    // this line the second launch exits silently and support cannot tell a
+    // crash from a duplicate start.
+    logAppWarn(
+      "[Main] Another Broadify Bridge instance is already running; quitting this instance",
+    );
     app.quit();
   } else {
     // Handle second instance: focus existing window
     app.on("second-instance", () => {
+      if (appShutdownStarted) {
+        // The window is being torn down; focusing it would race the
+        // shutdown. The second launch has already quit itself (no lock).
+        logAppInfo(
+          "[Main] Ignoring second instance launch while the app is shutting down",
+        );
+        return;
+      }
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore();
         mainWindow.focus();
@@ -596,16 +699,20 @@ if (!isRendererProcess) {
         pollResources(mainWindow);
       }
 
+      // Installing an update needs a NORMAL quit (Squirrel/NSIS drive it).
+      // Registered exactly once, before the updater starts: the hook tears
+      // the bridge down (within the shared shutdown budget) and releases the
+      // quit guard so the close/before-quit handlers stand down for the
+      // installer. Marking the shutdown as started keeps a window close
+      // during the install from force-exiting underneath the installer.
+      appUpdaterService.setInstallPreparationHook(async () => {
+        appShutdownStarted = true;
+        await awaitAppShutdownCleanup();
+      });
+
       appUpdaterService.initialize((status) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           ipcWebContentsSend("updaterStatus", mainWindow.webContents, status);
-      // Installing an update needs a NORMAL quit (Squirrel/NSIS drive it).
-      // Tear children down first, then release the quit guard so the
-      // close/before-quit handlers stand down for the installer.
-      appUpdaterService.setInstallPreparationHook(async () => {
-        await runAppShutdownCleanup();
-        appShutdownCompleted = true;
-      });
         }
       });
 
@@ -800,6 +907,15 @@ if (!isRendererProcess) {
             healthCheckCleanup();
           }
 
+          // Arm the web app open gate before polling starts so the first
+          // ready status cannot slip past it. The process has only been
+          // spawned at this point: the server is not listening and the relay
+          // is not authenticated yet, so opening the browser now would make
+          // the web app's first bridge lookup fail (#257 timing).
+          if (webAppUrl) {
+            webAppOpenGate.arm(webAppUrl);
+          }
+
           const bridgeConfig = bridgeProcessManager.getConfig();
           // console.log(
           //   "[Bridge] Starting health check polling with config:",
@@ -812,9 +928,8 @@ if (!isRendererProcess) {
             (status) => {
               // console.log("[Bridge] Health check status update:", status);
 
-              // Build web app URL for the UI link
-              // URL will be displayed as a link in the UI instead of auto-opening
-              // Must be done BEFORE sending status to UI
+              // Enrich the status (pairing, name, web app URL for the UI
+              // link) BEFORE sending it to the UI.
               const pairingInfo = bridgePairing.getPairingInfo();
               if (pairingInfo) {
                 status.pairingCode = pairingInfo.code;
@@ -830,6 +945,10 @@ if (!isRendererProcess) {
                 status.webAppUrl = webAppUrl;
               }
 
+              // Open the web app once the bridge is reachable and the relay
+              // is authenticated (main owns the open, not the renderer).
+              webAppOpenGate.onStatus(status);
+
               if (mainWindow) {
                 ipcWebContentsSend(
                   "bridgeStatus",
@@ -840,11 +959,15 @@ if (!isRendererProcess) {
             },
             () => bridgeProcessManager.isRunning(), // Pass function to check if process is running
           );
-        } else {
-          // console.log("[Bridge] Bridge start failed:", result.error);
-          bridgePairing.clear();
+
+          // Return the web app URL together with the start result for the UI
+          // link. Opening the browser is handled by the gate above.
+          return webAppUrl ? { ...result, webAppUrl } : result;
         }
 
+        // console.log("[Bridge] Bridge start failed:", result.error);
+        webAppOpenGate.disarm();
+        bridgePairing.clear();
         return result;
       });
 
@@ -861,6 +984,8 @@ if (!isRendererProcess) {
           healthCheckCleanup();
           healthCheckCleanup = null;
         }
+        // A pending web app open must not fire for a bridge that is stopping.
+        webAppOpenGate.disarm();
 
         const config = bridgeProcessManager.getConfig();
         if (config) {
@@ -1260,9 +1385,7 @@ if (!isRendererProcess) {
 
       // Open external URL handler
       ipcMainHandle("openExternal", async (event, url: string) => {
-        if (isAllowedExternalUrl(url)) {
-          shell.openExternal(url);
-        }
+        await openExternalUrl(url);
       });
 
       // Cleanup on window close

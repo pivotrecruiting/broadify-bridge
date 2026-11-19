@@ -1,4 +1,6 @@
 import type { GraphicsOutputConfigT } from "./graphics-schemas.js";
+export type { HelperLifecycleEventT } from "./output-adapters/helper-process-session.js";
+import type { HelperLifecycleEventT } from "./output-adapters/helper-process-session.js";
 
 export type GraphicsOutputFrameT = {
   width: number;
@@ -28,4 +30,5 @@ export interface GraphicsOutputAdapter {
    * Stop output and release resources.
    */
   stop(): Promise<void>;
+  onLifecycle?(cb: (event: HelperLifecycleEventT) => void): () => void;
 }

@@ -1,6 +1,3 @@
-import { mkdir } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import {
   parseRelayPayload,
   EmptyPayloadSchema,
@@ -21,6 +18,8 @@ import {
   MeetingPassthroughSchema,
   MeetingProgramUpdateSchema,
   MeetingRecordingStartSchema,
+  MeetingScreenPickSchema,
+  MeetingScreenStartSchema,
 } from "./meeting-command-schemas.js";
 import {
   meetingMediaService,
@@ -34,6 +33,8 @@ import {
   validateBrowserSourceUrl,
 } from "./meeting-content-layers.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { PgmWebrtcCloseSchema, PgmWebrtcOfferSchema } from "../pgm/pgm-command-schemas.js";
+import { MeetingProgramStreamError, meetingProgramStream } from "./meeting-program-stream.js";
 import { openGuardedDownload } from "./media-download.js";
 import { fetchBackgroundImage } from "./background-image-store.js";
 import { ConferenceDisplayOutput } from "../conference/conference-display-output.js";
@@ -43,6 +44,7 @@ import {
   parseInjectReading,
 } from "../conference/director/conference-director-service.js";
 import { meetingHelperManager } from "./meeting-helper-manager.js";
+import { meetingContentSourceState } from "./meeting-content-source-state.js";
 import { mapVcamStartError } from "./vcam-error-mapper.js";
 import { publishMeetingErrorEvent } from "./meeting-event-publisher.js";
 import {
@@ -50,6 +52,7 @@ import {
   MeetingCallControlError,
 } from "./meeting-call-control.js";
 import { pickRecordingSavePath } from "./meeting-recording-dialog.js";
+import { buildDefaultRecordingPath } from "../shared/recording-paths.js";
 import {
   MeetingHelperRequestError,
   type MeetingHelperClient,
@@ -92,6 +95,15 @@ const DEFAULT_MEETING_GRAPHICS_FORMAT = { width: 1920, height: 1080, fps: 30 };
 const MEETING_GRAPHICS_SLOT_COUNT = MEETING_GRAPHICS_FRAMEBUS_SLOT_COUNT;
 const MEETING_GRAPHICS_PIXEL_FORMAT = 1;
 
+meetingContentSourceState.setLayerPresenceProbe((layerId) =>
+  meetingBackGraphicsManager.getStatus().layers.some(
+    (layer) =>
+      !!layer &&
+      typeof layer === "object" &&
+      (layer as { layerId?: unknown }).layerId === layerId,
+  ),
+);
+
 function requireClient(): MeetingHelperClient {
   const client = meetingHelperManager.getClient();
   if (!client || !meetingHelperManager.isRunning()) {
@@ -127,6 +139,40 @@ type ConfigureGraphicsOutputsResultT = {
   alreadySatisfiedOrPending: boolean;
 };
 
+type MeetingGraphicsFrameBusEnvSnapshotT = {
+  name: string | undefined;
+  slotCount: string | undefined;
+  pixelFormat: string | undefined;
+};
+
+function snapshotMeetingGraphicsFrameBusEnv(): MeetingGraphicsFrameBusEnvSnapshotT {
+  return {
+    name: process.env.BRIDGE_FRAMEBUS_NAME,
+    slotCount: process.env.BRIDGE_FRAMEBUS_SLOT_COUNT,
+    pixelFormat: process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT,
+  };
+}
+
+function restoreMeetingGraphicsFrameBusEnv(
+  snapshot: MeetingGraphicsFrameBusEnvSnapshotT,
+): void {
+  if (snapshot.name === undefined) {
+    delete process.env.BRIDGE_FRAMEBUS_NAME;
+  } else {
+    process.env.BRIDGE_FRAMEBUS_NAME = snapshot.name;
+  }
+  if (snapshot.slotCount === undefined) {
+    delete process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
+  } else {
+    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = snapshot.slotCount;
+  }
+  if (snapshot.pixelFormat === undefined) {
+    delete process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
+  } else {
+    process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = snapshot.pixelFormat;
+  }
+}
+
 function configureMeetingGraphicsOutputs(
   width: number,
   height: number,
@@ -140,38 +186,43 @@ function configureMeetingGraphicsOutputs(
     if (lastConfiguredGraphicsOutputsKey === configKey) {
       return;
     }
-    // Belt & braces: the managers now carry their bus name/slotCount as
-    // explicit constructor overrides (meeting-graphics-manager.ts), which win
-    // over these env vars in every resolve. The env sets are kept anyway
-    // because other meeting-path consumers still read the ambient env on
-    // spawn (e.g. the renderer child's initial BRIDGE_FRAMEBUS_NAME before
-    // its first renderer_configure) — removing them is a follow-up once those
-    // consumers are audited one by one.
-    process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_BACK_FRAMEBUS_NAME;
-    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = String(
-      MEETING_GRAPHICS_SLOT_COUNT,
-    );
-    process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
-    await meetingBackGraphicsManager.configureOutputs({
-      outputKey: "framebus",
-      targets: {},
-      format: { width, height, fps },
-      range: "full",
-      colorspace: "rec709",
-    });
-    process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME;
-    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = String(
-      MEETING_GRAPHICS_SLOT_COUNT,
-    );
-    process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
-    await meetingFrontGraphicsManager.configureOutputs({
-      outputKey: "framebus",
-      targets: {},
-      format: { width, height, fps },
-      range: "full",
-      colorspace: "rec709",
-    });
-    lastConfiguredGraphicsOutputsKey = configKey;
+    const frameBusEnvSnapshot = snapshotMeetingGraphicsFrameBusEnv();
+    try {
+      // Meeting managers own fixed names through constructor overrides and do
+      // not publish them to process env. These temporary env values are only
+      // for meeting renderer process spawn and must be restored afterwards.
+      process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_BACK_FRAMEBUS_NAME;
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = String(
+        MEETING_GRAPHICS_SLOT_COUNT,
+      );
+      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = String(
+        MEETING_GRAPHICS_PIXEL_FORMAT,
+      );
+      await meetingBackGraphicsManager.configureOutputs({
+        outputKey: "framebus",
+        targets: {},
+        format: { width, height, fps },
+        range: "full",
+        colorspace: "rec709",
+      });
+      process.env.BRIDGE_FRAMEBUS_NAME = MEETING_GRAPHICS_FRONT_FRAMEBUS_NAME;
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = String(
+        MEETING_GRAPHICS_SLOT_COUNT,
+      );
+      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = String(
+        MEETING_GRAPHICS_PIXEL_FORMAT,
+      );
+      await meetingFrontGraphicsManager.configureOutputs({
+        outputKey: "framebus",
+        targets: {},
+        format: { width, height, fps },
+        range: "full",
+        colorspace: "rec709",
+      });
+      lastConfiguredGraphicsOutputsKey = configKey;
+    } finally {
+      restoreMeetingGraphicsFrameBusEnv(frameBusEnvSnapshot);
+    }
   });
   // Keep the queue alive even if this run fails; the failure still surfaces
   // to the caller through `completion`.
@@ -199,6 +250,7 @@ function autoArmVirtualCamera(): void {
       const client = requireClient();
       await client.virtualCameraStart({ allowElevation: false });
       meetingHelperManager.noteVirtualCameraStarted();
+      meetingHelperManager.requestStatusPublish("vcam_auto_armed");
       console.info("[meeting] virtual camera auto-armed with engine start");
     } catch (error: unknown) {
       // A background arm must never take the process down — not even when
@@ -437,6 +489,7 @@ export async function handleMeetingCommand(
       );
       if (result.success) {
         meetingHelperManager.noteCameraCall("cameraSelect", options);
+        meetingHelperManager.requestStatusPublish("camera_select");
       }
       return result;
     }
@@ -452,6 +505,7 @@ export async function handleMeetingCommand(
       );
       if (result.success) {
         meetingHelperManager.noteCameraCall("cameraStart", options);
+        meetingHelperManager.requestStatusPublish("camera_start");
       }
       return result;
     }
@@ -460,6 +514,7 @@ export async function handleMeetingCommand(
       const result = await runMeetingRpc(() => requireClient().cameraStop());
       if (result.success) {
         meetingHelperManager.noteCameraStopped();
+        meetingHelperManager.requestStatusPublish("camera_stop");
       }
       return result;
     }
@@ -490,6 +545,7 @@ export async function handleMeetingCommand(
       );
       if (result.success) {
         meetingHelperManager.noteCameraCall("cameraProgramSelect", options);
+        meetingHelperManager.requestStatusPublish("camera_program_select");
       }
       return result;
     }
@@ -524,6 +580,48 @@ export async function handleMeetingCommand(
       );
       if (result.success) {
         meetingHelperManager.noteCameraCall("cameraAutoDirector", options);
+      }
+      return result;
+    }
+
+    case "meeting_screen_list": {
+      return runMeetingRpc(() => requireClient().screenList());
+    }
+
+    case "meeting_screen_start": {
+      const options = parseRelayPayload(
+        MeetingScreenStartSchema,
+        payload ?? {},
+        "Invalid payload for meeting_screen_start",
+      );
+      const result = await runMeetingRpc(() =>
+        requireClient().screenStart(options),
+      );
+      if (result.success) {
+        meetingHelperManager.requestStatusPublish("screen_start");
+      }
+      return result;
+    }
+
+    case "meeting_screen_stop": {
+      const result = await runMeetingRpc(() => requireClient().screenStop());
+      if (result.success) {
+        meetingHelperManager.requestStatusPublish("screen_stop");
+      }
+      return result;
+    }
+
+    case "meeting_screen_pick": {
+      const options = parseRelayPayload(
+        MeetingScreenPickSchema,
+        payload ?? {},
+        "Invalid payload for meeting_screen_pick",
+      );
+      const result = await runMeetingRpc(() =>
+        requireClient().screenPick(options),
+      );
+      if (result.success) {
+        meetingHelperManager.requestStatusPublish("screen_pick");
       }
       return result;
     }
@@ -576,8 +674,10 @@ export async function handleMeetingCommand(
 
     case "meeting_recording_toggle": {
       // One-key start/stop (Stream Deck). Unlike meeting_recording_start there
-      // is no save dialog: the file goes to a fixed recordings folder with a
-      // timestamped name.
+      // is no save dialog: the file goes to the shared default recordings
+      // folder (~/Movies/Broadify or ~/Videos/Broadify) with a timestamped
+      // Broadify-Meeting-<stamp>.mp4 name - the same place the save-panel
+      // fallback and PGM recordings use.
       const client = requireClient();
       const status = await runMeetingRpc(() => client.recordingStatus());
       const active = isRecordingActive(status.data);
@@ -588,17 +688,7 @@ export async function handleMeetingCommand(
         }
         return stopped;
       }
-      const recordingsDir = path.join(
-        os.homedir(),
-        "Videos",
-        "Broadify Recordings",
-      );
-      await mkdir(recordingsDir, { recursive: true });
-      const stamp = new Date()
-        .toISOString()
-        .replace(/[:.]/g, "-")
-        .slice(0, 19);
-      const filePath = path.join(recordingsDir, `meeting-${stamp}.mp4`);
+      const filePath = buildDefaultRecordingPath("meeting");
       const micDeviceId =
         typeof payload?.mic_device_id === "string" ? payload.mic_device_id : "";
       const started = await runMeetingRpc(() =>
@@ -681,6 +771,8 @@ export async function handleMeetingCommand(
         await meetingBackGraphicsManager.removeLayer({
           layerId: MEETING_CONTENT_VIDEO_LAYER_ID,
         });
+        meetingContentSourceState.clearVideo();
+        meetingHelperManager.requestStatusPublish("content_video_set");
         return { success: true, data: { active: false } };
       }
       const asset = await meetingMediaService.getAsset(data.asset_id);
@@ -716,6 +808,11 @@ export async function handleMeetingCommand(
         html,
         zIndex: 10,
       });
+      meetingContentSourceState.setVideo({
+        ...data,
+        asset_id: data.asset_id,
+      });
+      meetingHelperManager.requestStatusPublish("content_video_set");
       return { success: true, data: { active: true, assetId: asset.assetId } };
     }
 
@@ -729,6 +826,8 @@ export async function handleMeetingCommand(
         await meetingBackGraphicsManager.removeLayer({
           layerId: MEETING_BROWSER_SOURCE_LAYER_ID,
         });
+        meetingContentSourceState.clearBrowser();
+        meetingHelperManager.requestStatusPublish("browser_source_set");
         return { success: true, data: { active: false } };
       }
       let validatedUrl: string;
@@ -740,6 +839,7 @@ export async function handleMeetingCommand(
           error: error instanceof Error ? error.message : String(error),
         };
       }
+      // Browser-source URLs must never be interpolated into logs or errors.
       const html = buildBrowserSourceLayerHtml(validatedUrl, {
         mode: data.mode,
         x: data.x,
@@ -756,6 +856,8 @@ export async function handleMeetingCommand(
         html,
         zIndex: 11,
       });
+      meetingContentSourceState.setBrowser(validatedUrl, data);
+      meetingHelperManager.requestStatusPublish("browser_source_set");
       return { success: true, data: { active: true, url: validatedUrl } };
     }
 
@@ -905,11 +1007,14 @@ export async function handleMeetingCommand(
       );
       const data = await requireClient().keyerConfigure(patch);
       meetingHelperManager.noteKeyerConfigured(patch);
+      meetingHelperManager.requestStatusPublish("keyer_configure");
       return { success: true, data };
     }
 
     case "meeting_keyer_reset": {
-      return { success: true, data: await requireClient().keyerReset() };
+      const data = await requireClient().keyerReset();
+      meetingHelperManager.requestStatusPublish("keyer_reset");
+      return { success: true, data };
     }
 
     case "meeting_program_get": {
@@ -927,10 +1032,9 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_program_update",
       );
-      return {
-        success: true,
-        data: await requireClient().programUpdate(section, values),
-      };
+      const data = await requireClient().programUpdate(section, values);
+      meetingHelperManager.requestStatusPublish("program_update");
+      return { success: true, data };
     }
 
     case "meeting_output_configure": {
@@ -960,13 +1064,17 @@ export async function handleMeetingCommand(
           const mapped = mapVcamStartError(result.error);
           return { ...result, error: mapped.error, errorCode: mapped.errorCode };
         }
-        meetingHelperManager.noteVirtualCameraStarted();
+        if (result.success) {
+          meetingHelperManager.noteVirtualCameraStarted();
+          meetingHelperManager.requestStatusPublish("vcam_start");
+        }
         return result;
       }
       if (action === "stop") {
         const result = await runMeetingRpc(() => client.virtualCameraStop());
         if (result.success) {
           meetingHelperManager.noteVirtualCameraStopped();
+          meetingHelperManager.requestStatusPublish("vcam_stop");
         }
         return result;
       }
@@ -1011,10 +1119,52 @@ export async function handleMeetingCommand(
       };
     }
 
+    // --- WebRTC program stream (composited camera picture for the web app's floating viewer) ---
+    case "meeting_program_status": {
+      parseRelayPayload(EmptyPayloadSchema, payload ?? {}, "Invalid payload for meeting_program_status");
+      return { success: true, data: await meetingProgramStream.status() };
+    }
+    case "meeting_program_sessions": {
+      parseRelayPayload(EmptyPayloadSchema, payload ?? {}, "Invalid payload for meeting_program_sessions");
+      return { success: true, data: meetingProgramStream.getSessions() };
+    }
+    case "meeting_program_offer": {
+      const offer = parseRelayPayload(PgmWebrtcOfferSchema, payload ?? {}, "Invalid payload for meeting_program_offer");
+      return runProgramStream(async () => {
+        const answer = await meetingProgramStream.offer(offer);
+        return {
+          session_id: offer.session_id,
+          sdp: answer.sdp,
+          expires_at: Date.now() + 2 * 60 * 60 * 1000,
+          max_viewers: answer.max_viewers,
+          active_viewers: answer.active_viewers,
+          stream: { codec: "h264", audio: false },
+        };
+      });
+    }
+    case "meeting_program_close": {
+      const close = parseRelayPayload(PgmWebrtcCloseSchema, payload ?? {}, "Invalid payload for meeting_program_close");
+      return runProgramStream(async () => {
+        await meetingProgramStream.close(close);
+        return { closed: true };
+      });
+    }
+
     default:
       return {
         success: false,
         error: `Unknown meeting command: ${command}`,
       };
+  }
+}
+
+async function runProgramStream(operation: () => Promise<unknown>): Promise<MeetingCommandResultT> {
+  try {
+    return { success: true, data: await operation() };
+  } catch (error: unknown) {
+    if (error instanceof MeetingProgramStreamError) {
+      return { success: false, error: error.message, errorCode: error.code };
+    }
+    throw error;
   }
 }

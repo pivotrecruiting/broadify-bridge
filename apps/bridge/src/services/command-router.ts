@@ -1,5 +1,4 @@
 import { engineAdapter } from "./engine-adapter.js";
-import { engineConnectionStore } from "./engine/engine-connection-store.js";
 import { deviceCache } from "./device-cache.js";
 import { runtimeConfig } from "./runtime-config.js";
 import { graphicsManager } from "./graphics/graphics-manager.js";
@@ -11,6 +10,7 @@ import {
   EngineConnectSchema,
   ListOutputsSchema,
   MacroIdSchema,
+  ModeActivateSchema,
   PairingCodeSchema,
   StreamDeckActionClaimSchema,
   StreamDeckActionResultSchema,
@@ -19,7 +19,7 @@ import {
 } from "./relay-command-schemas.js";
 import { normalizeEngineConnectPayload } from "./engine/engine-connect-schema.js";
 import { getBridgeContext } from "./bridge-context.js";
-import { GraphicsError } from "./graphics/graphics-errors.js";
+import { getErrorCode } from "./shared/error-code.js";
 import {
   handleMeetingCommand,
   isMeetingCommand,
@@ -34,9 +34,12 @@ import {
 } from "./meeting/meeting-graphics-manager.js";
 import { getRelayBridgeEnrollmentPublicKey } from "./relay-bridge-identity.js";
 import { getRuntimeAppVersion } from "./runtime-app-version.js";
-import { transformDevicesToOutputs } from "./device-to-output-transform.js";
+import { buildBridgeOutputsView } from "./outputs-view.js";
 import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
+import { canonResponseToCommandResult } from "./canon-xc/canon-xc-command-result.js";
+import { getLiveProgramCapabilities, handlePgmCommand, isPgmCommand } from "./pgm/pgm-command-handler.js";
+import { modeActivationService } from "./mode/mode-activation-service.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "./output-device-modules.js";
 import { powerSocketService } from "./power/power-socket-service.js";
 import {
@@ -88,6 +91,9 @@ export class CommandRouter {
       if (isMeetingCommand(command)) {
         return await handleMeetingCommand(command, payload);
       }
+      if (isPgmCommand(command)) {
+        return await handlePgmCommand(command, payload);
+      }
 
       switch (command) {
         case "get_status": {
@@ -111,6 +117,10 @@ export class CommandRouter {
               outputsConfigured: graphicsStatus.outputsConfigured,
               outputStatus: graphicsStatus.outputStatus,
               lastOutputError: graphicsStatus.lastOutputError,
+              platform: process.platform,
+              outputCapabilities: {
+                decklink: process.platform === "darwin",
+              },
               engine: {
                 configured: !!runtimeConfigData?.engine,
                 status: engineState.status,
@@ -124,6 +134,10 @@ export class CommandRouter {
                   presetDiscovery: true,
                   presetRecall: true,
                 },
+                live_program: getLiveProgramCapabilities(),
+                // The web app sends mode_activate only when this is present;
+                // older bridges restored Studio state at startup on their own.
+                mode_activation: true,
               },
             },
           };
@@ -188,11 +202,25 @@ export class CommandRouter {
           const devices = refresh
             ? await deviceCache.getDevices(true, OUTPUT_DEVICE_MODULE_NAMES)
             : deviceCache.getCachedDevices(OUTPUT_DEVICE_MODULE_NAMES);
-          const outputs = transformDevicesToOutputs(devices);
+          const outputs = buildBridgeOutputsView(devices);
 
           return {
             success: true,
             data: outputs,
+          };
+        }
+
+        case "mode_activate": {
+          const { mode } = parseRelayPayload(
+            ModeActivateSchema,
+            payload ?? {},
+            "Invalid payload for mode_activate",
+          );
+          const result = await modeActivationService.activate(mode);
+
+          return {
+            success: true,
+            data: result,
           };
         }
 
@@ -205,10 +233,6 @@ export class CommandRouter {
 
           const connectConfig = normalizeEngineConnectPayload(parsedPayload);
           await engineAdapter.connect(connectConfig);
-          // A connection choice belongs to the operator: persist it so the
-          // bridge can bring the same connection back on the next start. Only
-          // a SUCCESSFUL connect overwrites the stored choice.
-          await engineConnectionStore.save(connectConfig);
 
           return {
             success: true,
@@ -558,10 +582,9 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_test_connection",
           );
-          return {
-            success: true,
-            data: await canonXCService.testConnection(input),
-          };
+          return canonResponseToCommandResult(
+            await canonXCService.testConnection(input),
+          );
         }
 
         case "canon_xc_delete_device": {
@@ -582,10 +605,9 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_test_device",
           );
-          return {
-            success: true,
-            data: await canonXCService.testDevice(deviceId),
-          };
+          return canonResponseToCommandResult(
+            await canonXCService.testDevice(deviceId),
+          );
         }
 
         case "canon_xc_list_presets": {
@@ -594,10 +616,9 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_list_presets",
           );
-          return {
-            success: true,
-            data: await canonXCService.listPresets(deviceId),
-          };
+          return canonResponseToCommandResult(
+            await canonXCService.listPresets(deviceId),
+          );
         }
 
         case "canon_xc_recall_preset": {
@@ -606,14 +627,13 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for canon_xc_recall_preset",
           );
-          return {
-            success: true,
-            data: await canonXCService.recallPreset(
+          return canonResponseToCommandResult(
+            await canonXCService.recallPreset(
               input.deviceId,
               input.preset,
               input.options,
             ),
-          };
+          );
         }
 
         case "streamdeck_status": {
@@ -743,7 +763,7 @@ export class CommandRouter {
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      const errorCode = error instanceof GraphicsError ? error.code : undefined;
+      const errorCode = getErrorCode(error);
       // Without this log line a handler crash is invisible on the bridge: the
       // caller gets a generic failure message while the server log shows
       // nothing - support cannot reconstruct the incident.

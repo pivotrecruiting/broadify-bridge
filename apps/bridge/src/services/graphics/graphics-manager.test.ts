@@ -69,6 +69,10 @@ const createValidConfig = () => ({
 
 describe("GraphicsManager", () => {
   beforeEach(() => {
+    mockOutputStoreGetConfig.mockReturnValue(null);
+    delete process.env.BRIDGE_FRAMEBUS_NAME;
+    delete process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
+    delete process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
     setBridgeContext({
       userDataDir: "/tmp/bridge-data",
       logPath: "/tmp/bridge.log",
@@ -111,6 +115,32 @@ describe("GraphicsManager", () => {
 
     await expect(manager.configureOutputs({})).rejects.toMatchObject({
       code: "output_config_error",
+    });
+    expect(runAtomicTransition).not.toHaveBeenCalled();
+  });
+
+  it("fails configureOutputs with a readable output_config_error for an invalid payload", async () => {
+    const runAtomicTransition = jest.fn(async () => undefined);
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: {
+        initialize: jest.fn(async () => undefined),
+      },
+      outputTransitionService: {
+        waitForTransition: jest.fn(async () => undefined),
+        runAtomicTransition,
+      },
+    });
+
+    await expect(
+      manager.configureOutputs({
+        outputKey: "video_hdmi",
+        targets: { output1Id: "display-1" },
+        format: { width: 1920, height: 1080, fps: 25, displayModeId: 13.5 },
+      }),
+    ).rejects.toMatchObject({
+      code: "output_config_error",
+      message: expect.stringMatching(/^(?!\[).*format\.displayModeId/),
     });
     expect(runAtomicTransition).not.toHaveBeenCalled();
   });
@@ -391,6 +421,287 @@ describe("GraphicsManager", () => {
         message: "adapter failed",
       })
     );
+  });
+
+  it("reports output_helper_error and starts the supervisor when the active adapter exits after ready", async () => {
+    let lifecycleHandler: ((event: unknown) => void) | null = null;
+    const adapter = {
+      configure: jest.fn().mockResolvedValue(undefined),
+      stop: jest.fn().mockResolvedValue(undefined),
+      sendFrame: jest.fn(),
+      onLifecycle: jest.fn((handler: (event: unknown) => void) => {
+        lifecycleHandler = handler;
+        return () => undefined;
+      }),
+    };
+    const outputSupervisor = {
+      start: jest.fn(),
+      cancel: jest.fn(),
+      reset: jest.fn(),
+      getState: jest.fn(() => ({ active: false, reason: null, attempt: 0, nextRetryAt: null })),
+    };
+    const publishGraphicsError = jest.fn();
+    const manager = new GraphicsManager({
+      createRenderer,
+      selectOutputAdapter: async () => adapter as never,
+      isDevelopmentMode: () => true,
+      outputSupervisor: outputSupervisor as never,
+      publishGraphicsError,
+    });
+
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+    lifecycleHandler?.({
+      type: "exited",
+      code: 1,
+      signal: null,
+      requested: false,
+      lastStderr: ["DeckLink device not found"],
+    });
+
+    expect(publishGraphicsError).toHaveBeenCalledWith(
+      "output_helper_error",
+      expect.stringContaining("DeckLink device not found"),
+    );
+    expect(outputSupervisor.start).toHaveBeenCalledWith({
+      reason: "helper_exit",
+      config: expect.objectContaining({ outputKey: "stub" }),
+    });
+  });
+
+  it("writes process FrameBus env for the default Studio manager path", async () => {
+    const renderer = createRenderer();
+    const adapter = {
+      configure: jest.fn().mockResolvedValue(undefined),
+      stop: jest.fn().mockResolvedValue(undefined),
+      sendFrame: jest.fn(),
+    };
+    const manager = new GraphicsManager({
+      createRenderer: () => renderer,
+      selectOutputAdapter: async () => adapter as never,
+      isDevelopmentMode: () => true,
+    });
+
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+
+    expect(process.env.BRIDGE_FRAMEBUS_NAME).toMatch(
+      /^broadify-framebus-[a-f0-9]{12}$/,
+    );
+    expect(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT).toBe("3");
+    expect(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT).toBe("1");
+  });
+
+  it("keeps process FrameBus env untouched for managers with FrameBus overrides", async () => {
+    process.env.BRIDGE_FRAMEBUS_NAME = "studio-bus";
+    process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "4";
+    process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
+    const renderer = createRenderer();
+    const adapter = {
+      configure: jest.fn().mockResolvedValue(undefined),
+      stop: jest.fn().mockResolvedValue(undefined),
+      sendFrame: jest.fn(),
+    };
+    const manager = new GraphicsManager({
+      createRenderer: () => renderer,
+      selectOutputAdapter: async () => adapter as never,
+      isDevelopmentMode: () => true,
+      frameBusOverrides: {
+        name: "bfy-meet-gfx-front",
+        slotCount: 3,
+      },
+      persistOutputConfig: false,
+    });
+
+    await manager.initialize();
+    await manager.configureOutputs(createValidConfig());
+
+    expect(process.env.BRIDGE_FRAMEBUS_NAME).toBe("studio-bus");
+    expect(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT).toBe("4");
+    expect(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT).toBe("1");
+    expect(renderer.configureSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        framebusName: "bfy-meet-gfx-front",
+        framebusSlotCount: 3,
+      }),
+    );
+  });
+
+  it("initialize does not apply the persisted output; applyPersistedOutput does", async () => {
+    const persistedConfig = createValidConfig();
+    const applyPersistedOutput = jest.fn(async () => ({
+      persistedApplyFailed: false,
+      persistedConfig,
+    }));
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: {
+        initialize: jest.fn(async () => undefined),
+        applyPersistedOutput,
+      },
+    });
+
+    await manager.initialize();
+
+    expect(applyPersistedOutput).not.toHaveBeenCalled();
+    expect(manager.getStatus()).toMatchObject({
+      outputsConfigured: false,
+      outputStatus: "unconfigured",
+    });
+
+    await manager.applyPersistedOutput();
+
+    expect(applyPersistedOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps lastOutputError and outputStatus=error when the persisted apply fails and does not re-apply while recovery is active", async () => {
+    const persistedConfig = createValidConfig();
+    let recoveryActive = false;
+    const outputSupervisor = {
+      start: jest.fn(() => {
+        recoveryActive = true;
+      }),
+      cancel: jest.fn(),
+      reset: jest.fn(),
+      getState: jest.fn(() => ({
+        active: recoveryActive,
+        reason: recoveryActive ? "init_failed" : null,
+        attempt: 0,
+        nextRetryAt: null,
+      })),
+    };
+    const applyPersistedOutput = jest.fn(async () => ({
+      persistedApplyFailed: true,
+      persistedConfig,
+    }));
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: {
+        initialize: jest.fn(async () => undefined),
+        applyPersistedOutput,
+      },
+      outputSupervisor: outputSupervisor as never,
+    });
+
+    await manager.initialize();
+    await manager.applyPersistedOutput();
+
+    expect(manager.getStatus()).toMatchObject({
+      outputStatus: "error",
+      lastOutputError: expect.objectContaining({ code: "output_helper_error" }),
+    });
+    expect(outputSupervisor.start).toHaveBeenCalledWith({
+      reason: "init_failed",
+      config: persistedConfig,
+    });
+
+    // A second activation (another client, a reload) must not start a second
+    // apply next to the supervisor's recovery loop.
+    await manager.applyPersistedOutput();
+    expect(applyPersistedOutput).toHaveBeenCalledTimes(1);
+    expect(outputSupervisor.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("applyPersistedOutput is idempotent once an output is configured and publishes the configured status", async () => {
+    // A non-stub key: the snapshot reports outputsConfigured=false for "stub".
+    const persistedConfig = { ...createValidConfig(), outputKey: "framebus" as const };
+    mockOutputStoreGetConfig.mockReturnValue(persistedConfig);
+    const adapter = {
+      configure: jest.fn(async () => undefined),
+      stop: jest.fn(async () => undefined),
+      sendFrame: jest.fn(),
+    };
+    const selectOutputAdapter = jest.fn(async () => adapter as never);
+    const publishBridgeEvent = jest.fn();
+    setBridgeContext({
+      ...getBridgeContext(),
+      publishBridgeEvent,
+    });
+    const manager = new GraphicsManager({
+      createRenderer,
+      selectOutputAdapter,
+    });
+
+    await manager.initialize();
+    expect(selectOutputAdapter).not.toHaveBeenCalled();
+
+    const first = manager.applyPersistedOutput();
+    const second = manager.applyPersistedOutput();
+    await Promise.all([first, second]);
+    await manager.applyPersistedOutput();
+
+    expect(selectOutputAdapter).toHaveBeenCalledTimes(1);
+    expect(adapter.configure).toHaveBeenCalledWith(persistedConfig);
+    expect(manager.getStatus()).toMatchObject({
+      outputsConfigured: true,
+      outputStatus: "ready",
+      outputConfig: persistedConfig,
+    });
+    expect(publishBridgeEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "graphics_status",
+        data: expect.objectContaining({
+          reason: "outputs_configured",
+          outputsConfigured: true,
+        }),
+      }),
+    );
+  });
+
+  it("publishes pendingOutputConfig while recovery is active", async () => {
+    const pendingConfig = createValidConfig();
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: { initialize: jest.fn(async () => undefined) },
+      outputSupervisor: {
+        start: jest.fn(),
+        cancel: jest.fn(),
+        reset: jest.fn(),
+        getState: jest.fn(() => ({
+          active: true,
+          reason: "init_failed",
+          attempt: 2,
+          nextRetryAt: 1234,
+          config: pendingConfig,
+        })),
+      } as never,
+    });
+
+    await manager.initialize();
+
+    expect(manager.getStatus()).toMatchObject({
+      pendingOutputConfig: pendingConfig,
+      outputRecovery: {
+        active: true,
+        reason: "init_failed",
+        attempt: 2,
+        nextRetryAt: 1234,
+      },
+    });
+  });
+
+  it("manual configureOutputs cancels the supervisor", async () => {
+    const outputSupervisor = {
+      start: jest.fn(),
+      cancel: jest.fn(),
+      reset: jest.fn(),
+      getState: jest.fn(() => ({ active: false, reason: null, attempt: 0, nextRetryAt: null })),
+    };
+    const manager = new GraphicsManager({
+      createRenderer,
+      runtimeInitService: { initialize: jest.fn(async () => undefined) },
+      outputTransitionService: {
+        waitForTransition: jest.fn(async () => undefined),
+        runAtomicTransition: jest.fn(async () => undefined),
+      },
+      isDevelopmentMode: () => true,
+      outputSupervisor: outputSupervisor as never,
+    });
+
+    await manager.configureOutputs(createValidConfig());
+
+    expect(outputSupervisor.cancel).toHaveBeenCalledWith("manual");
+    expect(outputSupervisor.reset).toHaveBeenCalled();
   });
 
   it("handles output adapter stop failure during shutdown", async () => {

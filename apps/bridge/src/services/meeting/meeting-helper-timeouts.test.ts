@@ -17,7 +17,7 @@ describe("MEETING_HELPER_RPC_TIMEOUTS_MS", () => {
     )) {
       expect(timeoutMs).toBeGreaterThan(5_000);
       expect(timeoutMs).toBeLessThan(BRIDGE_COMMAND_SLA_MS);
-      expect(method).toMatch(/^[a-z_]+\.[a-z_]+$/);
+      expect(method).toMatch(/^[a-z_]+(\.[a-z_]+)+$/);
     }
   });
 });

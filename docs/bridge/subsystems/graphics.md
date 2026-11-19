@@ -93,6 +93,14 @@ Renderer‑Entry: `apps/bridge/src/services/graphics/renderer/electron-renderer-
 - Ein Offscreen BrowserWindow (Single-Window) mit Layern via Shadow DOM
 - `paint`‑Event liefert BGRA → RGBA
 - Schreibt Frames in FrameBus; keine Frame-Payload über IPC
+- Dedupliziert nur pixel-identische Paints per exaktem Buffer-Vergleich für
+  maximal 1 s; schon ein einzelnes abweichendes Byte wird sofort geschrieben.
+- Registriert `render-process-gone` und `unresponsive` auf dem Offscreen-Fenster:
+  Der Renderer stoppt den FrameBus-Heartbeat, zerstört das Fenster, erstellt
+  genau ein neues Offscreen-Fenster und spielt die gespeicherten Layer-Snapshots
+  erneut ein. Ein zweiter Vorfall innerhalb von 60 s beendet den
+  Rendererprozess mit Exit-Code 3, damit der Renderer-Client die bounded
+  Prozess-Recovery übernimmt.
 
 ### Writer-Heartbeat & Reader-Reattach
 Bei statischem Content feuern keine `paint`-Events und die FrameBus-Sequenz
@@ -104,6 +112,21 @@ ein 1-s-Heartbeat (`framebus-heartbeat.ts`) re-publiziert den zuletzt
 geschriebenen Frame mit **unverändertem** Timestamp – die Sequenz läuft
 weiter (Reader bleiben attached), Konsumenten erkennen neue Frames aber per
 Timestamp und rendern nichts erneut.
+
+### Studio: Writer-Reuse by Name (Renderer-Recovery)
+Studio-FrameBus-Regionen werden beim Renderer-Start per Name wiederverwendet
+(`forceRecreate: false`). Stirbt der Electron-Renderer mitten in einer Show,
+attached der Ersatzprozess an dieselbe Shared-Memory-Region, die DeckLink- oder
+Display-Helper bereits gemappt haben. Der Writer seedet nur dann ein Idle-Frame,
+wenn die Region noch keine Frames trägt; ist `seq > 0`, bleibt das letzte Frame
+des alten Renderers stehen, bis der Client die aktuellen Layer erneut ausspielt.
+Eine Force-Recreation passiert nur als Self-Heal bei inkompatiblen Headern oder
+Größen, weil diese Region dann für die aktuelle Geometrie ohnehin nicht nutzbar
+ist.
+
+Studio nutzt standardmäßig drei FrameBus-Slots. Das reduziert das Risiko, dass
+ein schneller Writer den Slot überschreibt, den ein Output-Helper gerade liest.
+`BRIDGE_FRAMEBUS_SLOT_COUNT` bleibt als expliziter Override erhalten.
 
 ### Writer-Reattach nach Bus-Neuanlage (Meeting-Engine-Start)
 `meeting_engine_start` legt die Meeting-Grafik-Regionen (`bfy-meet-gfx-back`/
@@ -130,11 +153,29 @@ den forceRecreate-Clear).
 
 DeckLink und Display-Output nutzen FrameBus als Data-Plane. IPC bleibt Control-Plane.
 
+## Output-Supervisor (Self-Heal)
+Der `GraphicsOutputSupervisor` beobachtet den aktiven Output-Adapter ueber dessen
+Lifecycle-Hook. Wenn ein DeckLink- oder Display-Helper nach `ready` unerwartet
+endet, setzt der `GraphicsManager` `outputStatus: "error"`, veroeffentlicht
+`output_helper_error` inklusive letzter Helper-stderr-Zeilen und plant eine
+Re-Apply-Schleife mit Backoff. Die Transition laeuft weiterhin ueber
+`GraphicsOutputTransitionService.runAtomicTransition`; es gibt keinen zweiten
+Renderer, kein Bridge-Compositing und keinen Output-Fallback.
+
+Wenn ein persistierter Output beim Start nicht angewendet werden kann, bleibt
+der Status ebenfalls auf `error` statt auf `unconfigured` zurueckzufallen.
+Snapshots tragen dann zusaetzlich `pendingOutputConfig` und `outputRecovery`
+(`active`, `reason`, `attempt`, `nextRetryAt`). Kommt der konfigurierte Zielport
+ueber die Device-Watcher wieder zurueck, versucht der Supervisor sofort ein
+Re-Apply und wartet nach ausgeschoepften Backoff-Versuchen auf weitere
+Device-Change-Events.
+
 ## Fehlerbilder (typisch)
 - Output nicht konfiguriert → `Outputs not configured`
 - Format/Port ungültig → Validation Fehler
 - Renderer nicht verfügbar → Fallback auf Stub Renderer
 - DeckLink Helper fehlt/keine Rechte → configure() Fehler
+- Output-Helper endet nach Ready → `output_helper_error`, Supervisor-Recovery
 - FrameBus nicht konfiguriert/verfügbar → `renderer_configure` schlägt fehl
 
 ## Relevante Dateien

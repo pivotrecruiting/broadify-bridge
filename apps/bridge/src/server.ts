@@ -18,7 +18,6 @@ import { initializeModules } from "./modules/index.js";
 import { RelayClient } from "./services/relay-client.js";
 import { deviceCache } from "./services/device-cache.js";
 import { engineAdapter } from "./services/engine-adapter.js";
-import { engineConnectionStore } from "./services/engine/engine-connection-store.js";
 import {
   resolveUserDataDir,
   setBridgeContext,
@@ -27,6 +26,7 @@ import { graphicsManager } from "./services/graphics/graphics-manager.js";
 import { graphicsUsageRecorder } from "./services/intelligence/usage-event-recorder.js";
 import { ciSessionCoordinator } from "./services/intelligence/ci-session-coordinator.js";
 import { meetingHelperManager } from "./services/meeting/meeting-helper-manager.js";
+import { pgmHelperManager } from "./services/pgm/pgm-helper-manager.js";
 import { quitRunningVcamHelperApp } from "./modules/vcam/vcam-helper.js";
 import {
   initCommandRouter,
@@ -113,17 +113,18 @@ export async function createServer(config: BridgeConfigT) {
   setBridgeContext(baseContext);
   logRuntimeDiagnostics(baseContext.logger);
 
-  // Device modules FIRST: the persisted graphics output is restored inside
-  // graphicsManager.initialize(), and resolving its target port goes through
-  // the device cache. With an empty module registry that lookup returns no
-  // devices, so a display output was misread as DeckLink and the restore died
-  // on a helper that does not exist on Windows.
+  // Device modules FIRST: graphicsManager.initialize() loads the persisted
+  // graphics output, and the deferred apply (graphicsManager.applyPersistedOutput(),
+  // triggered by mode_activate) resolves its target port through the device
+  // cache. With an empty module registry that lookup returns no devices, so a
+  // display output was misread as DeckLink and the restore died on a helper
+  // that does not exist on Windows.
   initializeModules();
   server.log.info("[Server] Device modules initialized");
 
   // Usage recorder before graphicsManager.initialize(): a restored output
-  // config can render layers during init, and their on-air intervals belong
-  // in the log from the first frame on.
+  // config can render layers as soon as it is applied, and their on-air
+  // intervals belong in the log from the first frame on.
   await graphicsUsageRecorder.initialize();
 
   await graphicsManager.initialize();
@@ -211,61 +212,15 @@ export async function createServer(config: BridgeConfigT) {
   initCommandRouter();
   server.log.info("[Server] Command router initialized");
 
-  // Note: Engine connection is now controlled by the Web-App
-  // The Web-App handles auto-connect and stores config in localStorage
-  // Bridge no longer auto-connects on startup
+  // Engine startup reconnect is owned by EngineAdapterService so manual
+  // connects, persisted startup connects (triggered by mode_activate) and
+  // shutdown cancellation share one supervisor.
 
   // Store relay client in server instance for later use
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (server as any).relayClient = relayClient;
 
   return server;
-}
-
-/** Give USB enumeration and helpers a moment before the reconnect attempt. */
-const ENGINE_AUTO_RECONNECT_DELAY_MS = 3_000;
-
-/**
- * Reconnect the engine with the operator's last persisted connection.
- *
- * A connection choice belongs to the operator, not to the session: after a
- * bridge restart the previous connection (USB or network) comes back on its
- * own. A failed attempt - switcher off, cable gone - stays SILENT apart from
- * a log line: the state is reset to disconnected instead of parking an error
- * in the UI, and the stored choice is kept for the next start.
- *
- * @param server Fastify instance used for logging.
- */
-function scheduleEngineAutoReconnect(
-  server: Awaited<ReturnType<typeof createServer>>
-): void {
-  const timer = setTimeout(() => {
-    void (async () => {
-      const persisted = await engineConnectionStore.load();
-      if (!persisted) {
-        return;
-      }
-      if (engineAdapter.getStatus() !== "disconnected") {
-        return;
-      }
-      server.log.info(
-        `[Engine] Auto-reconnecting last connection (type=${persisted.type}, transport=${persisted.transport ?? "network"})`
-      );
-      try {
-        await engineAdapter.connect(persisted);
-        server.log.info("[Engine] Auto-reconnect successful");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        server.log.info(`[Engine] Auto-reconnect skipped: ${message}`);
-        try {
-          await engineAdapter.disconnect();
-        } catch {
-          // Best-effort reset; the operator can connect manually.
-        }
-      }
-    })();
-  }, ENGINE_AUTO_RECONNECT_DELAY_MS);
-  timer.unref?.();
 }
 
 /**
@@ -277,6 +232,8 @@ export async function startServer(
 ): Promise<void> {
   try {
     await server.listen({ host: config.host, port: config.port });
+    // Live program: restore a persisted source (helper starts lazily, gate permitting).
+    void pgmHelperManager.restoreOnBoot();
     server.log.info(
       `Bridge server listening on http://${config.host}:${config.port}`
     );
@@ -289,7 +246,11 @@ export async function startServer(
       await relayClient.connect();
     }
 
-    scheduleEngineAutoReconnect(server);
+    // No Studio restore here: the persisted engine auto-connect and the
+    // persisted graphics output are applied by `mode_activate` once the web
+    // app reports a Studio/Conference mode (docs/bridge/features/mode-activation.md).
+    // Restoring at startup hit an unreachable ATEM and a missing display while
+    // the operator was in a meeting, and every failure became a toast.
   } catch (err: unknown) {
     // Check for port already in use
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -355,7 +316,9 @@ export async function startServer(
     // FIRST: the process-group SIGTERM may kill the meeting helper before the
     // meeting stop step below runs; without this its exit would be classified
     // as a crash and a restart would be armed mid-shutdown.
+    engineAdapter.beginShutdown();
     meetingHelperManager.beginShutdown();
+    pgmHelperManager.beginShutdown();
     server.log.info(`Received ${signal}, shutting down gracefully...`);
     // Budget must cover MP4 finalization on quit-while-recording: the meeting
     // stop step below waits up to ~20s for recording.stop + control.shutdown.
@@ -367,6 +330,8 @@ export async function startServer(
     try {
       // Stop the Stream Deck USB hot-plug watch.
       stopCommandRouter();
+
+      await withTimeout("engine disconnect", engineAdapter.disconnect(), 7000);
 
       // Disconnect relay client
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -399,6 +364,14 @@ export async function startServer(
         server.log.warn(
           `[Meeting] Shutdown encountered an error: ${message}`
         );
+      }
+
+      server.log.info("[PGM] Shutting down live program helper...");
+      try {
+        await withTimeout("pgm shutdown", pgmHelperManager.stop(), 5000);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        server.log.warn(`[PGM] Shutdown encountered an error: ${message}`);
       }
 
       // The standalone virtual-camera app must not outlive the bridge.

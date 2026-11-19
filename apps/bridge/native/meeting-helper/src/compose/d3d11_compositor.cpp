@@ -1188,7 +1188,7 @@ bool guidedRefineMaskD3D11(AlphaMask &mask, const VideoFrame &guideFrame) {
   D3D11Context &base = context();
 
   const GuidedWorkSize workSize = selectGuidedWorkSize(
-      guideFrame.width, guideFrame.height, guidedWorkWidthFromEnv());
+      guideFrame.width, guideFrame.height, guidedWorkWidth());
   const uint32_t workW = workSize.width;
   const uint32_t workH = workSize.height;
   if (!ensureGuidedResources(workW, workH)) {

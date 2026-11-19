@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <cstring>
 
 namespace broadify::meeting {
 namespace {
@@ -75,6 +77,98 @@ void writeIntegerBlockAverage(const VideoFrame &input,
       static_cast<double>(sumB) * scale));
 }
 
+// Fill-only block bounds with the zero-copy shader's rule
+// (kBuildInputShader in dml_device_input.cpp): clamp begin into the source and
+// widen an empty block to one pixel, so an upscaled extent samples its nearest
+// source row/column instead of hitting writeIntegerBlockAverage's mid-grey
+// early return. extent must be > 0 (a Fill mapping with content implies a
+// non-empty source).
+void clampFillBlockBounds(uint32_t &begin, uint32_t &end, uint32_t extent) {
+  begin = std::min(begin, extent - 1u);
+  end = std::min(std::max(end, begin + 1u), extent);
+}
+
+// One output coordinate of a separable bilinear resample: the two source
+// samples and the weight of the second one.
+struct BilinearTap {
+  uint32_t index0 = 0;
+  uint32_t index1 = 0;
+  float weight1 = 0.0f;
+};
+
+// Pixel-centre aligned like OpenCV INTER_LINEAR:
+// src = (dst + 0.5) * srcExtent / dstExtent - 0.5, clamped to
+// [0, srcExtent - 1]; the weight is the fractional part. Equal extents map
+// every coordinate onto itself with weight 0.
+std::vector<BilinearTap> bilinearTaps(uint32_t srcExtent, uint32_t dstExtent) {
+  std::vector<BilinearTap> taps(dstExtent);
+  for (uint32_t dst = 0; dst < dstExtent; ++dst) {
+    BilinearTap &tap = taps[dst];
+    if (srcExtent == dstExtent) {
+      tap.index0 = dst;
+      tap.index1 = dst;
+      continue;
+    }
+    double src = (static_cast<double>(dst) + 0.5) *
+                     static_cast<double>(srcExtent) /
+                     static_cast<double>(dstExtent) -
+                 0.5;
+    src = std::clamp(src, 0.0, static_cast<double>(srcExtent - 1u));
+    const double base = std::floor(src);
+    tap.index0 = static_cast<uint32_t>(base);
+    tap.index1 = std::min(tap.index0 + 1u, srcExtent - 1u);
+    tap.weight1 = static_cast<float>(src - base);
+  }
+  return taps;
+}
+
+uint8_t alphaToByte(float value) {
+  const float alpha = std::clamp(value, 0.0f, 1.0f);
+  return static_cast<uint8_t>(std::round(alpha * 255.0f));
+}
+
+// Fill readback: the whole model output is the stretched frame, so resample
+// all of it to the letterbox content size (maskOutputWidth x
+// maskOutputHeight) instead of cropping.
+void copyFilledModnetAlphaMask(const float *mask, uint32_t maskWidth,
+                               uint32_t maskHeight,
+                               const ModnetLetterboxMapping &mapping,
+                               uint64_t timestampNs,
+                               AlphaMask &outputMask) {
+  const uint32_t outputWidth = mapping.maskOutputWidth;
+  const uint32_t outputHeight = mapping.maskOutputHeight;
+  if (outputWidth == 0u || outputHeight == 0u) {
+    return;
+  }
+  outputMask.width = outputWidth;
+  outputMask.height = outputHeight;
+  outputMask.timestampNs = timestampNs;
+  outputMask.alpha.assign(static_cast<size_t>(outputWidth) * outputHeight, 0u);
+  if (outputWidth == maskWidth && outputHeight == maskHeight) {
+    for (size_t i = 0, n = outputMask.alpha.size(); i < n; ++i) {
+      outputMask.alpha[i] = alphaToByte(mask[i]);
+    }
+    return;
+  }
+  const std::vector<BilinearTap> xTaps = bilinearTaps(maskWidth, outputWidth);
+  const std::vector<BilinearTap> yTaps = bilinearTaps(maskHeight, outputHeight);
+  for (uint32_t y = 0; y < outputHeight; ++y) {
+    const BilinearTap &yTap = yTaps[y];
+    const float *row0 = mask + static_cast<size_t>(yTap.index0) * maskWidth;
+    const float *row1 = mask + static_cast<size_t>(yTap.index1) * maskWidth;
+    const size_t rowOffset = static_cast<size_t>(y) * outputWidth;
+    for (uint32_t x = 0; x < outputWidth; ++x) {
+      const BilinearTap &xTap = xTaps[x];
+      const float top = row0[xTap.index0] * (1.0f - xTap.weight1) +
+                        row0[xTap.index1] * xTap.weight1;
+      const float bottom = row1[xTap.index0] * (1.0f - xTap.weight1) +
+                           row1[xTap.index1] * xTap.weight1;
+      outputMask.alpha[rowOffset + x] =
+          alphaToByte(top * (1.0f - yTap.weight1) + bottom * yTap.weight1);
+    }
+  }
+}
+
 }  // namespace
 
 uint32_t modnetInputSizeForMode(const std::string &performanceMode) {
@@ -111,15 +205,86 @@ ModnetLetterboxMapping modnetLetterboxMapping(uint32_t sourceWidth,
                                     std::llround(sourceHeight * scale))));
   mapping.contentX = (inputWidth - mapping.contentWidth) / 2u;
   mapping.contentY = (inputHeight - mapping.contentHeight) / 2u;
+  mapping.maskOutputWidth = mapping.contentWidth;
+  mapping.maskOutputHeight = mapping.contentHeight;
   return mapping;
+}
+
+ModnetLetterboxMapping modnetFillMapping(uint32_t sourceWidth,
+                                         uint32_t sourceHeight,
+                                         uint32_t inputWidth,
+                                         uint32_t inputHeight) {
+  const ModnetLetterboxMapping letterbox = modnetLetterboxMapping(
+      sourceWidth, sourceHeight, inputWidth, inputHeight);
+  ModnetLetterboxMapping mapping;
+  mapping.inputWidth = inputWidth;
+  mapping.inputHeight = inputHeight;
+  mapping.geometry = ModnetInputGeometry::Fill;
+  if (letterbox.contentWidth == 0u || letterbox.contentHeight == 0u) {
+    return mapping;
+  }
+  mapping.contentX = 0u;
+  mapping.contentY = 0u;
+  mapping.contentWidth = inputWidth;
+  mapping.contentHeight = inputHeight;
+  // Keep the emitted mask at the letterbox content size so every consumer
+  // sees exactly the dimensions it saw before.
+  mapping.maskOutputWidth = letterbox.contentWidth;
+  mapping.maskOutputHeight = letterbox.contentHeight;
+  return mapping;
+}
+
+ModnetLetterboxMapping modnetInputMapping(uint32_t sourceWidth,
+                                          uint32_t sourceHeight,
+                                          uint32_t inputWidth,
+                                          uint32_t inputHeight,
+                                          ModnetInputGeometry geometry) {
+  if (geometry == ModnetInputGeometry::Fill) {
+    return modnetFillMapping(sourceWidth, sourceHeight, inputWidth,
+                             inputHeight);
+  }
+  return modnetLetterboxMapping(sourceWidth, sourceHeight, inputWidth,
+                                inputHeight);
+}
+
+ModnetInputGeometry modnetInputGeometryFor(bool isWindows,
+                                           const char *letterboxEnvValue) {
+  if (!isWindows) {
+    return ModnetInputGeometry::Letterbox;
+  }
+  if (letterboxEnvValue != nullptr &&
+      std::strcmp(letterboxEnvValue, "1") == 0) {
+    return ModnetInputGeometry::Letterbox;
+  }
+  return ModnetInputGeometry::Fill;
+}
+
+ModnetInputGeometry modnetInputGeometryForThisPlatform() {
+#if defined(_WIN32)
+  constexpr bool kIsWindows = true;
+#else
+  constexpr bool kIsWindows = false;
+#endif
+  // Read once: the kill switch is a process-level setting, and every backend
+  // and code path (CPU, fp16, zero-copy, OpenVINO) must see the same value.
+  static const ModnetInputGeometry geometry = modnetInputGeometryFor(
+      kIsWindows, std::getenv("BROADIFY_MEETING_KEYER_LETTERBOX"));
+  return geometry;
 }
 
 void buildModnetInputTensor(const VideoFrame &input, uint32_t inputWidth,
                             uint32_t inputHeight, std::vector<float> &tensor,
-                            ModnetLetterboxMapping *mappingOut) {
+                            ModnetLetterboxMapping *mappingOut,
+                            ModnetInputGeometry geometry) {
   tensor.assign(static_cast<size_t>(3u) * inputWidth * inputHeight, 0.0f);
-  const ModnetLetterboxMapping mapping = modnetLetterboxMapping(
-      input.width, input.height, inputWidth, inputHeight);
+  // The block-average loop below maps x and y independently, so a Fill
+  // mapping (content = the whole tensor) reuses it. A source extent smaller
+  // than the content extent (upscale) yields empty blocks: Letterbox keeps
+  // writing them as normalized mid-grey (unchanged behavior), Fill widens
+  // them to the nearest source pixel (clampFillBlockBounds), so a stretched
+  // frame never contains padding values.
+  const ModnetLetterboxMapping mapping = modnetInputMapping(
+      input.width, input.height, inputWidth, inputHeight, geometry);
   if (mappingOut != nullptr) {
     *mappingOut = mapping;
   }
@@ -127,19 +292,26 @@ void buildModnetInputTensor(const VideoFrame &input, uint32_t inputWidth,
     return;
   }
   const size_t channelSize = static_cast<size_t>(inputWidth) * inputHeight;
+  const bool fill = mapping.geometry == ModnetInputGeometry::Fill;
   for (uint32_t y = 0; y < mapping.contentHeight; ++y) {
-    const uint32_t srcTop = static_cast<uint32_t>(
+    uint32_t srcTop = static_cast<uint32_t>(
         (static_cast<uint64_t>(y) * input.height) / mapping.contentHeight);
-    const uint32_t srcBottom = static_cast<uint32_t>(
+    uint32_t srcBottom = static_cast<uint32_t>(
         (static_cast<uint64_t>(y + 1u) * input.height) /
         mapping.contentHeight);
+    if (fill) {
+      clampFillBlockBounds(srcTop, srcBottom, input.height);
+    }
     const uint32_t dstY = mapping.contentY + y;
     for (uint32_t x = 0; x < mapping.contentWidth; ++x) {
-      const uint32_t srcLeft = static_cast<uint32_t>(
+      uint32_t srcLeft = static_cast<uint32_t>(
           (static_cast<uint64_t>(x) * input.width) / mapping.contentWidth);
-      const uint32_t srcRight = static_cast<uint32_t>(
+      uint32_t srcRight = static_cast<uint32_t>(
           (static_cast<uint64_t>(x + 1u) * input.width) /
           mapping.contentWidth);
+      if (fill) {
+        clampFillBlockBounds(srcLeft, srcRight, input.width);
+      }
       const uint32_t dstX = mapping.contentX + x;
       const size_t dstOffset = static_cast<size_t>(dstY) * inputWidth + dstX;
       writeIntegerBlockAverage(input, srcLeft, srcTop, srcRight, srcBottom,
@@ -159,6 +331,11 @@ void copyModnetAlphaMask(const float *mask, uint32_t maskWidth,
       outputWidth == 0u || outputHeight == 0u || mapping.inputWidth == 0u ||
       mapping.inputHeight == 0u || mapping.contentWidth == 0u ||
       mapping.contentHeight == 0u) {
+    return;
+  }
+  if (mapping.geometry == ModnetInputGeometry::Fill) {
+    copyFilledModnetAlphaMask(mask, maskWidth, maskHeight, mapping,
+                              timestampNs, outputMask);
     return;
   }
   const uint32_t cropX =

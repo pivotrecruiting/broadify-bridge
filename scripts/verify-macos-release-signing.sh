@@ -10,6 +10,9 @@ HELPER_BUNDLE_ID="com.broadify.bridge.meeting-helper"
 HELPER_APP_REL="Contents/Resources/native/meeting-helper/Broadify Bridge Meeting Helper.app"
 HELPER_EXEC_REL="${HELPER_APP_REL}/Contents/MacOS/BroadifyMeetingHelper"
 HELPER_MODELS_REL="Contents/Resources/native/meeting-helper/models"
+PGM_HELPER_BUNDLE_ID="com.broadify.bridge.pgm-helper"
+PGM_HELPER_APP_REL="Contents/Resources/native/pgm-helper/Broadify Bridge PGM Helper.app"
+PGM_HELPER_EXEC_REL="${PGM_HELPER_APP_REL}/Contents/MacOS/BroadifyPgmHelper"
 PRESENTATION_RUNTIME_REL="Contents/Resources/presentation-runtime/macos-arm64/LibreOffice.app"
 PRESENTATION_RUNTIME_EXEC_REL="${PRESENTATION_RUNTIME_REL}/Contents/MacOS/soffice"
 
@@ -155,7 +158,11 @@ require_entitlement_key() {
 }
 
 team_id() {
-  codesign -dv --verbose=4 "$1" 2>&1 | awk -F= '/TeamIdentifier=/ { print $2; exit }'
+  # Consume the whole codesign stream: an early `exit` in awk closed the pipe
+  # while codesign was still writing, which killed it with SIGPIPE and - under
+  # `set -o pipefail` - aborted the release verification with exit code 141
+  # (seen on the v0.27.3-rc.2 macOS release build).
+  codesign -dv --verbose=4 "$1" 2>&1 | awk -F= '/TeamIdentifier=/ && !found { print $2; found = 1 }'
 }
 
 NORMALIZED_ARCH="$(normalize_arch "$EXPECTED_ARCH")"
@@ -219,14 +226,165 @@ if ! plist_value "$HELPER_INFO" "NSMicrophoneUsageDescription" >/dev/null; then
   exit 1
 fi
 echo "[MacSignVerify] NSMicrophoneUsageDescription present"
+# Recording folder/volume consent strings: the helper writes MP4 files to the
+# folder the operator picks in the save panel (Documents, Desktop, Downloads,
+# external or network volumes). Without them macOS cannot prompt and the write
+# fails with a bare permission error.
+if ! plist_value "$HELPER_INFO" "NSDocumentsFolderUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] Meeting Helper is missing NSDocumentsFolderUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSDocumentsFolderUsageDescription present"
+if ! plist_value "$HELPER_INFO" "NSDesktopFolderUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] Meeting Helper is missing NSDesktopFolderUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSDesktopFolderUsageDescription present"
+if ! plist_value "$HELPER_INFO" "NSDownloadsFolderUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] Meeting Helper is missing NSDownloadsFolderUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSDownloadsFolderUsageDescription present"
+if ! plist_value "$HELPER_INFO" "NSRemovableVolumesUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] Meeting Helper is missing NSRemovableVolumesUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSRemovableVolumesUsageDescription present"
+if ! plist_value "$HELPER_INFO" "NSNetworkVolumesUsageDescription" >/dev/null; then
+  echo "[MacSignVerify] Meeting Helper is missing NSNetworkVolumesUsageDescription" >&2
+  exit 1
+fi
+echo "[MacSignVerify] NSNetworkVolumesUsageDescription present"
 
 verify_codesign "$HELPER_APP_PATH" "deep"
 verify_codesign "$HELPER_EXEC_PATH" "nodeep"
+
+# PGM helper (live program preview): optional while SKIP_PGM_HELPER_BUILD=1.
+PGM_HELPER_APP_PATH="${APP_PATH}/${PGM_HELPER_APP_REL}"
+PGM_HELPER_EXEC_PATH="${APP_PATH}/${PGM_HELPER_EXEC_REL}"
+if [[ "${SKIP_PGM_HELPER_BUILD:-}" != "1" ]]; then
+  [[ -d "$PGM_HELPER_APP_PATH" ]] || {
+    echo "[MacSignVerify] Missing PGM Helper app at ${PGM_HELPER_APP_PATH}" >&2
+    exit 1
+  }
+  [[ -x "$PGM_HELPER_EXEC_PATH" ]] || {
+    echo "[MacSignVerify] Missing executable PGM Helper at ${PGM_HELPER_EXEC_PATH}" >&2
+    exit 1
+  }
+  PGM_HELPER_INFO="${PGM_HELPER_APP_PATH}/Contents/Info.plist"
+  require_plist_value "$PGM_HELPER_INFO" "CFBundleIdentifier" "$PGM_HELPER_BUNDLE_ID"
+  require_plist_value "$PGM_HELPER_INFO" "CFBundleExecutable" "BroadifyPgmHelper"
+  if ! plist_value "$PGM_HELPER_INFO" "NSCameraUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSCameraUsageDescription" >&2
+    exit 1
+  fi
+  if ! plist_value "$PGM_HELPER_INFO" "NSMicrophoneUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSMicrophoneUsageDescription" >&2
+    exit 1
+  fi
+  # The PGM helper records MP4 files to operator-chosen folders as well.
+  if ! plist_value "$PGM_HELPER_INFO" "NSDocumentsFolderUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSDocumentsFolderUsageDescription" >&2
+    exit 1
+  fi
+  if ! plist_value "$PGM_HELPER_INFO" "NSDesktopFolderUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSDesktopFolderUsageDescription" >&2
+    exit 1
+  fi
+  if ! plist_value "$PGM_HELPER_INFO" "NSDownloadsFolderUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSDownloadsFolderUsageDescription" >&2
+    exit 1
+  fi
+  if ! plist_value "$PGM_HELPER_INFO" "NSRemovableVolumesUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSRemovableVolumesUsageDescription" >&2
+    exit 1
+  fi
+  if ! plist_value "$PGM_HELPER_INFO" "NSNetworkVolumesUsageDescription" >/dev/null; then
+    echo "[MacSignVerify] PGM Helper is missing NSNetworkVolumesUsageDescription" >&2
+    exit 1
+  fi
+  verify_codesign "$PGM_HELPER_APP_PATH" "deep"
+  verify_codesign "$PGM_HELPER_EXEC_PATH" "nodeep"
+  echo "[MacSignVerify] PGM Helper verified"
+fi
 if [[ "$NORMALIZED_ARCH" == "arm64" ]]; then
   verify_codesign "$PRESENTATION_RUNTIME_PATH" "deep"
   verify_codesign "$PRESENTATION_RUNTIME_EXEC_PATH" "nodeep"
 fi
 verify_codesign "$APP_PATH" "deep"
+
+# Main executable LC_UUID: Prod and RC must not share the stock Electron UUID,
+# because macOS Local Network privacy keys its decision on that UUID (TN3179).
+# The afterPack hook scripts/patch-macos-main-executable-uuid.cjs writes a
+# deterministic per-flavour UUID; verify it survived packaging and signing.
+MAIN_EXEC="${APP_PATH}/Contents/MacOS/${APP_PRODUCT_NAME}"
+ELECTRON_STUB_EXEC="${ROOT_DIR}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+case "$NORMALIZED_ARCH" in
+  arm64)
+    DWARF_ARCH="arm64"
+    ;;
+  x64)
+    DWARF_ARCH="x86_64"
+    ;;
+  *)
+    echo "[MacSignVerify] Unsupported arch for LC_UUID check: ${NORMALIZED_ARCH}" >&2
+    exit 1
+    ;;
+esac
+if [[ "$APP_BUNDLE_ID" == "com.broadify.bridge.rc" ]]; then
+  OTHER_BUNDLE_ID="com.broadify.bridge"
+  OTHER_PRODUCT_NAME="Broadify Bridge"
+else
+  OTHER_BUNDLE_ID="com.broadify.bridge.rc"
+  OTHER_PRODUCT_NAME="Broadify Bridge RC"
+fi
+[[ -x "$MAIN_EXEC" ]] || {
+  echo "[MacSignVerify] Missing main executable at ${MAIN_EXEC}" >&2
+  exit 1
+}
+[[ -f "$ELECTRON_STUB_EXEC" ]] || {
+  echo "[MacSignVerify] Missing stock Electron launcher at ${ELECTRON_STUB_EXEC} (needed for the LC_UUID comparison)" >&2
+  exit 1
+}
+if ! command -v dwarfdump >/dev/null 2>&1; then
+  echo "[MacSignVerify] dwarfdump is required for the LC_UUID check (install Xcode command line tools)" >&2
+  exit 1
+fi
+
+# dwarfdump prints one "UUID: <uuid> (<arch>) <path>" line per slice. Consume
+# the whole stream (no early awk exit) to avoid SIGPIPE under pipefail.
+macho_uuid_for_arch() {
+  dwarfdump --uuid "$1" 2>/dev/null | awk -v arch="($2)" '$1 == "UUID:" && $3 == arch && !found { print $2; found = 1 }'
+}
+
+MAIN_UUID="$(macho_uuid_for_arch "$MAIN_EXEC" "$DWARF_ARCH")"
+STUB_UUID="$(macho_uuid_for_arch "$ELECTRON_STUB_EXEC" "$DWARF_ARCH")"
+EXPECTED_UUID="$(node "${ROOT_DIR}/scripts/patch-macos-main-executable-uuid.cjs" --print-expected \
+  --app-id "$APP_BUNDLE_ID" --product-filename "$APP_PRODUCT_NAME" --cputype "$DWARF_ARCH")"
+OTHER_UUID="$(node "${ROOT_DIR}/scripts/patch-macos-main-executable-uuid.cjs" --print-expected \
+  --app-id "$OTHER_BUNDLE_ID" --product-filename "$OTHER_PRODUCT_NAME" --cputype "$DWARF_ARCH")"
+
+if [[ -z "$MAIN_UUID" ]]; then
+  echo "[MacSignVerify] Could not read the ${DWARF_ARCH} LC_UUID of ${MAIN_EXEC}" >&2
+  exit 1
+fi
+if [[ -z "$EXPECTED_UUID" || -z "$OTHER_UUID" ]]; then
+  echo "[MacSignVerify] Could not derive the expected LC_UUID for ${APP_BUNDLE_ID}" >&2
+  exit 1
+fi
+if [[ "$MAIN_UUID" != "$EXPECTED_UUID" ]]; then
+  echo "[MacSignVerify] Main executable LC_UUID mismatch: expected ${EXPECTED_UUID}, got ${MAIN_UUID} (afterPack hook did not run?)" >&2
+  exit 1
+fi
+if [[ -n "$STUB_UUID" && "$MAIN_UUID" == "$STUB_UUID" ]]; then
+  echo "[MacSignVerify] Main executable still carries the stock Electron LC_UUID ${STUB_UUID}" >&2
+  exit 1
+fi
+if [[ "$MAIN_UUID" == "$OTHER_UUID" ]]; then
+  echo "[MacSignVerify] Main executable LC_UUID collides with ${OTHER_BUNDLE_ID} (${OTHER_UUID})" >&2
+  exit 1
+fi
+echo "[MacSignVerify] Main executable LC_UUID -> ${MAIN_UUID}"
 
 # BroadifyVCam.app ships inside the bundle but is signIgnore'd by
 # electron-builder — gate it explicitly: it must verify, carry the release
@@ -295,8 +453,54 @@ echo "[MacSignVerify] packaged CoreML model hashes verified"
 spctl -a -t exec -vv "$APP_PATH"
 echo "[MacSignVerify] spctl accepted app"
 
-xcrun stapler validate "$APP_PATH"
-echo "[MacSignVerify] stapler validate ok -> ${APP_PATH}"
+# Stapled notarization ticket: `xcrun stapler staple` (electron-builder's
+# notarize step) writes it to Contents/CodeResources of an app bundle. Its
+# presence is checked offline and is fatal: without it, offline Macs cannot
+# verify the app.
+STAPLED_TICKET_PATH="${APP_PATH}/Contents/CodeResources"
+if [[ ! -s "$STAPLED_TICKET_PATH" ]]; then
+  echo "[MacSignVerify] No stapled notarization ticket at ${STAPLED_TICKET_PATH}" >&2
+  exit 1
+fi
+echo "[MacSignVerify] stapled notarization ticket present -> ${STAPLED_TICKET_PATH}"
+
+# `stapler validate` additionally asks Apple's CloudKit for the ticket. On
+# hosted runners that call intermittently fails with NSURLErrorDomain -1005
+# ("The network connection was lost", stapler exit 68) although the ticket is
+# stapled and spctl accepted the app as "Notarized Developer ID" above (three
+# consecutive attempts on 2026-10-27). Retry a few times; if only the network
+# call keeps failing, report it and continue, because the offline evidence
+# (stapled ticket + spctl) is what matters for customers. Any other stapler
+# failure (for example exit 65 "does not have a ticket stapled") stays fatal.
+STAPLER_VALIDATE_ATTEMPTS="${STAPLER_VALIDATE_ATTEMPTS:-4}"
+STAPLER_VALIDATE_BACKOFF_SECONDS="${STAPLER_VALIDATE_BACKOFF_SECONDS:-20}"
+STAPLER_NETWORK_EXIT_CODE=68
+stapler_validate_with_retry() {
+  local target="$1"
+  local attempt=1
+  local status=0
+  while true; do
+    if xcrun stapler validate "$target"; then
+      return 0
+    else
+      status=$?
+    fi
+    if (( status != STAPLER_NETWORK_EXIT_CODE )); then
+      echo "[MacSignVerify] stapler validate failed with exit ${status} for ${target}" >&2
+      return "$status"
+    fi
+    if (( attempt >= STAPLER_VALIDATE_ATTEMPTS )); then
+      echo "[MacSignVerify] stapler validate could not reach Apple (exit ${status}) ${attempt}x for ${target}; the ticket is stapled and spctl accepted the app, continuing" >&2
+      return 0
+    fi
+    echo "[MacSignVerify] stapler validate attempt ${attempt}/${STAPLER_VALIDATE_ATTEMPTS} failed (exit ${status}); retrying in ${STAPLER_VALIDATE_BACKOFF_SECONDS}s" >&2
+    sleep "$STAPLER_VALIDATE_BACKOFF_SECONDS"
+    attempt=$((attempt + 1))
+  done
+}
+
+stapler_validate_with_retry "$APP_PATH"
+echo "[MacSignVerify] stapler validate step done -> ${APP_PATH}"
 
 DMG_PATH="$(find "${ROOT_DIR}/dist" -maxdepth 1 -type f \( -name "Broadify-Bridge-*-${NORMALIZED_ARCH}.dmg" -o -name "Broadify-Bridge-RC-*-${NORMALIZED_ARCH}.dmg" \) -print -quit)"
 if [[ -n "$DMG_PATH" ]]; then

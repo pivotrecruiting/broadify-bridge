@@ -7,6 +7,7 @@ import {
 import {
   stableStringify,
   type RelayCommandMetaT,
+  type VerifySignedRelayCommandResultT,
   verifySignedRelayCommand,
 } from "./relay-command-security.js";
 import { getRelayCommandPolicy } from "./relay-command-policy.js";
@@ -22,6 +23,8 @@ import { describeRelaySocketError } from "./relay-socket-error.js";
 const MAX_RELAY_MESSAGE_BYTES = 2 * 1024 * 1024;
 const RELAY_COMMAND_TTL_SECONDS = 30;
 const RELAY_COMMAND_SKEW_SECONDS = 60;
+// jtis live at most TTL+skew (<= 90 s), so eviction of still-live jtis only
+// starts above ~55 commands/s.
 const MAX_JTI_CACHE_SIZE = 5000;
 const RELAY_PROTOCOL_VERSION = 2;
 const RELAY_COMMAND_DEDUPE_TTL_MS =
@@ -1537,8 +1540,9 @@ export class RelayClient {
    * @param message Untrusted relay command message.
    */
   private async handleCommand(message: RelayCommandMessage): Promise<void> {
+    let verification: VerifySignedRelayCommandResultT;
     try {
-      await this.verifySignedCommand(message);
+      verification = await this.verifySignedCommand(message);
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : "Invalid relay signature";
@@ -1552,6 +1556,12 @@ export class RelayClient {
         error: errorMessage,
       });
       return;
+    }
+
+    if (verification.replayedJti) {
+      this.logger.debug?.(
+        `Redelivered signed command, serving cached result (requestId: ${message.requestId})`,
+      );
     }
 
     const isKnownRelayCommand = this.deps.isRelayCommand ?? isRelayCommand;
@@ -1675,12 +1685,12 @@ export class RelayClient {
 
   private async verifySignedCommand(
     message: RelayCommandMessage,
-  ): Promise<void> {
+  ): Promise<VerifySignedRelayCommandResultT> {
     if (this.deps.verifySignedCommand) {
       await this.deps.verifySignedCommand(message);
-      return;
+      return { replayedJti: false };
     }
-    await verifySignedRelayCommand({
+    return verifySignedRelayCommand({
       message,
       bridgeId: this.bridgeId,
       getPublicKey,
@@ -1688,6 +1698,11 @@ export class RelayClient {
       relayCommandSkewSeconds: RELAY_COMMAND_SKEW_SECONDS,
       relayCommandTtlSeconds: RELAY_COMMAND_TTL_SECONDS,
       maxJtiCacheSize: MAX_JTI_CACHE_SIZE,
+      // A seen jti is only tolerated when the result for this requestId can
+      // be served from the dedupe cache or the in-flight map (redelivery).
+      isKnownRequestId: (requestId) =>
+        this.getCachedCommandResult(requestId) !== null ||
+        this.inFlightCommandResults.has(requestId),
     });
   }
 

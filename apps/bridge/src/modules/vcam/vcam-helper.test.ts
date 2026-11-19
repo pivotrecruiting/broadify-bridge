@@ -20,7 +20,9 @@ import {
   hasEmbeddedVcamSystemExtension,
   isVcamExtensionAvailable,
   openVcamHelperApp,
+  parseActiveVcamExtensionVersion,
   resolveVcamHelperAppPath,
+  shouldReactivateVcamForUpgrade,
   shouldAutoUpgradeEmbeddedVcamApp,
   VCAM_EMBEDDED_EXTENSION_BUNDLE_NAME,
   VCAM_EMBEDDED_EXTENSION_REL_PATH,
@@ -29,6 +31,7 @@ import {
 describe("vcam-helper", () => {
   const originalMarker = process.env.BROADIFY_VCAM_EXTENSION_INSTALLED;
   const originalHelperPath = process.env.BRIDGE_VCAM_HELPER_PATH;
+  const originalAutoUpgradeOnStart = process.env.BRIDGE_VCAM_AUTO_UPGRADE_ON_START;
 
   beforeEach(() => {
     __setVcamActivationPollForTesting(1, 1);
@@ -40,6 +43,9 @@ describe("vcam-helper", () => {
       const argv = Array.isArray(args) ? (args as string[]) : [];
       if (command === "/usr/bin/xattr" && argv[0] === "-p") {
         throw new Error("No such xattr: com.apple.quarantine");
+      }
+      if (command === "/usr/libexec/PlistBuddy") {
+        return "20";
       }
       return "";
     });
@@ -57,6 +63,11 @@ describe("vcam-helper", () => {
       delete process.env.BRIDGE_VCAM_HELPER_PATH;
     } else {
       process.env.BRIDGE_VCAM_HELPER_PATH = originalHelperPath;
+    }
+    if (originalAutoUpgradeOnStart === undefined) {
+      delete process.env.BRIDGE_VCAM_AUTO_UPGRADE_ON_START;
+    } else {
+      process.env.BRIDGE_VCAM_AUTO_UPGRADE_ON_START = originalAutoUpgradeOnStart;
     }
   });
 
@@ -140,7 +151,7 @@ describe("vcam-helper", () => {
         "1 extension(s)",
         "--- com.apple.system_extension.driver_extension",
         "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]",
-        "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated enabled]",
+        "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0/20)\tcom.broadify.vcam.extension\t[activated enabled]",
       ].join("\n"),
     );
 
@@ -149,6 +160,8 @@ describe("vcam-helper", () => {
     expect(status.available).toBe(true);
     expect(status.running).toBe(true);
     expect(status.requiresUserApproval).toBe(false);
+    expect(status.helperAppVersion).toBe(20);
+    expect(status.extensionVersion).toBe(20);
     expect(status.code).toBeUndefined();
   });
 
@@ -228,7 +241,7 @@ describe("vcam-helper", () => {
         "1 extension(s)",
         "--- com.apple.system_extension.cmio",
         "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]",
-        "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated enabled]",
+        "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0/20)\tcom.broadify.vcam.extension\t[activated enabled]",
       ].join("\n"),
     );
 
@@ -238,6 +251,158 @@ describe("vcam-helper", () => {
     expect(status.launchRequested).toBe(false);
     expect(status.code).toBe("already_active");
     expect(status.message).toContain("already active");
+  });
+
+  it("parses active VCam extension builds from systemextensionsctl output", () => {
+    expect(
+      parseActiveVcamExtensionVersion(
+        "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0/17)\tcom.broadify.vcam.extension\t[activated enabled]",
+      ),
+    ).toBe(17);
+    expect(
+      parseActiveVcamExtensionVersion(
+        "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0)\tcom.broadify.vcam.extension\t[activated enabled]",
+      ),
+    ).toBeNull();
+    expect(
+      parseActiveVcamExtensionVersion(
+        "\t*\tXYZ\tcom.other.vendor.extension (1.0/99)\tcom.other.vendor.extension\t[activated enabled]",
+      ),
+    ).toBeNull();
+    expect(
+      parseActiveVcamExtensionVersion(
+        [
+          "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0/17)\tcom.broadify.vcam.extension\t[activated enabled]",
+          "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0/20)\tcom.broadify.vcam.extension\t[activated waiting for user]",
+          "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0/18)\tcom.broadify.vcam.extension\t[activated enabled]",
+        ].join("\n"),
+      ),
+    ).toBe(18);
+  });
+
+  it("decides whether to reactivate the VCam extension for upgrades", () => {
+    expect(shouldReactivateVcamForUpgrade(20, 17)).toBe(true);
+    expect(shouldReactivateVcamForUpgrade(20, 20)).toBe(false);
+    expect(shouldReactivateVcamForUpgrade(19, 20)).toBe(false);
+    expect(shouldReactivateVcamForUpgrade(null, 17)).toBe(false);
+    expect(shouldReactivateVcamForUpgrade(20, null)).toBe(false);
+    expect(shouldReactivateVcamForUpgrade(20, 17, false)).toBe(false);
+
+    process.env.BRIDGE_VCAM_AUTO_UPGRADE_ON_START = "0";
+    expect(shouldReactivateVcamForUpgrade(20, 17)).toBe(false);
+  });
+
+  it("uses the newest own extension line for status while tracking the active build", () => {
+    const installed = "/Applications/BroadifyVCam.app";
+    if (!hasEmbeddedVcamSystemExtension(installed)) {
+      return;
+    }
+
+    process.env.BRIDGE_VCAM_HELPER_PATH = installed;
+    mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+      const argv = Array.isArray(args) ? (args as string[]) : [];
+      if (command === "systemextensionsctl") {
+        return [
+          "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0/20)\tcom.broadify.vcam.extension\t[activated enabled]",
+          "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0/17)\tcom.broadify.vcam.extension\t[activated waiting for user]",
+        ].join("\n");
+      }
+      if (command === "/usr/libexec/PlistBuddy") {
+        return "20";
+      }
+      if (command === "/usr/bin/xattr" && argv[0] === "-p") {
+        throw new Error("No such xattr: com.apple.quarantine");
+      }
+      return "";
+    });
+
+    const status = getVcamHelperStatus();
+
+    expect(status.available).toBe(true);
+    expect(status.requiresUserApproval).toBe(false);
+    expect(status.extensionVersion).toBe(20);
+  });
+
+  it("reopens the helper app once when the active extension build is older than the app", async () => {
+    const installed = "/Applications/BroadifyVCam.app";
+    if (!hasEmbeddedVcamSystemExtension(installed)) {
+      return;
+    }
+
+    process.env.BRIDGE_VCAM_HELPER_PATH = installed;
+    let sysextCalls = 0;
+    mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+      const argv = Array.isArray(args) ? (args as string[]) : [];
+      if (command === "systemextensionsctl") {
+        sysextCalls += 1;
+        return sysextCalls === 1
+          ? "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0/17)\tcom.broadify.vcam.extension\t[activated enabled]"
+          : "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0/20)\tcom.broadify.vcam.extension\t[activated enabled]";
+      }
+      if (command === "/usr/libexec/PlistBuddy") {
+        return "20";
+      }
+      if (command === "/usr/bin/xattr" && argv[0] === "-p") {
+        throw new Error("No such xattr: com.apple.quarantine");
+      }
+      return "";
+    });
+    mockSpawn.mockImplementation(() => {
+      const child = new EventEmitter() as EventEmitter & { unref: jest.Mock };
+      (child as { unref: jest.Mock }).unref = jest.fn();
+      process.nextTick(() => child.emit("close", 0, null));
+      return child;
+    });
+
+    const result = await openVcamHelperApp();
+    const secondResult = await openVcamHelperApp();
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "open",
+      [installed, "--args", "--activate"],
+      expect.any(Object),
+    );
+    expect(result.code).toBe("activation_completed");
+    expect(result.message).toContain("upgraded to build 20");
+    expect(secondResult.code).toBe("already_active");
+  });
+
+  it("does not attempt the same extension upgrade twice in one process", async () => {
+    const installed = "/Applications/BroadifyVCam.app";
+    if (!hasEmbeddedVcamSystemExtension(installed)) {
+      return;
+    }
+
+    process.env.BRIDGE_VCAM_HELPER_PATH = installed;
+    mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+      const argv = Array.isArray(args) ? (args as string[]) : [];
+      if (command === "systemextensionsctl") {
+        return "\t*\tPG38DC5RG9\tcom.broadify.vcam.extension (1.0/17)\tcom.broadify.vcam.extension\t[activated enabled]";
+      }
+      if (command === "/usr/libexec/PlistBuddy") {
+        return "20";
+      }
+      if (command === "/usr/bin/xattr" && argv[0] === "-p") {
+        throw new Error("No such xattr: com.apple.quarantine");
+      }
+      return "";
+    });
+    mockSpawn.mockImplementation(() => {
+      const child = new EventEmitter() as EventEmitter & { unref: jest.Mock };
+      (child as { unref: jest.Mock }).unref = jest.fn();
+      process.nextTick(() => child.emit("close", 0, null));
+      return child;
+    });
+
+    const firstResult = await openVcamHelperApp();
+    const secondResult = await openVcamHelperApp();
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(firstResult.code).toBe("activation_requested");
+    expect(secondResult.launchRequested).toBe(false);
+    expect(secondResult.code).toBe("activation_requested");
+    expect(secondResult.message).toContain("already requested");
   });
 
   it("resolves dev build path when present and valid", () => {

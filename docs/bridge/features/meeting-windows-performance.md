@@ -134,6 +134,15 @@ Zeitbasierte Hintergruende werden nur auf Kamera-, Programm- oder
 Grafik-Aenderungen fortgeschrieben; ohne solche Aenderung gibt es keinen
 separaten Render-Tick.
 
+Meeting-Grafik-Planes (`bfy-meet-gfx-back`/`bfy-meet-gfx-front`) rendern bei
+1920x1080 standardmaessig als 3840x2160-Offscreen-Back-Plane und skalieren vor
+dem FrameBus-Publish nativ auf 1920x1080 zurueck. Das verbessert Kanten und
+Text, erhoeht aber GPU- und Speicherbandbreitenlast pro Grafik-Frame. Fuer
+Feldtests stehen `BRIDGE_GRAPHICS_SUPERSAMPLE` als globaler Override und
+`BRIDGE_GRAPHICS_MEETING_SUPERSAMPLE` fuer Meeting-only Tuning zur Verfuegung;
+bei Windows-Work-Area-Clamps faellt der Renderer automatisch auf Scale 1
+zurueck.
+
 Der Windows-Program-Loop darf durch eine fruehe Kamera-CV-Wake frueher
 aufwachen, sobald mindestens 0,75 x Frame-Intervall seit Renderstart
 vergangen sind; er rendert aber nie schneller als `1 / targetFps`. Eine
@@ -191,7 +200,11 @@ wird z. B. bei `page: 2` und `page-0003.png` `page-0002.png` und
 Seitennummern-Muster enthaelt; bei nicht-deterministischen Pfaden wird nichts
 vorab geladen.
 Erfolg und Fehler stehen als `media_page_loaded` bzw.
-`media_page_load_failed` in den Helper-Events.
+`media_page_load_failed` in den Helper-Events. Das hochgeladene
+Hintergrundbild nutzt denselben Mechanismus (ein Slot, synchron geladen):
+`background_image_loaded` / `background_image_load_failed` mit gleichem
+Backoff; alle Pfade werden als UTF-8 geoeffnet (siehe
+`meeting-keyer-windows.md`, "Paths And Encoding").
 
 Der Raw-Frame-Server sendet Heartbeats aus dem zuletzt gespeicherten Frame und
 meldet `meeting_vcam_raw no_frame_on_connect`, wenn ein VCam-Client nach 2 s
@@ -260,8 +273,15 @@ Output-Readback bleibt CPU. Randbedingungen:
   ist damit ohne Cross-Queue-Fences geordnet. Auf `dml2`/`legacy_device0`
   meldet `zerocopy_stage_unavailable` den Grund und der CPU-Pfad laeuft
   unveraendert.
-- Der Shader repliziert die CPU-Referenz exakt (Letterbox, Integer-
-  Block-Average, `(x-0.5)/0.5`); ein einmaliges Paritaets-Gate pro Tier
+- Der Shader repliziert die CPU-Referenz (Content-Rechteck aus dem Mapping:
+  Fill = ganzer Tensor als Windows-Default, Letterbox per
+  `BROADIFY_MEETING_KEYER_LETTERBOX=1`; Integer-Block-Average,
+  `(x-0.5)/0.5`). Im Fill-Pfad nutzt die CPU dieselbe Blockgrenzen-Regel wie
+  der Shader (leere Bloecke beim Hochskalieren -> naechste Quellzeile/-spalte).
+  Im Letterbox-Pfad schreibt die CPU leere Bloecke winziger Quellen (z. B.
+  320x240 bei 512) weiter als Mittelgrau, der Shader nicht; dort faellt das
+  Paritaets-Gate durch und Zero-Copy schaltet sich ab. Ein einmaliges
+  Paritaets-Gate pro Tier
   (`zerocopy_parity`, max |Delta| <= 1e-2 elementweise gegen
   `buildModnetInputTensor`) muss bestehen, bevor eine Maske aus dem GPU-Tensor
   vertraut wird. fp16-Modelle schreiben den Tensor direkt als half

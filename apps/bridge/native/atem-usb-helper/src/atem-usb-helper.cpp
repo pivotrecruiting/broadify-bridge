@@ -42,6 +42,8 @@
 
 #include <atomic>
 #include <cctype>
+#include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -52,6 +54,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+#if !defined(_WIN32)
+#include <pthread.h>
+#include <unistd.h>
+#endif
 
 #if defined(_WIN32)
 #define HELPER_STDMETHOD STDMETHODCALLTYPE
@@ -84,6 +90,10 @@ const REFIID kIID_IUnknown = CFUUIDGetUUIDBytes(IUnknownUUID);
 #endif
 
 std::mutex gStdoutMutex;
+constexpr int kHelperProtocolVersion = 2;
+#if !defined(_WIN32)
+std::atomic<bool> g_terminateRequested{false};
+#endif
 
 void emitLine(const std::string &json) {
   std::lock_guard<std::mutex> lock(gStdoutMutex);
@@ -270,7 +280,7 @@ HRESULT connectViaUsb(IBMDSwitcherDiscovery *discovery, SwitcherHandle *switcher
   MacSwitcherT *switcherOut = nullptr;
   const HRESULT result = discovery->ConnectTo(CFSTR(""), &switcherOut, failReason);
   switcher->p = switcherOut;
-  switcher->gen = result == S_OK && switcherOut != nullptr ? 1 : 0;
+  switcher->gen = SUCCEEDED(result) && switcherOut != nullptr ? 1 : 0;
   return result;
 #endif
 }
@@ -302,14 +312,14 @@ void appendHelperBuildJson(std::ostringstream &out) {
       << "\",\"sdk_version\":\"" << jsonEscape(HELPER_SDK_VERSION) << "\"}";
 }
 
-#if defined(_WIN32)
 std::string formatHRESULT(HRESULT result) {
   std::ostringstream out;
   out << "0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0')
-      << static_cast<unsigned long>(result);
+      << static_cast<uint32_t>(result);
   return out.str();
 }
 
+#if defined(_WIN32)
 std::string discoveryHrJson() {
   return formatHRESULT(static_cast<HRESULT>(g_lastDiscoveryHrV97.load()));
 }
@@ -417,6 +427,39 @@ std::string connectFailureToError(BMDSwitcherConnectToFailure reason) {
   }
 }
 
+std::string connectFailureToReason(BMDSwitcherConnectToFailure reason) {
+  switch (reason) {
+    case bmdSwitcherConnectToFailureNoResponse:
+      return "no_response";
+    case bmdSwitcherConnectToFailureIncompatibleFirmware:
+      return "incompatible_firmware";
+    case bmdSwitcherConnectToFailureCorruptData:
+      return "corrupt_data";
+    case bmdSwitcherConnectToFailureStateSync:
+      return "state_sync_failed";
+    case bmdSwitcherConnectToFailureStateSyncTimedOut:
+      return "state_sync_timed_out";
+    default:
+      return "unknown";
+  }
+}
+
+bool isDeviceBusyHRESULT(HRESULT result) {
+#if defined(_WIN32)
+  return static_cast<uint32_t>(result) == 0x80070005u;
+#else
+  return static_cast<uint32_t>(result) == 0x80000009u;
+#endif
+}
+
+std::string classifyConnectFailure(HRESULT result,
+                                   BMDSwitcherConnectToFailure reason) {
+  if (isDeviceBusyHRESULT(result)) {
+    return "device_busy";
+  }
+  return connectFailureToError(reason);
+}
+
 void emitError(const std::string &error, const std::string &detail = "") {
   std::ostringstream out;
   out << "{\"type\":\"error\",\"error\":\"" << jsonEscape(error) << "\"";
@@ -424,6 +467,19 @@ void emitError(const std::string &error, const std::string &detail = "") {
     out << ",\"detail\":\"" << jsonEscape(detail) << "\"";
   }
   out << "}";
+  emitLine(out.str());
+}
+
+void emitConnectError(const std::string &error, HRESULT result,
+                      BMDSwitcherConnectToFailure reason) {
+  const std::string hr = formatHRESULT(result);
+  const std::string failReason = connectFailureToReason(reason);
+  std::ostringstream out;
+  out << "{\"type\":\"error\",\"error\":\"" << jsonEscape(error)
+      << "\",\"detail\":\"hr=" << jsonEscape(hr)
+      << " fail_reason=" << jsonEscape(failReason)
+      << "\",\"hr\":\"" << jsonEscape(hr)
+      << "\",\"fail_reason\":\"" << jsonEscape(failReason) << "\"}";
   emitLine(out.str());
 }
 
@@ -551,17 +607,26 @@ class RunSession {
       return;
     }
     BMDSwitcherConnectToFailure failReason = bmdSwitcherConnectToFailureNoResponse;
-    if (connectViaUsb(discovery_, &switcher_, &failReason) != S_OK ||
-        switcher_.empty()) {
+    const HRESULT connectResult = connectViaUsb(discovery_, &switcher_, &failReason);
+    if (FAILED(connectResult) || switcher_.empty()) {
       switcher_.release();
-      emitError(connectFailureToError(failReason));
+      emitConnectError(classifyConnectFailure(connectResult, failReason),
+                       connectResult, failReason);
       return;
     }
 
-    switcher_.queryInterface(IID_IBMDSwitcherMacroPool,
-                             reinterpret_cast<void **>(&macroPool_));
-    switcher_.queryInterface(IID_IBMDSwitcherMacroControl,
-                             reinterpret_cast<void **>(&macroControl_));
+    const HRESULT macroPoolHr = switcher_.queryInterface(
+        IID_IBMDSwitcherMacroPool, reinterpret_cast<void **>(&macroPool_));
+    if (FAILED(macroPoolHr)) {
+      std::cerr << "QueryInterface IBMDSwitcherMacroPool failed hr="
+                << formatHRESULT(macroPoolHr) << std::endl;
+    }
+    const HRESULT macroControlHr = switcher_.queryInterface(
+        IID_IBMDSwitcherMacroControl, reinterpret_cast<void **>(&macroControl_));
+    if (FAILED(macroControlHr)) {
+      std::cerr << "QueryInterface IBMDSwitcherMacroControl failed hr="
+                << formatHRESULT(macroControlHr) << std::endl;
+    }
 
     switcherMonitor_ = new SwitcherMonitor([this]() {
       connectedFlag_.store(false);
@@ -602,18 +667,35 @@ class RunSession {
     emitMacrosUnlocked();
   }
 
-  void runMacro(uint32_t index) {
+  void runMacro(uint32_t index, bool hasReq = false, uint32_t req = 0) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!requireConnected() || macroControl_ == nullptr || macroPool_ == nullptr) {
+    if (!isConnected() || macroControl_ == nullptr || macroPool_ == nullptr) {
+      if (hasReq) {
+        emitMacroRunNack(req, index, "not_connected");
+      } else {
+        emitError("not_connected");
+      }
       return;
     }
     bool isValid = false;
     if (!macroIsValid(index, isValid) || !isValid) {
-      emitError("invalid_macro_index");
+      if (hasReq) {
+        emitMacroRunNack(req, index, "invalid_macro_index");
+      } else {
+        emitError("invalid_macro_index");
+      }
       return;
     }
     if (macroControl_->Run(index) != S_OK) {
-      emitError("macro_run_failed");
+      if (hasReq) {
+        emitMacroRunNack(req, index, "macro_run_failed");
+      } else {
+        emitError("macro_run_failed");
+      }
+      return;
+    }
+    if (hasReq) {
+      emitMacroRunAck(req, index);
     }
   }
 
@@ -629,11 +711,30 @@ class RunSession {
 
  private:
   bool requireConnected() {
-    if (switcher_.empty() || !connectedFlag_.load()) {
+    if (!isConnected()) {
       emitError("not_connected");
       return false;
     }
     return true;
+  }
+
+  bool isConnected() const {
+    return !switcher_.empty() && connectedFlag_.load();
+  }
+
+  static void emitMacroRunAck(uint32_t req, uint32_t index) {
+    std::ostringstream out;
+    out << "{\"type\":\"ack\",\"command\":\"macro_run\",\"req\":" << req
+        << ",\"index\":" << index << "}";
+    emitLine(out.str());
+  }
+
+  static void emitMacroRunNack(uint32_t req, uint32_t index,
+                               const std::string &error) {
+    std::ostringstream out;
+    out << "{\"type\":\"nack\",\"command\":\"macro_run\",\"req\":" << req
+        << ",\"index\":" << index << ",\"error\":\"" << jsonEscape(error) << "\"}";
+    emitLine(out.str());
   }
 
   // The Windows IDL surfaces booleans as BOOL, macOS as bool.
@@ -767,7 +868,8 @@ int runProbe() {
   if (discovery == nullptr) {
     std::ostringstream out;
     out << "{\"mode\":\"probe\",\"sdk_available\":false,\"connected\":false,"
-        << "\"error\":\"atem_software_not_installed\"";
+        << "\"protocol_version\":" << kHelperProtocolVersion
+        << ",\"error\":\"atem_software_not_installed\"";
 #if defined(_WIN32)
     out << ",\"detail\":\"" << jsonEscape(discoveryMissingDetail()) << "\"";
     appendWindowsDiscoveryJson(out, true);
@@ -782,10 +884,15 @@ int runProbe() {
   SwitcherHandle switcher;
   BMDSwitcherConnectToFailure failReason = bmdSwitcherConnectToFailureNoResponse;
   const HRESULT result = connectViaUsb(discovery, &switcher, &failReason);
-  if (result != S_OK || switcher.empty()) {
+  if (FAILED(result) || switcher.empty()) {
+    const std::string hr = formatHRESULT(result);
+    const std::string failReasonText = connectFailureToReason(failReason);
     std::ostringstream out;
     out << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":false,"
-        << "\"error\":\"" << connectFailureToError(failReason) << "\"";
+        << "\"protocol_version\":" << kHelperProtocolVersion
+        << ",\"error\":\"" << classifyConnectFailure(result, failReason)
+        << "\",\"hr\":\"" << jsonEscape(hr)
+        << "\",\"fail_reason\":\"" << jsonEscape(failReasonText) << "\"";
 #if defined(_WIN32)
     appendWindowsDiscoveryJson(out, false);
 #endif
@@ -829,6 +936,7 @@ int runProbe() {
 
   std::ostringstream out;
   out << "{\"mode\":\"probe\",\"sdk_available\":true,\"connected\":true,"
+      << "\"protocol_version\":" << kHelperProtocolVersion << ","
       << "\"product_name\":\"" << jsonEscape(productName) << "\","
       << "\"macro_slots\":" << macroSlots << ","
       << "\"valid_macros\":" << validMacros;
@@ -848,13 +956,30 @@ int runProbe() {
 int runSessionLoop() {
   RunSession session;
   std::ostringstream ready;
-  ready << "{\"type\":\"ready\",";
+  ready << "{\"type\":\"ready\",\"protocol_version\":"
+        << kHelperProtocolVersion << ",";
 #if defined(_WIN32)
   ready << "\"sdk_generation\":\"" << discoveryGenerationJson() << "\",";
 #endif
   appendHelperBuildJson(ready);
   ready << "}";
   emitLine(ready.str());
+
+#if !defined(_WIN32)
+  std::thread signalThread([]() {
+    sigset_t signals;
+    sigemptyset(&signals);
+    sigaddset(&signals, SIGTERM);
+    sigaddset(&signals, SIGINT);
+    sigaddset(&signals, SIGHUP);
+    int receivedSignal = 0;
+    if (sigwait(&signals, &receivedSignal) == 0) {
+      (void)receivedSignal;
+      g_terminateRequested.store(true);
+      CFRunLoopStop(CFRunLoopGetMain());
+    }
+  });
+#endif
 
   std::thread readerThread([&session]() {
 #if defined(_WIN32)
@@ -873,10 +998,21 @@ int runSessionLoop() {
       } else if (command == "macro_run") {
         uint32_t index = 0;
         if (extractJsonUInt(line, "index", index)) {
-          session.runMacro(index);
+          uint32_t req = 0;
+          const bool hasReq = extractJsonUInt(line, "req", req);
+          session.runMacro(index, hasReq, req);
         } else {
           emitError("missing_macro_index");
         }
+      } else if (command == "ping") {
+        uint32_t seq = 0;
+        std::ostringstream out;
+        out << "{\"type\":\"pong\"";
+        if (extractJsonUInt(line, "seq", seq)) {
+          out << ",\"seq\":" << seq;
+        }
+        out << "}";
+        emitLine(out.str());
       } else if (command == "macro_stop") {
         session.stopMacro();
       } else if (command == "shutdown") {
@@ -898,8 +1034,18 @@ int runSessionLoop() {
   // macOS: keep a runloop available so SDK callback delivery never depends
   // on our command loop. (Windows MTA callbacks arrive on RPC threads.)
   CFRunLoopRun();
+  if (g_terminateRequested.load()) {
+    session.disconnect();
+    std::cout.flush();
+    readerThread.detach();
+    signalThread.detach();
+    _exit(0);
+  }
 #endif
   readerThread.join();
+#if !defined(_WIN32)
+  signalThread.detach();
+#endif
   return 0;
 }
 
@@ -910,6 +1056,15 @@ void printUsage() {
 }  // namespace
 
 int main(int argc, char **argv) {
+#if !defined(_WIN32)
+  sigset_t signals;
+  sigemptyset(&signals);
+  sigaddset(&signals, SIGTERM);
+  sigaddset(&signals, SIGINT);
+  sigaddset(&signals, SIGHUP);
+  pthread_sigmask(SIG_BLOCK, &signals, nullptr);
+  signal(SIGPIPE, SIG_IGN);
+#endif
 #if defined(_WIN32)
   if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {
     emitError("com_init_failed");

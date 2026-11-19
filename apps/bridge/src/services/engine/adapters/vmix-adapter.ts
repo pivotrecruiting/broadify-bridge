@@ -76,6 +76,7 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
       this.setState({
         status: "connected",
         error: undefined,
+        errorCode: undefined,
       });
 
       // Load initial macros
@@ -96,6 +97,7 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
       this.setState({
         status: "error",
         error: engineError.message,
+        errorCode: engineError.code,
       });
       this.stopPolling();
       this.client = null;
@@ -117,6 +119,7 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
       port: undefined,
       type: undefined,
       error: undefined,
+      errorCode: undefined,
     });
     this.consecutivePollingFailures = 0;
     this.client = null;
@@ -347,6 +350,7 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
       this.setState({
         macros,
         error: undefined,
+        errorCode: undefined,
       });
     } catch (error: unknown) {
       if (options?.failOnError) {
@@ -359,6 +363,7 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
         this.setState({
           status: "error",
           error: error instanceof Error ? error.message : String(error),
+          errorCode: error instanceof EngineError ? error.code : undefined,
         });
         return;
       }
@@ -406,6 +411,7 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
     ) {
       this.setState({
         error: error.message,
+        errorCode: error.code,
       });
       return;
     }
@@ -414,6 +420,7 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
     this.setState({
       status: "error",
       error: error.message,
+      errorCode: error.code,
     });
   }
 
