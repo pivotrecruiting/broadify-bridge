@@ -42,6 +42,8 @@ BRIDGE_FRAMEBUS_NAME=broadify-framebus-dev
 BRIDGE_FRAMEBUS_FORCE_RECREATE=1
 ```
 FrameBus wird immer genutzt (keine Flags).
+Ohne Override nutzt der Studio-FrameBus 3 Slots; bei Bedarf kann
+`BRIDGE_FRAMEBUS_SLOT_COUNT` explizit gesetzt werden.
 
 **Display Native Helper bauen** (für Display Output)
 ```bash

@@ -1,6 +1,7 @@
 import { isRelayCommand } from "./relay-command-allowlist.js";
 import {
   EngineConnectSchema,
+  ModeActivateSchema,
   parseRelayPayload,
 } from "./relay-command-schemas.js";
 
@@ -37,5 +38,29 @@ describe("relay command payload validation", () => {
         "Invalid payload for engine_connect",
       ),
     ).toThrow("Invalid payload for engine_connect");
+  });
+});
+
+describe("mode_activate payload validation", () => {
+  it.each(["studio", "meeting", "conference"])("accepts mode %s", (mode) => {
+    expect(
+      parseRelayPayload(
+        ModeActivateSchema,
+        { mode },
+        "Invalid payload for mode_activate",
+      ),
+    ).toEqual({ mode });
+  });
+
+  it("rejects unknown modes, a missing mode and unknown keys", () => {
+    for (const payload of [{ mode: "broadcast" }, {}, { mode: "studio", extra: 1 }]) {
+      expect(() =>
+        parseRelayPayload(
+          ModeActivateSchema,
+          payload,
+          "Invalid payload for mode_activate",
+        ),
+      ).toThrow("Invalid payload for mode_activate");
+    }
   });
 });

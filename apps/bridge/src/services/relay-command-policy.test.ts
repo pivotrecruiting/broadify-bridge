@@ -46,6 +46,7 @@ describe("relay-command-policy", () => {
       expect.objectContaining({
         timeoutClass: "engine_connect",
         relayTimeoutMs: 18_000,
+        bridgeLocalSlaMs: 17_000,
         executionMode: "side_effect",
       }),
     );
@@ -69,6 +70,21 @@ describe("relay-command-policy", () => {
         responseMode: "async",
         resourceConflictPolicy: "join_existing",
         invalidates: ["engine.status", "graphics"],
+      }),
+    );
+  });
+
+  it("treats mode_activate as a replay-safe side effect in the engine_connect timeout class", () => {
+    expect(getRelayCommandPolicy("mode_activate")).toEqual(
+      expect.objectContaining({
+        executionMode: "side_effect",
+        timeoutClass: "engine_connect",
+        relayTimeoutMs: 18_000,
+        bridgeLocalSlaMs: 17_000,
+        concurrencyKey: "mode",
+        replayPolicy: "after_state_check",
+        responseMode: "sync",
+        invalidates: expect.arrayContaining(["engine.status", "graphics", "outputs"]),
       }),
     );
   });
@@ -103,6 +119,15 @@ describe("relay-command-policy", () => {
         concurrencyKey: "canon_xc",
         invalidates: ["canon_xc.presets"],
         replayPolicy: "never",
+      }),
+    );
+  });
+
+  it("never replays the system screen picker command", () => {
+    expect(getRelayCommandPolicy("meeting_screen_pick")).toEqual(
+      expect.objectContaining({
+        replayPolicy: "never",
+        replayable: false,
       }),
     );
   });

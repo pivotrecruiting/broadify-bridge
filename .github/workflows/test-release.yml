@@ -51,6 +51,10 @@ jobs:
       BRIDGE_RELAY_JWKS_URL_RC: ${{ secrets.BRIDGE_RELAY_JWKS_URL_RC }}
       RELAY_URL_RC: ${{ secrets.RELAY_URL_RC }}
       MODNET_MODEL_URL: ${{ matrix.os == 'windows-2022' && secrets.MODNET_MODEL_URL || '' }}
+      # Optional fp16 MODNet variant for the BROADIFY_MEETING_KEYER_FP16 experiment.
+      # Empty until the secret is added; the downloader then skips fp16 and the
+      # keyer stays on fp32, so this is inert by default.
+      MODNET_FP16_MODEL_URL: ${{ matrix.os == 'windows-2022' && secrets.MODNET_FP16_MODEL_URL || '' }}
       MODNET_COREML_MODEL_URL: ${{ matrix.os == 'macos-15' && secrets.MODNET_COREML_MODEL_URL || '' }}
       AZURE_TENANT_ID: ${{ matrix.os == 'windows-2022' && secrets.AZURE_TENANT_ID || '' }}
       AZURE_CLIENT_ID: ${{ matrix.os == 'windows-2022' && secrets.AZURE_CLIENT_ID || '' }}
@@ -82,6 +86,9 @@ jobs:
           echo "BROADIFY_UPDATER_CHANNEL=rc" >> "$GITHUB_ENV"
           echo "RESOLVED_RELAY_URL=${RELAY_URL_RC}" >> "$GITHUB_ENV"
           echo "RESOLVED_BRIDGE_RELAY_JWKS_URL=${BRIDGE_RELAY_JWKS_URL_RC}" >> "$GITHUB_ENV"
+          # Test builds use the dev relay, so they open the dev web app (same
+          # constant as the rc channel in release.yml).
+          echo "RESOLVED_WEBAPP_URL=https://studio-control-git-dev-broadify.vercel.app" >> "$GITHUB_ENV"
 
       - name: Validate macOS release secrets
         if: matrix.os == 'macos-15'
@@ -237,6 +244,7 @@ jobs:
             echo "BROADIFY_UPDATER_CHANNEL=${BROADIFY_UPDATER_CHANNEL:-rc}"
             echo "RELAY_URL=${RESOLVED_RELAY_URL}"
             echo "BRIDGE_RELAY_JWKS_URL=${RESOLVED_BRIDGE_RELAY_JWKS_URL}"
+            echo "PRODUCTION_STUDIO_CONTROL_WEBAPP_URL=${RESOLVED_WEBAPP_URL}"
           } > apps/bridge/dist/.env
 
           node -e "
@@ -436,6 +444,18 @@ jobs:
       - name: Build Electron App
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: npm run ${{ matrix.dist_script }}
+
+      - name: Verify Windows native helper dependencies (dumpbin)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          # The runner has the VC++ redistributable installed, so the helper
+          # smoke tests cannot notice a CRT DLL missing from the package.
+          # Every packaged helper exe/dll import must resolve to an inbox
+          # Windows DLL or a file packaged next to it
+          # (scripts/lib/windows-native-dependency-policy.cjs); dumpbin is on
+          # PATH via ilammy/msvc-dev-cmd.
+          node scripts/verify-windows-native-dependencies.cjs --resources dist\win-unpacked\resources
 
       - name: Assert Windows installer artifacts
         if: matrix.os == 'windows-2022'

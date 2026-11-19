@@ -277,6 +277,70 @@ class PreviewClientCounter {
   MeetingState &state_;
 };
 
+// Latest encoded JPEG keyed by the frame sequence; encodes once per frame no
+// matter how many clients stream (the encode runs under the lock so two
+// clients waking on the same frame never encode it twice).
+class SharedJpegCache {
+ public:
+  std::vector<uint8_t> get(const PreviewFrame &frame) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (sequence_ != frame.sequence || jpeg_.empty()) {
+      jpeg_ = encodeJpeg(frame);
+      sequence_ = frame.sequence;
+    }
+    return jpeg_;
+  }
+
+ private:
+  std::mutex mutex_;
+  uint64_t sequence_ = 0;
+  std::vector<uint8_t> jpeg_;
+};
+
+void serveMjpegClient(int client,
+                      SharedJpegCache &cache,
+                      PreviewFrameStore &previewFrames,
+                      MeetingState &state,
+                      std::atomic<bool> &running) {
+  configureClientSocket(client);
+  const std::string header =
+      "HTTP/1.1 200 OK\r\n"
+      "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+      "Cache-Control: no-store\r\n\r\n";
+  if (!sendString(client, header)) {
+    closeSocketHandle(client);
+    return;
+  }
+
+  PreviewClientCounter clientCounter(state);
+  std::vector<uint8_t> lastValidJpeg(std::begin(kTinyJpeg), std::end(kTinyJpeg));
+  uint64_t lastSequence = 0u;
+  while (running.load()) {
+    PreviewFrame frame;
+    if (previewFrames.copyLatestIfNew(lastSequence, frame)) {
+      lastSequence = frame.sequence;
+      lastValidJpeg = cache.get(frame);
+    }
+    std::ostringstream part;
+    part << "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " << lastValidJpeg.size() << "\r\n\r\n";
+    const std::string partHeader = part.str();
+    if (!sendString(client, partHeader) ||
+        !sendAll(client, reinterpret_cast<const char *>(lastValidJpeg.data()), lastValidJpeg.size()) ||
+        !sendAll(client, "\r\n", 2)) {
+      break;
+    }
+    int vcamClients = 0;
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      vcamClients = state.vcamClientCount;
+    }
+    // 15fps normally; 10fps while VCam is active so JPEG work yields CPU to
+    // the raw-frame path.
+    std::this_thread::sleep_for(vcamClients > 0 ? std::chrono::milliseconds(100) : std::chrono::milliseconds(66));
+  }
+  closeSocketHandle(client);
+}
+
 }  // namespace
 
 void runMjpegServer(uint16_t port,
@@ -305,6 +369,10 @@ void runMjpegServer(uint16_t port,
     return;
   }
 
+  // One JPEG per published frame, shared by every connected client: a second
+  // viewer (bridge window + browser, two tabs, a reload) must not queue behind
+  // the first one and must not double the encode work.
+  auto cache = std::make_shared<SharedJpegCache>();
   while (running.load()) {
     sockaddr_in clientAddr{};
 #if defined(_WIN32)
@@ -317,45 +385,9 @@ void runMjpegServer(uint16_t port,
     if (client < 0) {
       continue;
     }
-    configureClientSocket(client);
-    const std::string header =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
-        "Cache-Control: no-store\r\n\r\n";
-    if (!sendString(client, header)) {
-      closeSocketHandle(client);
-      continue;
-    }
-
-    PreviewClientCounter clientCounter(state);
-    std::vector<uint8_t> lastValidJpeg(std::begin(kTinyJpeg), std::end(kTinyJpeg));
-    uint64_t lastSequence = 0u;
-    while (running.load()) {
-      PreviewFrame frame;
-      if (previewFrames.copyLatestIfNew(lastSequence, frame)) {
-        lastSequence = frame.sequence;
-        lastValidJpeg = encodeJpeg(frame);
-      }
-      std::ostringstream part;
-      part << "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " << lastValidJpeg.size() << "\r\n\r\n";
-      const std::string partHeader = part.str();
-      if (!sendString(client, partHeader) ||
-          !sendAll(client, reinterpret_cast<const char *>(lastValidJpeg.data()), lastValidJpeg.size()) ||
-          !sendAll(client, "\r\n", 2)) {
-        break;
-      }
-      int vcamClients = 0;
-      {
-        std::lock_guard<std::mutex> lock(state.mutex);
-        vcamClients = state.vcamClientCount;
-      }
-      // 15fps normally; 10fps while VCam is active so JPEG work yields CPU to
-      // the raw-frame path.
-      std::this_thread::sleep_for(
-          vcamClients > 0 ? std::chrono::milliseconds(100)
-                          : std::chrono::milliseconds(66));
-    }
-    closeSocketHandle(client);
+    std::thread([client, cache, &previewFrames, &state, &running]() {
+      serveMjpegClient(client, *cache, previewFrames, state, running);
+    }).detach();
   }
   closeSocketHandle(serverFd);
 #if defined(_WIN32)

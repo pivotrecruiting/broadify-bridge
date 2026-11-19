@@ -13,6 +13,11 @@ const mockClampMaxLevel = jest.fn();
 
 const mockGraphicsInitialize = jest.fn().mockResolvedValue(undefined);
 const mockGraphicsShutdown = jest.fn().mockResolvedValue(undefined);
+const mockUsageRecorderInitialize = jest.fn().mockResolvedValue(undefined);
+const mockUsageRecorderShutdown = jest.fn().mockResolvedValue(undefined);
+const mockCiCoordinatorInitialize = jest.fn().mockResolvedValue(undefined);
+const mockCiCoordinatorAttachTransport = jest.fn();
+const mockCiCoordinatorShutdown = jest.fn().mockResolvedValue(undefined);
 const mockDeviceCacheInitializeWatchers = jest.fn();
 
 const mockRelayConnect = jest.fn().mockResolvedValue(undefined);
@@ -85,11 +90,16 @@ jest.mock("./services/runtime-diagnostics.js", () => ({
 const mockEngineConnect = jest.fn().mockResolvedValue(undefined);
 const mockEngineDisconnect = jest.fn().mockResolvedValue(undefined);
 const mockEngineGetStatus = jest.fn().mockReturnValue("disconnected");
+const mockEngineStartPersistedAutoConnect = jest.fn();
+const mockEngineBeginShutdown = jest.fn();
 jest.mock("./services/engine-adapter.js", () => ({
   engineAdapter: {
     connect: (...args: unknown[]) => mockEngineConnect(...args),
     disconnect: (...args: unknown[]) => mockEngineDisconnect(...args),
     getStatus: () => mockEngineGetStatus(),
+    startPersistedAutoConnect: (...args: unknown[]) =>
+      mockEngineStartPersistedAutoConnect(...args),
+    beginShutdown: (...args: unknown[]) => mockEngineBeginShutdown(...args),
   },
 }));
 
@@ -105,6 +115,22 @@ jest.mock("./services/graphics/graphics-manager.js", () => ({
   graphicsManager: {
     initialize: (...args: unknown[]) => mockGraphicsInitialize(...args),
     shutdown: (...args: unknown[]) => mockGraphicsShutdown(...args),
+  },
+}));
+
+jest.mock("./services/intelligence/usage-event-recorder.js", () => ({
+  graphicsUsageRecorder: {
+    initialize: (...args: unknown[]) => mockUsageRecorderInitialize(...args),
+    shutdown: (...args: unknown[]) => mockUsageRecorderShutdown(...args),
+  },
+}));
+
+jest.mock("./services/intelligence/ci-session-coordinator.js", () => ({
+  ciSessionCoordinator: {
+    initialize: (...args: unknown[]) => mockCiCoordinatorInitialize(...args),
+    attachTransport: (...args: unknown[]) =>
+      mockCiCoordinatorAttachTransport(...args),
+    shutdown: (...args: unknown[]) => mockCiCoordinatorShutdown(...args),
   },
 }));
 
@@ -519,61 +545,18 @@ describe("server", () => {
       );
     });
 
-    it("auto-reconnects the persisted engine connection after startup", async () => {
-      // A connection choice belongs to the operator: after a bridge restart
-      // the previous connection (USB or network) must come back on its own
-      // instead of the webapp defaulting back to network.
-      jest.useFakeTimers();
-      try {
-        mockEngineConnectionLoad.mockResolvedValue({
-          type: "atem",
-          transport: "usb",
-        });
-        mockEngineGetStatus.mockReturnValue("disconnected");
-        const { createServer, startServer } = await import("./server.js");
-        const config = createBaseConfig();
-        const server = await createServer(config);
+    it("does not start the persisted engine auto-connect at startup (mode_activate owns the Studio restore)", async () => {
+      // Field finding (rc.19, Meeting mode): the startup auto-connect hammered
+      // an unreachable persisted ATEM and every timeout surfaced as an
+      // engine_error toast in the web app although the operator was in a
+      // meeting. The web app now tells the bridge which mode it is in.
+      const { createServer, startServer } = await import("./server.js");
+      const config = createBaseConfig();
+      const server = await createServer(config);
 
-        await startServer(server, config);
-        expect(mockEngineConnect).not.toHaveBeenCalled();
+      await startServer(server, config);
 
-        await jest.advanceTimersByTimeAsync(3_500);
-        expect(mockEngineConnect).toHaveBeenCalledWith({
-          type: "atem",
-          transport: "usb",
-        });
-      } finally {
-        jest.useRealTimers();
-        mockEngineConnectionLoad.mockResolvedValue(null);
-        mockEngineConnect.mockClear();
-      }
-    });
-
-    it("stays silently disconnected when the auto-reconnect fails", async () => {
-      jest.useFakeTimers();
-      try {
-        mockEngineConnectionLoad.mockResolvedValue({
-          type: "atem",
-          transport: "usb",
-        });
-        mockEngineGetStatus.mockReturnValue("disconnected");
-        mockEngineConnect.mockRejectedValueOnce(new Error("no switcher"));
-        const { createServer, startServer } = await import("./server.js");
-        const config = createBaseConfig();
-        const server = await createServer(config);
-
-        await startServer(server, config);
-        await jest.advanceTimersByTimeAsync(3_500);
-
-        // Failure resets to disconnected instead of parking an error in the
-        // UI; the stored choice is kept for the next start.
-        expect(mockEngineDisconnect).toHaveBeenCalled();
-      } finally {
-        jest.useRealTimers();
-        mockEngineConnectionLoad.mockResolvedValue(null);
-        mockEngineConnect.mockClear();
-        mockEngineDisconnect.mockClear();
-      }
+      expect(mockEngineStartPersistedAutoConnect).not.toHaveBeenCalled();
     });
 
     it("does not connect relay when relayClient not attached", async () => {
@@ -693,7 +676,16 @@ describe("server", () => {
       expect(process.on).toHaveBeenCalledWith("SIGINT", expect.any(Function));
     });
 
-    it("shutdown disconnects relay, shuts down graphics, closes server and exits 0", async () => {
+    it("shutdown begins engine shutdown first and disconnects the engine before the relay", async () => {
+      const order: string[] = [];
+      mockEngineBeginShutdown.mockImplementationOnce(() => order.push("engine.beginShutdown"));
+      mockEngineDisconnect.mockImplementationOnce(async () => {
+        order.push("engine.disconnect");
+      });
+      mockRelayDisconnect.mockImplementationOnce(async () => {
+        order.push("relay.disconnect");
+      });
+
       const { createServer, startServer } = await import("./server.js");
       const config = createBaseConfig({
         relayEnabled: true,
@@ -711,7 +703,14 @@ describe("server", () => {
       expect(mockLog.info).toHaveBeenCalledWith(
         "Received SIGTERM, shutting down gracefully..."
       );
+      expect(mockEngineBeginShutdown).toHaveBeenCalled();
+      expect(mockEngineDisconnect).toHaveBeenCalled();
       expect(mockRelayDisconnect).toHaveBeenCalled();
+      expect(order).toEqual([
+        "engine.beginShutdown",
+        "engine.disconnect",
+        "relay.disconnect",
+      ]);
       expect(mockLog.info).toHaveBeenCalledWith(
         "[Server] Disconnecting relay client..."
       );

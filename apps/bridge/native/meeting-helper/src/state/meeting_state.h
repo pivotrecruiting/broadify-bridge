@@ -3,6 +3,7 @@
 #include "keyer/keyer.h"
 
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace broadify::meeting {
@@ -21,16 +22,20 @@ struct SpeakerLayoutState {
 
 struct CornerbugState {
   bool enabled = false;
+  bool hasImage = false;
   double x = 0.84;
   double y = 0.08;
   double size = 0.12;
+  std::string logoAssetId;
   std::string rawJson = "{\"enabled\":false,\"x\":0.84,\"y\":0.08,\"size\":0.12}";
 };
 
 struct MediaLayerState {
   bool enabled = false;
   std::string mode = "pip";
+  std::string source = "page";
   std::string assetId;
+  std::string templateId;
   std::string renderedPagePath;
   std::string renderStatus;
   int page = 0;
@@ -45,6 +50,18 @@ struct MediaLayerState {
   double rotationX = 0.0;
   double rotationY = 0.0;
   std::string rawJson = "{\"enabled\":false,\"mode\":\"pip\",\"x\":0.58,\"y\":0.12,\"width\":0.34,\"height\":0.28,\"rotation\":0}";
+};
+
+struct ScreenCaptureState {
+  bool running = false;
+  bool pickerPending = false;
+  std::string sourceId;
+  std::string kind;
+  std::string title;
+  std::string appName;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint64_t capturedFrames = 0;
 };
 
 struct GraphicsState {
@@ -83,6 +100,8 @@ struct MeetingState {
   std::string vcamTransport = "tcp";
   uint64_t vcamWriterGeneration = 0;
   int previewClientCount = 0;
+  // 1 while the WebRTC program stream (ProgramStream) has viewers: the pipeline then publishes preview frames.
+  int programStreamClientCount = 0;
   int vcamShmReaderCount = 0;
   int vcamTcpClientCount = 0;
   int vcamClientCount = 0;
@@ -97,6 +116,8 @@ struct MeetingState {
   std::string backgroundMode = "transparent";
   // Absolute file path of an uploaded company background image; empty = none.
   std::string backgroundImagePath;
+  std::string backgroundAssetId;
+  std::string backgroundTemplateId;
   std::string activeKeyer = "passthrough";
   // Default backend: Apple Vision runs hardware-accelerated on every Mac and
   // needs no model download; MODNet stays available as an opt-in high-quality
@@ -144,11 +165,21 @@ struct MeetingState {
   bool fallbackActive = true;
   bool keyerDegraded = false;
   bool keyerReady = false;
-  bool modelHashOk = false;
+  // Mirrors KeyerStatus::modelHashOk (true/false/nullopt = no hash check).
+  std::optional<bool> modelHashOk;
+  // macOS fused path (guarded by `mutex`): the fallback reason of the last
+  // failed fused CoreML inference while g_fusedKeyerDegraded is set, empty
+  // once the fused keyer recovers. updateMeetingKeyerStatus() uses it to
+  // report the async Vision takeover as fallback_active + reason instead of
+  // "all good" (projectFusedDegradation). Windows governor degradations carry
+  // their own reasons and never write this.
+  std::string fusedDegradedReason;
   KeyerMetrics keyerMetrics;
   SpeakerLayoutState speakerLayout;
   CornerbugState cornerbug;
   MediaLayerState mediaLayer;
+  // Written only by the pipeline mirror; read by state.get.
+  ScreenCaptureState screenCapture;
   GraphicsState graphics;
   CameraRenderState cameraRender;
 };

@@ -23,6 +23,15 @@ export const ListOutputsSchema = z
 // ip/port — see engine-connect-schema.ts for the rules.
 export const EngineConnectSchema = EngineConnectPayloadSchemaStrict;
 
+// Mode-driven Studio restoration: the web app announces the mode it is in,
+// the bridge restores Studio connections only for studio/conference. Strict so
+// a future flag has to be added here on purpose.
+export const ModeActivateSchema = z
+  .object({
+    mode: z.enum(["studio", "meeting", "conference"]),
+  })
+  .strict();
+
 export const MacroIdSchema = z
   .object({
     macroId: z.number().int(),

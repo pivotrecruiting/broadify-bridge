@@ -38,7 +38,7 @@ export type MacroExecutionT = {
   runId: string;
   macroId: number;
   macroName?: string;
-  engineType: "atem" | "tricaster" | "vmix";
+  engineType: "atem" | "tricaster" | "vmix" | "rodecaster";
   status: MacroExecutionStatusT;
   triggeredAt: number;
   acceptedAt?: number | null;
@@ -51,12 +51,18 @@ export type MacroExecutionT = {
   error?: string;
 };
 
+export type EngineReconnectInfoT = {
+  attempt: number;
+  nextRetryAt: number | null;
+  lastError?: string;
+};
+
 /**
  * Engine state information
  */
 export type EngineStateT = {
   status: EngineStatusT;
-  type?: "atem" | "tricaster" | "vmix";
+  type?: "atem" | "tricaster" | "vmix" | "rodecaster";
   transport?: "network" | "usb";
   ip?: string;
   port?: number;
@@ -65,13 +71,15 @@ export type EngineStateT = {
   lastCompletedMacroExecution?: MacroExecutionT | null;
   lastUpdate?: number;
   error?: string;
+  errorCode?: string;
+  reconnect?: EngineReconnectInfoT | null;
 };
 
 /**
  * Engine configuration from runtime config
  */
 export type EngineConfigT = {
-  type: "atem" | "tricaster" | "vmix";
+  type: "atem" | "tricaster" | "vmix" | "rodecaster";
   ip: string;
   port: number;
 };

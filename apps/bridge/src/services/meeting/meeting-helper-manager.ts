@@ -13,6 +13,11 @@ import {
   type VcamHelperStatusT,
 } from "../../modules/vcam/vcam-helper.js";
 import { getBridgeContext } from "../bridge-context.js";
+import {
+  DEFAULT_HELPER_RESTART_POLICY,
+  decideHelperRestart,
+  noteHelperCrash,
+} from "../helpers/helper-restart-policy.js";
 import { streamDeckManager } from "../streamdeck/stream-deck-manager.js";
 import {
   HELPER_NOT_REACHABLE_CODE,
@@ -23,7 +28,15 @@ import {
   publishMeetingErrorEvent,
   publishMeetingStatusEvent,
 } from "./meeting-event-publisher.js";
+import { meetingContentSourceState } from "./meeting-content-source-state.js";
+import type { MeetingStatusT } from "./meeting-status-types.js";
 import { decideStatusPublish } from "./status-publish-policy.js";
+import {
+  CallDetector,
+  type CallDetectorEventT,
+} from "../intelligence/call-detector.js";
+import { graphicsUsageRecorder } from "../intelligence/usage-event-recorder.js";
+import { ciSessionCoordinator } from "../intelligence/ci-session-coordinator.js";
 
 const HELPER_PATH_ENV = "BRIDGE_MEETING_HELPER_PATH";
 const CONTROL_SOCKET_ENV = "BRIDGE_MEETING_CONTROL_SOCKET";
@@ -33,6 +46,7 @@ const MACOS_MEETING_HELPER_APP_NAME = "Broadify Bridge Meeting Helper.app";
 const MACOS_MEETING_HELPER_EXECUTABLE_NAME = "BroadifyMeetingHelper";
 const START_TIMEOUT_MS = 20000;
 const STATUS_POLL_INTERVAL_MS = 2000;
+const STATUS_PUBLISH_COALESCE_MS = 120;
 /** Log one skipped-poll debug line per this many consecutive skips. */
 const STATUS_POLL_SKIP_LOG_EVERY = 10;
 // Camera health stdout events that must force a status publish so the webapp
@@ -48,6 +62,13 @@ const CAMERA_STATUS_EVENT_TYPES = new Set<string>([
   "camera_capture_error",
   "camera_open_failure",
 ]);
+const SCREEN_CAPTURE_STATUS_EVENT_TYPES = new Set<string>([
+  "screen_capture_started",
+  "screen_capture_stopped",
+  "screen_capture_source_changed",
+  "screen_capture_picker",
+  "screen_capture_error",
+]);
 const HELPER_PING_ATTEMPTS = 15;
 const HELPER_PING_DELAY_MS = 100;
 // Consecutive connect-level RPC failures (helper_not_reachable) of the 2 s
@@ -60,15 +81,15 @@ const CAMERA_PERMISSION_COMPLETION_POLL_DELAY_MS = 500;
 const STALE_HELPER_PORT_RELEASE_TIMEOUT_MS = 1000;
 // Bounded self-healing after a helper crash: without it, camera, keyer,
 // virtual camera and program output stay dead while the bridge looks healthy.
-const HELPER_RESTART_MAX_ATTEMPTS = 3;
-const HELPER_RESTART_BASE_DELAY_MS = 1000;
-// A helper that stayed up this long is considered healthy again; the attempt
-// counter resets so one crash per day never exhausts the limit.
-const HELPER_RESTART_HEALTHY_UPTIME_MS = 60_000;
+// Budget and backoff live in services/helpers/helper-restart-policy.ts
+// (shared with the PGM helper manager); the numbers are unchanged.
+const HELPER_RESTART_POLICY = DEFAULT_HELPER_RESTART_POLICY;
+const HELPER_RESTART_MAX_ATTEMPTS = HELPER_RESTART_POLICY.maxAttempts;
 const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_AUTO_DEGRADE",
   "BROADIFY_MEETING_CAMERA_MAX_HEIGHT",
   "BROADIFY_MEETING_COREML_UNITS",
+  "BROADIFY_MEETING_RECORDER_CFR",
   "BROADIFY_MEETING_EMPTY_SUBJECT",
   "BROADIFY_MEETING_FUSED_EMA_STATIC",
   "BROADIFY_MEETING_FUSED_POSTPROCESS",
@@ -82,6 +103,7 @@ const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_GPU_POLICY",
   "BROADIFY_MEETING_GPU_RADIUS",
   "BROADIFY_MEETING_GPU_REFINE",
+  "BROADIFY_MEETING_GPU_REFINE_BUDGET_MS",
   "BROADIFY_MEETING_GPU_REFINE_WIDTH",
   "BROADIFY_MEETING_GPU_RESIDENT",
   "BROADIFY_MEETING_GUIDED_COEFF_EMA",
@@ -91,10 +113,14 @@ const MEETING_HELPER_FORWARDED_ENV_KEYS = [
   "BROADIFY_MEETING_KEYER_BACKEND",
   "BROADIFY_MEETING_KEYER_CADENCE",
   "BROADIFY_MEETING_KEYER_DML_LEGACY",
+  "BROADIFY_MEETING_KEYER_FP16",
+  "BROADIFY_MEETING_KEYER_IO_BINDING",
   "BROADIFY_MEETING_KEYER_MAX_INFERENCE_MS",
   "BROADIFY_MEETING_KEYER_OPENVINO",
   "BROADIFY_MEETING_KEYER_PERFORMANCE",
   "BROADIFY_MEETING_KEYER_PREBUILD_TIERS",
+  "BROADIFY_MEETING_KEYER_ZEROCOPY",
+  "BROADIFY_MEETING_LIVE_SNAP",
   "BROADIFY_MEETING_MASK_WORK_WIDTH",
   "BROADIFY_MEETING_DML_QUEUE",
   "BROADIFY_MEETING_OPENVINO_DEVICE",
@@ -125,11 +151,16 @@ const RESTORABLE_CAMERA_METHOD_ORDER = [
   "cameraPipSet",
   "cameraAutoDirector",
 ] as const;
+// Screen capture is deliberately not replayed after a helper restart. A macOS
+// selection exists only inside the dead helper's picker session; on Windows an
+// HWND/HMONITOR can refer to a different window after the gap, and silently
+// sharing the wrong window is a privacy failure. Sharing is a per-session,
+// consent-like action, so the webapp offers "share again" instead.
 
 export type RestorableCameraMethodT =
   (typeof RESTORABLE_CAMERA_METHOD_ORDER)[number];
 
-type MeetingHelperManagerStatusT = {
+export type MeetingHelperManagerStatusT = {
   state: MeetingHelperLifecycleStateT;
   platform: NodeJS.Platform;
   port: number | null;
@@ -670,6 +701,20 @@ function resolveControlSocketPath(): string {
 }
 
 /**
+ * Read the VCam consumer count from a helper state snapshot. Older helpers
+ * without the field report 0 (call detection stays idle, never errors).
+ */
+function readVcamClientCount(engineState: unknown): number {
+  if (engineState && typeof engineState === "object") {
+    const value = (engineState as Record<string, unknown>)["vcam_clients"];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+/**
  * Native Meeting Helper Manager.
  *
  * Spawns and supervises the C++ meeting-helper process, keeps FrameBus as the
@@ -698,7 +743,16 @@ export class MeetingHelperManager {
   private restartAttempts = 0;
   private restartTimer: NodeJS.Timeout | null = null;
   private consecutiveControlFailures = 0;
+  private pendingPublishReasons = new Set<string>();
+  private publishCoalesceTimer: NodeJS.Timeout | null = null;
+  private forcedPublishChain: Promise<void> = Promise.resolve();
+  private cameraPermissionStatus: string | null = null;
   private lastRunningSince: number | null = null;
+  // Conversation Intelligence: hysteresis over engine.vcam_clients. Fed by
+  // every getFullStatus (2 s poll, forced publishes, meeting_get_state), reset
+  // by the same call once the helper is gone — stop()/handleProcessExit both
+  // publish through getFullStatus, so no extra lifecycle wiring is needed.
+  private readonly callDetector = new CallDetector();
   private stopping = false;
   private vcamRawBindFailed: string | null = null;
   // Set once the bridge itself is shutting down. The helper usually dies from
@@ -842,6 +896,7 @@ export class MeetingHelperManager {
   beginShutdown(): void {
     this.shutdownRequested = true;
     this.clearRestartTimer();
+    this.clearPendingStatusPublish();
   }
 
   async stop(): Promise<MeetingHelperManagerStatusT> {
@@ -853,6 +908,8 @@ export class MeetingHelperManager {
     this.restorableCameraCalls.clear();
     this.shouldRestoreVirtualCamera = false;
     this.keyerRestoreConfig = null;
+    this.cameraPermissionStatus = null;
+    this.clearPendingStatusPublish();
     this.stopStatusPolling();
     const client = this.client;
     if (client) {
@@ -881,10 +938,19 @@ export class MeetingHelperManager {
     return this.getStatus();
   }
 
-  async getFullStatus(): Promise<Record<string, unknown>> {
+  async getFullStatus(): Promise<MeetingStatusT> {
     const manager = this.getStatus();
     if (!this.client || this.state !== "running") {
-      return { platform: platform(), manager, engine: null, recording: null };
+      this.applyCallDetectorEvents(this.callDetector.reset(Date.now()));
+      return {
+        platform: platform(),
+        manager,
+        engine: null,
+        recording: null,
+        call: this.buildCallStatus(),
+        content_source: meetingContentSourceState.snapshot(),
+        camera_permission_status: this.cameraPermissionStatus,
+      };
     }
     try {
       const [engineState, framebus, keyer, recordingResult, virtualCamera] =
@@ -901,16 +967,37 @@ export class MeetingHelperManager {
         ]);
       const recordingRaw = recordingResult?.recording;
       const recording =
-        recordingRaw && typeof recordingRaw === "object" ? recordingRaw : null;
+        recordingRaw && typeof recordingRaw === "object"
+          ? (recordingRaw as Record<string, unknown>)
+          : null;
       this.consecutiveControlFailures = 0;
+      this.applyCallDetectorEvents(
+        this.callDetector.observeClientCount(
+          readVcamClientCount(engineState),
+          Date.now(),
+        ),
+      );
+      const permission =
+        typeof engineState.camera_permission_status === "string"
+          ? engineState.camera_permission_status
+          : this.cameraPermissionStatus;
       return {
         platform: platform(),
         manager,
-        engine: engineState,
+        engine: {
+          ...engineState,
+          camera_permission_status: permission ?? undefined,
+        },
         framebus,
-        keyer,
+        keyer: keyer as MeetingStatusT["keyer"],
         recording,
-        virtualCamera,
+        virtualCamera:
+          virtualCamera && typeof virtualCamera === "object"
+            ? virtualCamera
+            : undefined,
+        call: this.buildCallStatus(),
+        content_source: meetingContentSourceState.snapshot(),
+        camera_permission_status: permission ?? null,
       };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -920,7 +1007,54 @@ export class MeetingHelperManager {
       ) {
         this.noteControlChannelFailure(message);
       }
-      return { manager, engine: null, engineError: message, recording: null };
+      // Transient control failure: keep the call state, a helper that comes
+      // back within the falling hysteresis continues the same call.
+      return {
+        platform: platform(),
+        manager,
+        engine: null,
+        engineError: message,
+        recording: null,
+        call: this.buildCallStatus(),
+        content_source: meetingContentSourceState.snapshot(),
+        camera_permission_status: this.cameraPermissionStatus,
+      };
+    }
+  }
+
+  /**
+   * Stable call projection for the status snapshot. Both fields are
+   * projection-stable (no per-tick churn), so every detector transition
+   * reaches clients immediately via the projection_changed publish path.
+   */
+  private buildCallStatus(): MeetingStatusT["call"] {
+    const snapshot = this.callDetector.snapshot();
+    return { active: snapshot.active, call_id: snapshot.callId };
+  }
+
+  private applyCallDetectorEvents(events: CallDetectorEventT[]): void {
+    for (const event of events) {
+      if (event.type === "call_started") {
+        getLogger().info(
+          `[Meeting] Call detected (call_id: ${event.callId})`,
+        );
+        graphicsUsageRecorder.recordCallStarted(event.callId, event.at);
+        ciSessionCoordinator.noteCallStarted(event.callId, event.at);
+      } else {
+        getLogger().info(
+          `[Meeting] Call ended (call_id: ${event.callId}, reason: ${event.reason})`,
+        );
+        graphicsUsageRecorder.recordCallEnded(
+          event.callId,
+          event.reason,
+          event.at,
+        );
+        ciSessionCoordinator.noteCallEnded(
+          event.callId,
+          event.at,
+          event.reason,
+        );
+      }
     }
   }
 
@@ -1205,6 +1339,7 @@ export class MeetingHelperManager {
         event?: string;
         code?: string;
         message?: string;
+        reason?: string;
         camera_permission_status?: string;
       };
       if (parsed.type === "meeting_graphics_framebus") {
@@ -1212,6 +1347,15 @@ export class MeetingHelperManager {
       }
       if (parsed.type === "meeting_vcam_raw") {
         logger.info(`[MeetingHelper] ${line}`);
+        if (
+          parsed.event === "client_connected" ||
+          parsed.event === "client_disconnected"
+        ) {
+          // Edge-triggered refresh: the very next snapshot feeds the call
+          // detector with the fresh vcam_clients count instead of waiting up
+          // to a full 2 s poll interval.
+          void this.publishStatus("vcam_client_edge", false);
+        }
         if (parsed.event === "error" && parsed.code === "vcam_raw_bind_failed") {
           const message =
             parsed.message || "Meeting helper could not bind the VCam raw frame port.";
@@ -1244,12 +1388,8 @@ export class MeetingHelperManager {
       if (parsed.type === "camera_permission_completed") {
         const status = parsed.camera_permission_status || "unknown";
         logger.info(`[Meeting] Camera permission completion: ${status}`);
-        publishMeetingStatusEvent("camera_permission_completed", {
-          manager: this.getStatus(),
-          engine: {
-            camera_permission_status: status,
-          },
-        });
+        this.cameraPermissionStatus = status;
+        this.requestStatusPublish("camera_permission_completed");
         if (status === "denied" || status === "restricted") {
           publishMeetingErrorEvent(
             "camera_permission_denied",
@@ -1276,6 +1416,35 @@ export class MeetingHelperManager {
           );
         }
       }
+      // On macOS the helper is launched via /usr/bin/open and stdout is not
+      // connected, so these forced publishes fire only on Windows/dev spawns;
+      // the 2 s status poll carries the projection change on macOS.
+      if (SCREEN_CAPTURE_STATUS_EVENT_TYPES.has(parsed.type ?? "")) {
+        logger.info(`[MeetingHelper] ${line}`);
+        void this.publishStatus(parsed.type ?? "screen_capture_status", true);
+        if (parsed.type === "screen_capture_error") {
+          const code =
+            typeof parsed.code === "string"
+              ? parsed.code
+              : "screen_capture_error";
+          const message =
+            typeof parsed.message === "string"
+              ? parsed.message
+              : "Screen sharing reported an error.";
+          publishMeetingErrorEvent(code, message);
+        }
+        if (
+          parsed.type === "screen_capture_stopped" &&
+          parsed.reason !== "user_stop"
+        ) {
+          const reason =
+            typeof parsed.reason === "string" ? parsed.reason : "unknown";
+          publishMeetingErrorEvent(
+            "screen_capture_stopped",
+            `Screen sharing stopped (${reason})`,
+          );
+        }
+      }
     } catch {
       logger.debug?.(`[MeetingHelper] Ignored non-JSON stdout line: ${line}`);
     }
@@ -1296,12 +1465,8 @@ export class MeetingHelperManager {
             ? result.camera_permission_status
             : "unknown";
         logger.info(`[Meeting] Camera permission status: ${status}`);
-        publishMeetingStatusEvent("camera_permission_preflight", {
-          manager: this.getStatus(),
-          engine: {
-            camera_permission_status: status,
-          },
-        });
+        this.cameraPermissionStatus = status;
+        this.requestStatusPublish("camera_permission_preflight");
         if (status === "denied" || status === "restricted") {
           publishMeetingErrorEvent(
             "camera_permission_denied",
@@ -1337,12 +1502,8 @@ export class MeetingHelperManager {
           continue;
         }
         logger.info(`[Meeting] Camera permission completion: ${status}`);
-        publishMeetingStatusEvent("camera_permission_completed", {
-          manager: this.getStatus(),
-          engine: {
-            camera_permission_status: status,
-          },
-        });
+        this.cameraPermissionStatus = status;
+        this.requestStatusPublish("camera_permission_completed");
         if (status === "denied" || status === "restricted") {
           publishMeetingErrorEvent(
             "camera_permission_denied",
@@ -1389,13 +1550,42 @@ export class MeetingHelperManager {
     }
   }
 
+  private clearPendingStatusPublish(): void {
+    if (this.publishCoalesceTimer) {
+      clearTimeout(this.publishCoalesceTimer);
+      this.publishCoalesceTimer = null;
+    }
+    this.pendingPublishReasons.clear();
+  }
+
+  requestStatusPublish(reason: string): void {
+    this.pendingPublishReasons.add(reason);
+    if (this.publishCoalesceTimer) {
+      return;
+    }
+    this.publishCoalesceTimer = setTimeout(() => {
+      this.publishCoalesceTimer = null;
+      const joined = Array.from(this.pendingPublishReasons).join("+");
+      this.pendingPublishReasons.clear();
+      this.forcedPublishChain = this.forcedPublishChain
+        .then(() => this.publishStatus(joined, true))
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          getLogger().warn(
+            `[Meeting] Forced status publish failed (${joined}): ${message}`,
+          );
+        });
+    }, STATUS_PUBLISH_COALESCE_MS);
+    this.publishCoalesceTimer.unref?.();
+  }
+
   /**
    * Re-publishes the full status after a recording start/stop so every
    * consumer (webapp push, resync snapshot, deck REC mirror) sees the same
    * authoritative snapshot (audit SD-04/WP-2.4).
    */
   notifyRecordingChanged(): void {
-    void this.publishStatus("recording_changed", true);
+    this.requestStatusPublish("recording_changed");
   }
 
   private async publishStatus(reason: string, force: boolean): Promise<void> {
@@ -1454,6 +1644,7 @@ export class MeetingHelperManager {
     this.client = null;
     this.consecutiveControlFailures = 0;
     this.lastRuntimeBackendStatus = null;
+    this.cameraPermissionStatus = null;
     this.readyRejecter?.(new Error(`Meeting helper exited with code ${code}`));
     const wasRunning = this.state === "running";
     // Any exit we did not initiate ourselves is a crash - the helper never
@@ -1490,9 +1681,11 @@ export class MeetingHelperManager {
       // start counting from zero for this new, unrelated crash.
       const uptimeMs =
         this.lastRunningSince !== null ? Date.now() - this.lastRunningSince : 0;
-      if (uptimeMs >= HELPER_RESTART_HEALTHY_UPTIME_MS) {
-        this.restartAttempts = 0;
-      }
+      this.restartAttempts = noteHelperCrash(
+        { attempts: this.restartAttempts },
+        uptimeMs,
+        HELPER_RESTART_POLICY,
+      ).attempts;
       this.scheduleRestart();
     }
   }
@@ -1515,16 +1708,19 @@ export class MeetingHelperManager {
     if (this.restartTimer || this.shutdownRequested) {
       return;
     }
-    if (this.restartAttempts >= HELPER_RESTART_MAX_ATTEMPTS) {
+    const { decision, state: restartState } = decideHelperRestart(
+      { attempts: this.restartAttempts },
+      HELPER_RESTART_POLICY,
+    );
+    if (decision.action === "give_up") {
       const message = `Meeting helper crashed and did not recover after ${HELPER_RESTART_MAX_ATTEMPTS} restart attempts.`;
       this.lastError = message;
       getLogger().error(`[Meeting] ${message}`);
       publishMeetingErrorEvent("helper_restart_exhausted", message);
       return;
     }
-    this.restartAttempts += 1;
-    const delayMs =
-      HELPER_RESTART_BASE_DELAY_MS * 2 ** (this.restartAttempts - 1);
+    this.restartAttempts = restartState.attempts;
+    const delayMs = decision.delayMs;
     getLogger().warn(
       `[Meeting] Helper crashed; restart attempt ${this.restartAttempts}/${HELPER_RESTART_MAX_ATTEMPTS} in ${delayMs}ms`,
     );

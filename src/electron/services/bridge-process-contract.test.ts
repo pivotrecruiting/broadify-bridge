@@ -2,8 +2,74 @@ import * as path from "path";
 import {
   buildBridgeProcessArgs,
   buildBridgeSpawnEnv,
+  classifyBusyPortOccupant,
   resolveBridgeStartConfig,
+  SAME_BRIDGE_PORT_POLL_MS,
+  SAME_BRIDGE_PORT_RELEASE_TIMEOUT_MS,
 } from "./bridge-process-contract.js";
+
+describe("classifyBusyPortOccupant", () => {
+  it("classifies a reachable bridge with the same id as same_bridge", () => {
+    expect(
+      classifyBusyPortOccupant({
+        occupant: { running: true, reachable: true, bridgeId: "bridge-1" },
+        bridgeId: "bridge-1",
+      }),
+    ).toBe("same_bridge");
+  });
+
+  it("classifies a reachable bridge with another id as foreign", () => {
+    expect(
+      classifyBusyPortOccupant({
+        occupant: { running: true, reachable: true, bridgeId: "bridge-2" },
+        bridgeId: "bridge-1",
+      }),
+    ).toBe("foreign");
+  });
+
+  it("classifies an occupant without a bridge id as foreign", () => {
+    expect(
+      classifyBusyPortOccupant({
+        occupant: { running: true, reachable: true },
+        bridgeId: "bridge-1",
+      }),
+    ).toBe("foreign");
+  });
+
+  it("classifies an unreachable occupant as foreign even if the id matches", () => {
+    expect(
+      classifyBusyPortOccupant({
+        occupant: {
+          running: false,
+          reachable: false,
+          bridgeId: "bridge-1",
+          error: "HTTP 503",
+        },
+        bridgeId: "bridge-1",
+      }),
+    ).toBe("foreign");
+  });
+
+  it("classifies as foreign when the local bridge id is unknown", () => {
+    expect(
+      classifyBusyPortOccupant({
+        occupant: { running: true, reachable: true, bridgeId: "bridge-1" },
+        bridgeId: undefined,
+      }),
+    ).toBe("foreign");
+    expect(
+      classifyBusyPortOccupant({ occupant: null, bridgeId: "bridge-1" }),
+    ).toBe("foreign");
+  });
+
+  it("polls the port several times within the release budget", () => {
+    expect(SAME_BRIDGE_PORT_RELEASE_TIMEOUT_MS).toBe(10_000);
+    expect(SAME_BRIDGE_PORT_POLL_MS).toBe(500);
+    expect(SAME_BRIDGE_PORT_POLL_MS).toBeLessThan(
+      SAME_BRIDGE_PORT_RELEASE_TIMEOUT_MS,
+    );
+  });
+});
 
 describe("resolveBridgeStartConfig", () => {
   const baseConfig = { host: "127.0.0.1", port: 8000 };
@@ -139,5 +205,39 @@ describe("buildBridgeSpawnEnv", () => {
     expect(env.NODE_ENV).toBe("production");
     expect(env.BROADIFY_DESKTOP_APP_VERSION).toBe("0.11.0");
     expect(env.ELECTRON_RUN_AS_NODE).toBe("1");
+  });
+
+  it("opts the bridge into the OS trust store in development and production", () => {
+    for (const isDev of [true, false]) {
+      const env = buildBridgeSpawnEnv({
+        processEnv: { PATH: "/usr/bin" },
+        isDev,
+        relayEnabled: true,
+        appVersion: "0.11.0",
+      });
+      expect(env.NODE_USE_SYSTEM_CA).toBe("1");
+    }
+  });
+
+  it("keeps an explicit NODE_USE_SYSTEM_CA from the parent environment", () => {
+    for (const value of ["0", "", "1"]) {
+      const env = buildBridgeSpawnEnv({
+        processEnv: { NODE_USE_SYSTEM_CA: value },
+        isDev: false,
+        relayEnabled: true,
+        appVersion: "0.11.0",
+      });
+      expect(env.NODE_USE_SYSTEM_CA).toBe(value);
+    }
+  });
+
+  it("passes NODE_EXTRA_CA_CERTS through untouched", () => {
+    const env = buildBridgeSpawnEnv({
+      processEnv: { NODE_EXTRA_CA_CERTS: "/etc/corp-root.pem" },
+      isDev: false,
+      relayEnabled: true,
+      appVersion: "0.11.0",
+    });
+    expect(env.NODE_EXTRA_CA_CERTS).toBe("/etc/corp-root.pem");
   });
 });

@@ -1,5 +1,8 @@
 #include "recorder/meeting_recorder.h"
 
+#include "recorder/recorder_encode_policy.h"
+#include "util/helper_event_log.h"
+#include "util/path_utf8.h"
 #include "util/pixel_swizzle.h"
 
 // Windows Media Foundation recorder. Mirrors the macOS AVAssetWriter
@@ -9,19 +12,28 @@
 // All public methods are thread-safe: start/stop run on the control thread,
 // appendVideoFrame on the pipeline thread, audio capture on its own thread.
 
+#if defined(_WIN32)
 #include <windows.h>
 
+#include <initguid.h>
+// cguid.h must follow initguid.h so GUID_NULL (used for GetServiceForStream)
+// is defined in this translation unit; windows.h alone does not declare it.
+#include <cguid.h>
 #include <codecapi.h>
+#include <icodecapi.h>
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <mmdeviceapi.h>
 #include <wrl/client.h>
+#endif
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -61,40 +73,20 @@ struct ComApartment {
   ComApartment &operator=(const ComApartment &) = delete;
 };
 
-std::string wideToUtf8(const wchar_t *wide) {
-  if (wide == nullptr) {
-    return {};
-  }
-  const int needed =
-      WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
-  if (needed <= 1) {
-    return {};
-  }
-  std::string out(static_cast<size_t>(needed - 1), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), needed, nullptr,
-                      nullptr);
-  return out;
-}
-
-std::wstring utf8ToWide(const std::string &utf8) {
-  if (utf8.empty()) {
-    return {};
-  }
-  const int needed =
-      MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-  if (needed <= 1) {
-    return {};
-  }
-  std::wstring out(static_cast<size_t>(needed - 1), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, out.data(), needed);
-  return out;
-}
+// UTF-8 <-> UTF-16 conversion comes from helper-common (util/path_utf8.h):
+// strict for UTF-8 input, so an invalid recording path or microphone id is
+// rejected (invalid_arguments) instead of being reinterpreted.
 
 std::string hresultError(const char *what, HRESULT hr) {
   char buffer[128];
   snprintf(buffer, sizeof(buffer), "%s (hr=0x%08lX)", what,
            static_cast<unsigned long>(hr));
   return buffer;
+}
+
+void logRecorderEvent(const char *event, const std::string &detail) {
+  emitHelperEvent("{\"type\":\"meeting_recorder\",\"event\":\"" +
+                  std::string(event) + "\",\"detail\":\"" + detail + "\"}");
 }
 
 // Default capture endpoint id ("" on error) for marking the default mic.
@@ -142,6 +134,12 @@ struct MeetingRecorder::Impl {
   uint32_t height = 0;
   uint32_t fps = 30;
   uint64_t videoFrames = 0;
+  uint64_t duplicatedFrames = 0;
+  uint64_t droppedFrames = 0;
+  bool cfrEnabled = true;
+  bool cfrDropLogged = false;
+  bool cfrDiscontinuityLogged = false;
+  RecorderFrameClock frameClock{30};
   std::chrono::steady_clock::time_point startedAt;
 
   bool mfStarted = false;
@@ -152,6 +150,10 @@ struct MeetingRecorder::Impl {
   // MF system time (QPC-based, 100ns) when the writing session started.
   // Both video and audio timestamps are rebased against this.
   LONGLONG sessionStartHns = 0;
+  // Audio admission policy + counters (guarded by mutex). Samples captured
+  // before sessionStartHns are dropped and counted so a mute recording can
+  // be diagnosed from the "audio_stats" event / recording status.
+  RecorderAudioRebase audioRebase;
 
   ComPtr<IMFMediaSource> micSource;
   ComPtr<IMFSourceReader> micReader;
@@ -198,22 +200,28 @@ class MicReaderCallback : public IMFSourceReaderCallback {
   STDMETHODIMP OnReadSample(HRESULT hrStatus, DWORD /*streamIndex*/,
                             DWORD streamFlags, LONGLONG timestampHns,
                             IMFSample *sample) override {
+    const bool ended = FAILED(hrStatus) ||
+                       (streamFlags & MF_SOURCE_READERF_ENDOFSTREAM) != 0;
     ComPtr<IMFSourceReader> reader;
     ComPtr<IMFSinkWriter> writer;
     DWORD audioStream = 0;
-    LONGLONG sessionStartHns = 0;
     bool running = false;
+    // Decided under the lock so the counters stay consistent with the
+    // session start they were judged against; the write itself runs outside.
+    RecorderAudioRebase::Decision decision;
     {
       std::lock_guard<std::mutex> lock(impl_->mutex);
       reader = impl_->micReader;
       writer = impl_->writer;
       audioStream = impl_->audioStream;
-      sessionStartHns = impl_->sessionStartHns;
       running = impl_->audioRunning.load();
+      if (running && !ended && reader && writer && sample != nullptr) {
+        decision = impl_->audioRebase.decide(
+            static_cast<int64_t>(impl_->sessionStartHns),
+            static_cast<int64_t>(timestampHns));
+      }
     }
 
-    const bool ended = FAILED(hrStatus) ||
-                       (streamFlags & MF_SOURCE_READERF_ENDOFSTREAM) != 0;
     if (!running || ended || !reader || !writer) {
       if (FAILED(hrStatus)) {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -225,8 +233,8 @@ class MicReaderCallback : public IMFSourceReaderCallback {
       return S_OK;
     }
 
-    if (sample != nullptr && timestampHns >= sessionStartHns) {
-      sample->SetSampleTime(timestampHns - sessionStartHns);
+    if (sample != nullptr && decision.write) {
+      sample->SetSampleTime(static_cast<LONGLONG>(decision.timestamp));
       const HRESULT writeHr = writer->WriteSample(audioStream, sample);
       if (FAILED(writeHr)) {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -483,16 +491,7 @@ bool MeetingRecorder::start(const std::string &filePath,
     return fail(hresultError("writer_create_failed", hr));
   }
 
-  // Video output: H.264 at ~0.2 bits/pixel (visually clean for screen+camera
-  // content), clamped so 4K never balloons — same policy as the macOS path.
-  const uint64_t pixels = static_cast<uint64_t>(width) * height;
-  uint64_t bitrate = pixels * safeFps / 5;  // 0.2 bpp
-  if (bitrate > 24000000ull) {
-    bitrate = 24000000ull;
-  }
-  if (bitrate < 2000000ull) {
-    bitrate = 2000000ull;
-  }
+  const uint64_t bitrate = recorderVideoBitrateBps(width, height, safeFps);
 
   ComPtr<IMFMediaType> videoOut;
   MFCreateMediaType(&videoOut);
@@ -501,6 +500,10 @@ bool MeetingRecorder::start(const std::string &filePath,
   videoOut->SetUINT32(MF_MT_AVG_BITRATE, static_cast<UINT32>(bitrate));
   videoOut->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
   videoOut->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High);
+  videoOut->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
+  videoOut->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
+  videoOut->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
+  videoOut->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709);
   MFSetAttributeSize(videoOut.Get(), MF_MT_FRAME_SIZE, width, height);
   MFSetAttributeRatio(videoOut.Get(), MF_MT_FRAME_RATE, safeFps, 1);
   MFSetAttributeRatio(videoOut.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
@@ -519,6 +522,7 @@ bool MeetingRecorder::start(const std::string &filePath,
   videoIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
   videoIn->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
   videoIn->SetUINT32(MF_MT_DEFAULT_STRIDE, width * 4u);
+  videoIn->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_0_255);
   MFSetAttributeSize(videoIn.Get(), MF_MT_FRAME_SIZE, width, height);
   MFSetAttributeRatio(videoIn.Get(), MF_MT_FRAME_RATE, safeFps, 1);
   MFSetAttributeRatio(videoIn.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
@@ -526,6 +530,27 @@ bool MeetingRecorder::start(const std::string &filePath,
   if (FAILED(hr)) {
     micSource->Shutdown();
     return fail(hresultError("video_input_rejected", hr));
+  }
+  ComPtr<ICodecAPI> codecApi;
+  hr = writer->GetServiceForStream(videoStream, GUID_NULL,
+                                   IID_PPV_ARGS(&codecApi));
+  if (SUCCEEDED(hr) && codecApi) {
+    VARIANT value{};
+    value.vt = VT_UI4;
+    value.ulVal = recorderKeyframeInterval(safeFps);
+    HRESULT codecHr = codecApi->SetValue(&CODECAPI_AVEncMPVGOPSize, &value);
+    if (FAILED(codecHr)) {
+      logRecorderEvent("codec_api_gop_failed", hresultError("gop", codecHr));
+    }
+    value.ulVal = 0;
+    codecHr =
+        codecApi->SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &value);
+    if (FAILED(codecHr)) {
+      logRecorderEvent("codec_api_bframes_failed",
+                       hresultError("bframes", codecHr));
+    }
+  } else {
+    logRecorderEvent("codec_api_unavailable", hresultError("service", hr));
   }
 
   // Audio output: AAC 128kbit at the negotiated PCM rate/channels.
@@ -597,6 +622,7 @@ bool MeetingRecorder::start(const std::string &filePath,
     impl_->videoStream = videoStream;
     impl_->audioStream = audioStream;
     impl_->sessionStartHns = MFGetSystemTime();
+    impl_->audioRebase.reset();
     impl_->micSource = micSource;
     impl_->micReader = micReader;
     impl_->micCallback = callback;
@@ -607,6 +633,13 @@ bool MeetingRecorder::start(const std::string &filePath,
     impl_->height = height;
     impl_->fps = safeFps;
     impl_->videoFrames = 0;
+    impl_->duplicatedFrames = 0;
+    impl_->droppedFrames = 0;
+    const char *cfrEnv = getenv("BROADIFY_MEETING_RECORDER_CFR");
+    impl_->cfrEnabled = !(cfrEnv != nullptr && std::string(cfrEnv) == "0");
+    impl_->cfrDropLogged = false;
+    impl_->cfrDiscontinuityLogged = false;
+    impl_->frameClock = RecorderFrameClock(safeFps);
     impl_->startedAt = std::chrono::steady_clock::now();
     impl_->lastError.clear();
     impl_->starting = false;
@@ -647,23 +680,75 @@ void MeetingRecorder::appendVideoFrame(const uint8_t *rgba, uint32_t width,
   buffer->Unlock();
   buffer->SetCurrentLength(static_cast<DWORD>(frameBytes));
 
-  ComPtr<IMFSample> sample;
-  if (FAILED(MFCreateSample(&sample))) {
+  const LONGLONG elapsedHns = MFGetSystemTime() - impl_->sessionStartHns;
+  if (!impl_->cfrEnabled) {
+    ComPtr<IMFSample> sample;
+    if (FAILED(MFCreateSample(&sample))) {
+      return;
+    }
+    sample->AddBuffer(buffer.Get());
+    sample->SetSampleTime(elapsedHns);
+    sample->SetSampleDuration(
+        static_cast<LONGLONG>(kHnsPerSecond / impl_->fps));
+    const HRESULT writeHr =
+        impl_->writer->WriteSample(impl_->videoStream, sample.Get());
+    if (SUCCEEDED(writeHr)) {
+      ++impl_->videoFrames;
+    } else if (impl_->lastError.empty()) {
+      impl_->lastError = hresultError("writer_failed", writeHr);
+    }
     return;
   }
-  sample->AddBuffer(buffer.Get());
-  sample->SetSampleTime(MFGetSystemTime() - impl_->sessionStartHns);
-  sample->SetSampleDuration(
-      static_cast<LONGLONG>(kHnsPerSecond / impl_->fps));
-  const HRESULT writeHr =
-      impl_->writer->WriteSample(impl_->videoStream, sample.Get());
-  if (SUCCEEDED(writeHr)) {
-    ++impl_->videoFrames;
-  } else if (impl_->lastError.empty()) {
-    // REC-02: a failing sink writer (disk full, I/O error) used to be
-    // silently ignored - the recording looked healthy while writing nothing.
-    // Surface it once via recording.status (which streams to the webapp).
-    impl_->lastError = hresultError("writer_failed", writeHr);
+
+  const uint64_t elapsedNs =
+      elapsedHns > 0 ? static_cast<uint64_t>(elapsedHns) * 100ull : 0ull;
+  const RecorderFrameClock::Plan plan = impl_->frameClock.plan(elapsedNs);
+  if (plan.discontinuity && !impl_->cfrDiscontinuityLogged) {
+    logRecorderEvent("cfr_discontinuity",
+                     "jumped to frame " + std::to_string(plan.firstIndex));
+    impl_->cfrDiscontinuityLogged = true;
+  }
+  uint32_t written = 0;
+  for (uint32_t i = 0; i < plan.count; ++i) {
+    ComPtr<IMFSample> sample;
+    if (FAILED(MFCreateSample(&sample))) {
+      break;
+    }
+    sample->AddBuffer(buffer.Get());
+    sample->SetSampleTime(MFllMulDiv(
+        static_cast<LONGLONG>(plan.firstIndex + i),
+        static_cast<LONGLONG>(kHnsPerSecond), static_cast<LONGLONG>(impl_->fps),
+        0));
+    sample->SetSampleDuration(MFllMulDiv(
+        1, static_cast<LONGLONG>(kHnsPerSecond),
+        static_cast<LONGLONG>(impl_->fps), 0));
+    const HRESULT writeHr =
+        impl_->writer->WriteSample(impl_->videoStream, sample.Get());
+    if (SUCCEEDED(writeHr)) {
+      ++written;
+      continue;
+    }
+    if (impl_->lastError.empty()) {
+      // REC-02: a failing sink writer (disk full, I/O error) used to be
+      // silently ignored - the recording looked healthy while writing nothing.
+      // Surface it once via recording.status (which streams to the webapp).
+      impl_->lastError = hresultError("writer_failed", writeHr);
+    }
+    break;
+  }
+  impl_->frameClock.commit(written);
+  impl_->videoFrames += written;
+  if (written > 1) {
+    impl_->duplicatedFrames += written - 1;
+  }
+  if (written < plan.count) {
+    impl_->droppedFrames += plan.count - written;
+    if (!impl_->cfrDropLogged) {
+      logRecorderEvent("cfr_drop",
+                       "writer stopped at frame " +
+                           std::to_string(plan.firstIndex + written));
+      impl_->cfrDropLogged = true;
+    }
   }
 }
 
@@ -675,6 +760,8 @@ void MeetingRecorder::stop() {
   HANDLE drained = nullptr;
   std::string finalPath;
   std::string partPath;
+  uint64_t audioSamplesWritten = 0;
+  uint64_t audioSamplesDroppedBeforeStart = 0;
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (!impl_->active) {
@@ -684,6 +771,10 @@ void MeetingRecorder::stop() {
     impl_->audioRunning.store(false);
     finalPath = impl_->filePath;
     partPath = impl_->partPath;
+    // Final once audioRunning is cleared: the callback no longer admits
+    // samples, so these are the numbers of the whole session.
+    audioSamplesWritten = impl_->audioRebase.written();
+    audioSamplesDroppedBeforeStart = impl_->audioRebase.droppedBeforeStart();
     writer = impl_->writer;
     micReader = impl_->micReader;
     micSource = impl_->micSource;
@@ -697,6 +788,14 @@ void MeetingRecorder::stop() {
     impl_->micCallback = nullptr;
     impl_->sessionStartHns = 0;
   }
+
+  // E1 diagnostics: "written=0 dropped_before_start=0" means the device never
+  // delivered a sample, a large dropped count with few writes means the
+  // capture clock ran ahead of the session start.
+  logRecorderEvent("audio_stats",
+                   "written=" + std::to_string(audioSamplesWritten) +
+                       " dropped_before_start=" +
+                       std::to_string(audioSamplesDroppedBeforeStart));
 
   ComApartment com;
   // Give an in-flight audio callback time to return before finalizing (the
@@ -727,7 +826,38 @@ void MeetingRecorder::stop() {
   }
 
   if (writer) {
-    const HRESULT hr = writer->Finalize();
+    // Finalize() flushes the encoder and writes the trailing MP4 metadata; a
+    // wedged sink (slow disk, stuck hardware encoder) never returns from it,
+    // which used to hang the sequential control thread past the bridge's
+    // recording.stop timeout. Mirror the macOS recorder: run it on a detached
+    // worker that owns its own COM apartment and the LAST writer reference,
+    // and wait bounded. On timeout this thread reports and moves on; the
+    // worker releases the writer whenever Finalize returns, and nothing here
+    // touches the writer again.
+    std::promise<HRESULT> finalizePromise;
+    std::future<HRESULT> finalizeResult = finalizePromise.get_future();
+    std::thread([finalizeWriter = std::move(writer),
+                 promise = std::move(finalizePromise)]() mutable {
+      ComApartment threadCom;
+      const HRESULT finalizeHr = finalizeWriter->Finalize();
+      finalizeWriter.Reset();
+      promise.set_value(finalizeHr);
+    }).detach();
+    if (finalizeResult.wait_for(std::chrono::milliseconds(
+            kRecorderFinalizeTimeoutMs)) != std::future_status::ready) {
+      // Previously stop() blocked here indefinitely. Report it like any other
+      // finalize failure; the ".part" sidecar keeps its name (REC-03) because
+      // it is not a finished recording.
+      logRecorderEvent("finalize_timeout",
+                       "Finalize exceeded " +
+                           std::to_string(kRecorderFinalizeTimeoutMs) + "ms");
+      std::lock_guard<std::mutex> lock(impl_->mutex);
+      if (impl_->lastError.empty()) {
+        impl_->lastError = "finalize_timeout";
+      }
+      return;
+    }
+    const HRESULT hr = finalizeResult.get();
     if (FAILED(hr)) {
       std::lock_guard<std::mutex> lock(impl_->mutex);
       impl_->lastError = hresultError("finish_failed", hr);
@@ -757,6 +887,9 @@ RecordingStatus MeetingRecorder::status() const {
   status.videoFrames = impl_->videoFrames;
   status.elapsedSeconds = impl_->active ? secondsSince(impl_->startedAt) : 0.0;
   status.lastError = impl_->lastError;
+  status.audioSamplesWritten = impl_->audioRebase.written();
+  status.audioSamplesDroppedBeforeStart =
+      impl_->audioRebase.droppedBeforeStart();
   return status;
 }
 

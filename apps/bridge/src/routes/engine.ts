@@ -261,6 +261,13 @@ export async function registerEngineRoute(
         error instanceof Error ? error.message : String(error);
       fastify.log.error({ err: error }, "[Engine] Run macro error");
 
+      if (error instanceof EngineError) {
+        return reply.code(mapEngineErrorToStatusCode(error.code)).send({
+          success: false,
+          error: error.toJSON(),
+        });
+      }
+
       if (errorMessage.includes("not connected")) {
         return reply.code(503).send({
           success: false,
@@ -308,6 +315,13 @@ export async function registerEngineRoute(
         error instanceof Error ? error.message : String(error);
       fastify.log.error({ err: error }, "[Engine] Stop macro error");
 
+      if (error instanceof EngineError) {
+        return reply.code(mapEngineErrorToStatusCode(error.code)).send({
+          success: false,
+          error: error.toJSON(),
+        });
+      }
+
       if (errorMessage.includes("not connected")) {
         return reply.code(503).send({
           success: false,
@@ -353,6 +367,13 @@ export async function registerEngineRoute(
           success: false,
           error: "Invalid vMix action payload",
           message: errorMessage,
+        });
+      }
+
+      if (error instanceof EngineError) {
+        return reply.code(mapEngineErrorToStatusCode(error.code)).send({
+          success: false,
+          error: error.toJSON(),
         });
       }
 

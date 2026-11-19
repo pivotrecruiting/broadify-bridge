@@ -1,4 +1,5 @@
 import type {
+  GraphicsFormatT,
   GraphicsOutputConfigT,
   GraphicsOutputKeyT,
   GraphicsTargetsT,
@@ -183,7 +184,7 @@ export async function validateOutputTargets(
 export async function validateOutputFormat(
   outputKey: GraphicsOutputKeyT,
   targets: GraphicsTargetsT,
-  format: { width: number; height: number; fps: number },
+  format: GraphicsFormatT,
 ): Promise<void> {
   if (
     outputKey === "stub" ||
@@ -248,6 +249,13 @@ export async function validateOutputFormat(
 
     if (modes.length === 0) {
       throw new Error("Output format not supported by selected device");
+    }
+
+    if (
+      typeof format.displayModeId === "number" &&
+      !modes.some((mode) => mode.id === format.displayModeId)
+    ) {
+      throw new Error("Selected display mode is not offered by the device");
     }
 
     const hasSupportedFormat = modes.some((mode) =>

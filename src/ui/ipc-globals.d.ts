@@ -44,9 +44,12 @@ declare global {
         success: boolean;
         error?: string;
       }>;
-      bridgeStart: (
-        config: BridgeConfig
-      ) => Promise<{ success: boolean; error?: string; actualPort?: number }>;
+      bridgeStart: (config: BridgeConfig) => Promise<{
+        success: boolean;
+        error?: string;
+        actualPort?: number;
+        webAppUrl?: string;
+      }>;
       bridgeStop: () => Promise<{ success: boolean; error?: string }>;
       bridgeGetStatus: () => Promise<BridgeStatus>;
       subscribeBridgeStatus: (

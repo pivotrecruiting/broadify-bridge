@@ -28,6 +28,21 @@ export interface VerifySignedRelayCommandParamsT {
   relayCommandSkewSeconds?: number;
   relayCommandTtlSeconds?: number;
   maxJtiCacheSize?: number;
+  /**
+   * Returns true when the caller already holds a cached or in-flight result for
+   * this requestId. Only consulted after the signature has been verified; it
+   * lets an identical relay redelivery be served from that result instead of
+   * being rejected as a replay.
+   */
+  isKnownRequestId?: (requestId: string) => boolean;
+}
+
+export interface VerifySignedRelayCommandResultT {
+  /**
+   * True when the (validly signed) command carries a jti that was already
+   * accepted and the caller knows its requestId, i.e. a relay redelivery.
+   */
+  replayedJti: boolean;
 }
 
 /**
@@ -92,11 +107,15 @@ export const pruneJtiCache = (
 };
 
 /**
- * Verify signed relay command metadata, scope, anti-replay, and signature.
+ * Verify signed relay command metadata, scope, time window, signature and
+ * anti-replay, in that order. The jti check runs only on authenticated input
+ * (after a valid signature) so an observed jti cannot be used to block a
+ * legitimate command. A seen jti is tolerated only when the caller already
+ * knows the requestId (redelivery); otherwise it is rejected as a replay.
  */
 export const verifySignedRelayCommand = async (
   params: VerifySignedRelayCommandParamsT,
-): Promise<void> => {
+): Promise<VerifySignedRelayCommandResultT> => {
   const {
     message,
     bridgeId,
@@ -104,8 +123,8 @@ export const verifySignedRelayCommand = async (
     seenJti,
     nowSec = Math.floor(Date.now() / 1000),
     relayCommandSkewSeconds = 60,
-    relayCommandTtlSeconds = 30,
     maxJtiCacheSize = 5000,
+    isKnownRequestId,
   } = params;
 
   if (!message.meta || !message.signature) {
@@ -141,12 +160,6 @@ export const verifySignedRelayCommand = async (
     throw new Error("Command timestamp invalid");
   }
 
-  pruneJtiCache(seenJti, nowSec, maxJtiCacheSize);
-  const existing = seenJti.get(meta.jti);
-  if (existing && existing > nowSec) {
-    throw new Error("Replay detected");
-  }
-
   const publicKey = await getPublicKey(meta.kid);
   if (!publicKey) {
     throw new Error("Signing key not found");
@@ -166,5 +179,18 @@ export const verifySignedRelayCommand = async (
     throw new Error("Invalid signature");
   }
 
-  seenJti.set(meta.jti, meta.exp || nowSec + relayCommandTtlSeconds);
+  // Anti-replay runs only on authenticated input.
+  pruneJtiCache(seenJti, nowSec, maxJtiCacheSize);
+  const existing = seenJti.get(meta.jti);
+  if (existing && existing > nowSec) {
+    if (isKnownRequestId?.(message.requestId) === true) {
+      return { replayedJti: true };
+    }
+    throw new Error("Replay detected");
+  }
+
+  // Remember the jti for the whole acceptance window (exp + skew), otherwise
+  // the same signed command would be accepted again between exp and exp+skew.
+  seenJti.set(meta.jti, meta.exp + relayCommandSkewSeconds);
+  return { replayedJti: false };
 };

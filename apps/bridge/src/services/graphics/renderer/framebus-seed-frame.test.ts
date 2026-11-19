@@ -1,4 +1,7 @@
-import { selectFrameBusSeedFrame } from "./framebus-seed-frame.js";
+import {
+  selectFrameBusSeedFrame,
+  shouldSeedFreshWriter,
+} from "./framebus-seed-frame.js";
 
 describe("selectFrameBusSeedFrame", () => {
   const width = 4;
@@ -33,5 +36,25 @@ describe("selectFrameBusSeedFrame", () => {
     // Buffer.alloc(0) is falsy-adjacent but not falsy; guard against a
     // zero-length frame slipping through and being written as a valid seed.
     expect(selectFrameBusSeedFrame(Buffer.alloc(0), width, height)).toBeNull();
+  });
+});
+
+describe("shouldSeedFreshWriter", () => {
+  it("keeps a retained frame when one was carried across writer recreation", () => {
+    expect(
+      shouldSeedFreshWriter({ carriedFrame: true, existingSeq: 0n })
+    ).toBe("retained_frame");
+  });
+
+  it("skips seeding when an attached existing region already carries frames", () => {
+    expect(
+      shouldSeedFreshWriter({ carriedFrame: false, existingSeq: 5n })
+    ).toBe("existing_region");
+  });
+
+  it("seeds the idle colour for a new region with no retained frame", () => {
+    expect(
+      shouldSeedFreshWriter({ carriedFrame: false, existingSeq: 0n })
+    ).toBe("idle_color");
   });
 });

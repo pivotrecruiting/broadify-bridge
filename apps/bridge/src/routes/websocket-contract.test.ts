@@ -41,10 +41,14 @@ describe("buildWebSocketSnapshot", () => {
         macroExecution: null,
         lastCompletedMacroExecution: null,
         error: "dial failed",
+        errorCode: "CONNECTION_TIMEOUT",
       }),
     ).toEqual({
       type: "engine.error",
-      error: "dial failed",
+      error: {
+        code: "CONNECTION_TIMEOUT",
+        message: "dial failed",
+      },
     });
   });
 
@@ -60,6 +64,7 @@ describe("buildWebSocketSnapshot", () => {
       type: "engine.status",
       status: "connecting",
       error: undefined,
+      errorCode: undefined,
     });
   });
 

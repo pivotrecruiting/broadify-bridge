@@ -7,6 +7,7 @@ import {
 import {
   stableStringify,
   type RelayCommandMetaT,
+  type VerifySignedRelayCommandResultT,
   verifySignedRelayCommand,
 } from "./relay-command-security.js";
 import { getRelayCommandPolicy } from "./relay-command-policy.js";
@@ -17,10 +18,13 @@ import {
 import { lookup } from "node:dns/promises";
 import net from "node:net";
 import { getRuntimeAppVersion } from "./runtime-app-version.js";
+import { describeRelaySocketError } from "./relay-socket-error.js";
 
 const MAX_RELAY_MESSAGE_BYTES = 2 * 1024 * 1024;
 const RELAY_COMMAND_TTL_SECONDS = 30;
 const RELAY_COMMAND_SKEW_SECONDS = 60;
+// jtis live at most TTL+skew (<= 90 s), so eviction of still-live jtis only
+// starts above ~55 commands/s.
 const MAX_JTI_CACHE_SIZE = 5000;
 const RELAY_PROTOCOL_VERSION = 2;
 const RELAY_COMMAND_DEDUPE_TTL_MS =
@@ -199,6 +203,39 @@ interface BridgeEventMessage {
 }
 
 /**
+ * Conversation Intelligence broker request (bridge -> relay). Control
+ * messages only; payload files upload directly to storage (contract §3 in
+ * docs/integration/conversation-intelligence-contract.md).
+ */
+export type CiRequestTypeT =
+  | "ci_call_start"
+  | "ci_call_end"
+  | "ci_upload_request"
+  | "ci_upload_complete";
+
+export type CiRequestMessageT = {
+  type: CiRequestTypeT;
+  callId: string;
+  startedAt?: number;
+  endedAt?: number;
+  reason?: string;
+  kind?: "graphics" | "transcript";
+  controlSessionId?: string;
+};
+
+export type CiResultMessageT = {
+  type: "ci_result";
+  op: CiRequestTypeT;
+  callId: string;
+  success: boolean;
+  accepted?: boolean;
+  reason?: string;
+  uploadUrl?: string;
+  storagePath?: string;
+  error?: string;
+};
+
+/**
  * Command payload received from relay.
  */
 interface RelayCommandMessage {
@@ -309,7 +346,8 @@ type RelayMessage =
   | RelayCommandMessage
   | RelayBridgeAuthChallengeMessage
   | RelayBridgeAuthOkMessage
-  | RelayBridgeAuthErrorMessage;
+  | RelayBridgeAuthErrorMessage
+  | CiResultMessageT;
 
 type PublicKeyCacheEntry = {
   kid: string;
@@ -514,6 +552,15 @@ export class RelayClient {
     ActiveOperationEntry
   >();
   private reconnectAttempts = 0;
+  private readonly pendingCiRequests = new Map<
+    string,
+    {
+      promise: Promise<CiResultMessageT>;
+      resolve: (result: CiResultMessageT) => void;
+      reject: (error: Error) => void;
+      timer: NodeJS.Timeout;
+    }
+  >();
   private reconnectDelay = 1000; // Start with 1 second
   private maxReconnectDelay = 60000; // Max 60 seconds
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -583,6 +630,62 @@ export class RelayClient {
       timestamp: Date.now(),
     };
     this.send(message);
+  }
+
+  /**
+   * Send a Conversation Intelligence broker request and await its ci_result.
+   * Requests are joined per (op, callId): a duplicate while one is in flight
+   * returns the same promise. Rejections (not connected, timeout, socket
+   * loss) are retried by the upload queue's backoff, never here.
+   */
+  sendCiRequest(
+    request: CiRequestMessageT,
+    timeoutMs = 15_000,
+  ): Promise<CiResultMessageT> {
+    const key = `${request.type}:${request.callId}`;
+    const pending = this.pendingCiRequests.get(key);
+    if (pending) {
+      return pending.promise;
+    }
+    if (!this.isConnected()) {
+      return Promise.reject(new Error("Relay not connected"));
+    }
+
+    let resolve!: (result: CiResultMessageT) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<CiResultMessageT>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    const timer = setTimeout(() => {
+      this.pendingCiRequests.delete(key);
+      reject(new Error(`CI request timed out: ${key}`));
+    }, timeoutMs);
+    timer.unref?.();
+    this.pendingCiRequests.set(key, { promise, resolve, reject, timer });
+
+    this.send({ ...request, bridgeId: this.bridgeId });
+    return promise;
+  }
+
+  private handleCiResult(message: CiResultMessageT): void {
+    const key = `${message.op}:${message.callId}`;
+    const pending = this.pendingCiRequests.get(key);
+    if (!pending) {
+      this.logger.warn(`Unmatched ci_result for ${key}`);
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingCiRequests.delete(key);
+    pending.resolve(message);
+  }
+
+  private rejectPendingCiRequests(reason: string): void {
+    for (const [key, pending] of this.pendingCiRequests) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(`${reason}: ${key}`));
+    }
+    this.pendingCiRequests.clear();
   }
 
   /**
@@ -1274,6 +1377,7 @@ export class RelayClient {
         }
         this.clearRelayHeartbeat();
         this.clearRelayLivenessWatchdog();
+        this.rejectPendingCiRequests("Relay disconnected");
         this.ws = null;
         this.isConnecting = false;
         this.lastSeen = null;
@@ -1285,7 +1389,7 @@ export class RelayClient {
       });
 
       this.ws.on("error", (error: Error) => {
-        this.logger.error(`WebSocket error: ${error.message}`);
+        this.logger.error(`WebSocket error: ${describeRelaySocketError(error)}`);
         this.clearRelayHeartbeat();
         this.clearRelayLivenessWatchdog();
         this.isConnecting = false;
@@ -1376,6 +1480,8 @@ export class RelayClient {
         this.ws?.close();
       } else if (message.type === "command") {
         await this.handleCommand(message);
+      } else if (message.type === "ci_result") {
+        this.handleCiResult(message);
       } else {
         this.logger.warn(
           `Unknown message type: ${(message as { type: string }).type}`,
@@ -1434,8 +1540,9 @@ export class RelayClient {
    * @param message Untrusted relay command message.
    */
   private async handleCommand(message: RelayCommandMessage): Promise<void> {
+    let verification: VerifySignedRelayCommandResultT;
     try {
-      await this.verifySignedCommand(message);
+      verification = await this.verifySignedCommand(message);
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : "Invalid relay signature";
@@ -1449,6 +1556,12 @@ export class RelayClient {
         error: errorMessage,
       });
       return;
+    }
+
+    if (verification.replayedJti) {
+      this.logger.debug?.(
+        `Redelivered signed command, serving cached result (requestId: ${message.requestId})`,
+      );
     }
 
     const isKnownRelayCommand = this.deps.isRelayCommand ?? isRelayCommand;
@@ -1572,12 +1685,12 @@ export class RelayClient {
 
   private async verifySignedCommand(
     message: RelayCommandMessage,
-  ): Promise<void> {
+  ): Promise<VerifySignedRelayCommandResultT> {
     if (this.deps.verifySignedCommand) {
       await this.deps.verifySignedCommand(message);
-      return;
+      return { replayedJti: false };
     }
-    await verifySignedRelayCommand({
+    return verifySignedRelayCommand({
       message,
       bridgeId: this.bridgeId,
       getPublicKey,
@@ -1585,6 +1698,11 @@ export class RelayClient {
       relayCommandSkewSeconds: RELAY_COMMAND_SKEW_SECONDS,
       relayCommandTtlSeconds: RELAY_COMMAND_TTL_SECONDS,
       maxJtiCacheSize: MAX_JTI_CACHE_SIZE,
+      // A seen jti is only tolerated when the result for this requestId can
+      // be served from the dedupe cache or the in-flight map (redelivery).
+      isKnownRequestId: (requestId) =>
+        this.getCachedCommandResult(requestId) !== null ||
+        this.inFlightCommandResults.has(requestId),
     });
   }
 

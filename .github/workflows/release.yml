@@ -82,15 +82,24 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Web app opened after a bridge start, per channel (public URLs, no
+          # secret): RC builds talk to the dev relay and must open the dev web
+          # app, stable builds open production. Packaged as
+          # PRODUCTION_STUDIO_CONTROL_WEBAPP_URL (release-managed in env-loader).
+          WEBAPP_URL_STABLE="https://app.broadify.de"
+          WEBAPP_URL_RC="https://studio-control-git-dev-broadify.vercel.app"
+
           TAG_NAME="${GITHUB_REF_NAME:-}"
           CHANNEL="latest"
           RESOLVED_RELAY_URL="${RELAY_URL:-}"
           RESOLVED_RELAY_JWKS_URL="${BRIDGE_RELAY_JWKS_URL:-}"
+          RESOLVED_WEBAPP_URL="$WEBAPP_URL_STABLE"
 
           if [[ "$TAG_NAME" == *"-rc."* ]]; then
             CHANNEL="rc"
             RESOLVED_RELAY_URL="${RELAY_URL_RC:-}"
             RESOLVED_RELAY_JWKS_URL="${BRIDGE_RELAY_JWKS_URL_RC:-}"
+            RESOLVED_WEBAPP_URL="$WEBAPP_URL_RC"
           fi
 
           if [[ -z "$RESOLVED_RELAY_URL" || -z "$RESOLVED_RELAY_JWKS_URL" ]]; then
@@ -105,10 +114,12 @@ jobs:
           echo "BROADIFY_UPDATER_CHANNEL=$CHANNEL" >> "$GITHUB_ENV"
           echo "RESOLVED_RELAY_URL=$RESOLVED_RELAY_URL" >> "$GITHUB_ENV"
           echo "RESOLVED_BRIDGE_RELAY_JWKS_URL=$RESOLVED_RELAY_JWKS_URL" >> "$GITHUB_ENV"
+          echo "RESOLVED_WEBAPP_URL=$RESOLVED_WEBAPP_URL" >> "$GITHUB_ENV"
           echo "Resolved updater channel: $CHANNEL"
           if [[ -n "$RESOLVED_RELAY_URL" ]]; then
             echo "Resolved relay URL for channel $CHANNEL."
           fi
+          echo "Resolved web app URL for channel $CHANNEL: $RESOLVED_WEBAPP_URL"
 
       - name: Validate macOS release secrets
         if: matrix.os == 'macos-15'
@@ -274,6 +285,9 @@ jobs:
             if [ -n "${RESOLVED_BRIDGE_RELAY_JWKS_URL:-}" ]; then
               echo "BRIDGE_RELAY_JWKS_URL=${RESOLVED_BRIDGE_RELAY_JWKS_URL}"
             fi
+            if [ -n "${RESOLVED_WEBAPP_URL:-}" ]; then
+              echo "PRODUCTION_STUDIO_CONTROL_WEBAPP_URL=${RESOLVED_WEBAPP_URL}"
+            fi
           } > apps/bridge/dist/.env
           if [ -n "${RESOLVED_BRIDGE_RELAY_JWKS_URL:-}" ]; then
             node -e "
@@ -363,6 +377,7 @@ jobs:
           echo "Azure tenant configured: ${AZURE_TENANT_ID:+yes}"
           echo "Azure client configured: ${AZURE_CLIENT_ID:+yes}"
           echo "Azure client secret configured: ${AZURE_CLIENT_SECRET:+yes}"
+          echo "Windows signing policy (for --win): $(node -e "console.log(require('./scripts/lib/resolve-windows-signing-policy.cjs').resolveWindowsSigningPolicy({env:process.env, argv:['--win']}).mode)")"
 
           node - <<'NODE'
           const config = require("./electron-builder.config.cjs");
@@ -537,6 +552,18 @@ jobs:
       - name: Build Electron App
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: npm run ${{ matrix.dist_script }}
+
+      - name: Verify Windows native helper dependencies (dumpbin)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          # The runner has the VC++ redistributable installed, so the helper
+          # smoke tests cannot notice a CRT DLL missing from the package.
+          # Every packaged helper exe/dll import must resolve to an inbox
+          # Windows DLL or a file packaged next to it
+          # (scripts/lib/windows-native-dependency-policy.cjs); dumpbin is on
+          # PATH via ilammy/msvc-dev-cmd.
+          node scripts/verify-windows-native-dependencies.cjs --resources dist\win-unpacked\resources
 
       - name: Assert Windows installer artifacts
         if: matrix.os == 'windows-2022'

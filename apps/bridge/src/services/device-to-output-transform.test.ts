@@ -118,5 +118,31 @@ describe("device-to-output-transform", () => {
       const result = transformDevicesToOutputs(devices);
       expect(result.output1[0].available).toBe(false);
     });
+
+    it("marks owned ports available and flags ownedByBridge", () => {
+      const devices = [
+        makeDevice({
+          status: { present: true, ready: false, inUse: true, lastSeen: Date.now() },
+          ports: [
+            {
+              id: "p1",
+              displayName: "Out",
+              type: "sdi",
+              direction: "output",
+              role: "video",
+              capabilities: { formats: [], modes: [] },
+              status: { available: false },
+            },
+          ],
+        }),
+      ];
+      const result = transformDevicesToOutputs(devices, {
+        ownedPortIds: new Set(["p1"]),
+      });
+      expect(result.output1[0]).toMatchObject({
+        available: true,
+        ownedByBridge: true,
+      });
+    });
   });
 });

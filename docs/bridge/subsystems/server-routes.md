@@ -52,6 +52,11 @@ flowchart LR
 - `POST /config/clear` – Runtime‑Config zurücksetzen
 - `POST /engine/connect` – Engine‑Connect
 - `GET /engine/status` – Engine‑Status
+- `GET /engine/macros` – Engine-Makros, 503 wenn keine Engine verbunden ist
+- `POST /engine/macros/:id/run` / `stop` – Makro ausfuehren/stoppen; `EngineError`
+  Antworten nutzen die strukturierte Form `{ code, message, details }`
+- `POST /engine/vmix/actions/run` – dokumentierte vMix-Aktion ausfuehren; `EngineError`
+  Antworten nutzen ebenfalls `{ code, message, details }`
 - `GET /video/status` – Video-Status (aktuell Placeholder)
 - `GET /graphics/browser-input` – lokale Browser-Input-Seite fuer HTML5-Grafiken
 - `GET /graphics/browser-input/state` – Snapshot fuer Browser-Input-Recover/Initialzustand

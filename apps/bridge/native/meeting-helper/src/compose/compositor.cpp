@@ -1,4 +1,5 @@
 #include "compose/compositor.h"
+#include "compose/background_image_cache.h"
 #include "compose/media_page_cache.h"
 #if defined(__APPLE__)
 #include "compose/metal_compositor.h"
@@ -11,7 +12,6 @@
 #include <cctype>
 #include <cstdint>
 #include <cmath>
-#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -53,6 +53,25 @@ struct SourceRect {
 };
 
 using RgbaImage = MediaPageImage;
+
+// Non-owning view over tightly packed RGBA pixels. Adapts cached media pages
+// and live VideoFrames to the same draw helpers without copying.
+struct RgbaImageView {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  const uint8_t *rgba = nullptr;
+
+  RgbaImageView() = default;
+  RgbaImageView(const RgbaImage &image)
+      : width(image.width),
+        height(image.height),
+        rgba(image.rgba.empty() ? nullptr : image.rgba.data()) {}
+  RgbaImageView(const VideoFrame &frame)
+      : width(frame.width),
+        height(frame.height),
+        rgba(frame.rgba.empty() ? nullptr : frame.rgba.data()) {}
+  bool empty() const { return rgba == nullptr || width == 0u || height == 0u; }
+};
 
 uint8_t clampByte(int value) {
   return static_cast<uint8_t>(std::clamp(value, 0, 255));
@@ -267,27 +286,12 @@ std::shared_ptr<const RgbaImage> getCornerbugImage(const CornerbugState &cornerb
   return cachedImage;
 }
 
-// Cached loader for the uploaded company background image (single slot,
-// same pattern as the media layer image cache).
+// Cached loader for the uploaded company background image (single slot with
+// UTF-8 path handling, retry backoff and a load-failed event; see
+// BackgroundImageCache).
 std::shared_ptr<const RgbaImage> getBackgroundImage(const std::string &path) {
-  static std::string cachedPath;
-  static std::shared_ptr<const RgbaImage> cachedImage;
-  if (path.empty()) {
-    return nullptr;
-  }
-  if (path == cachedPath) {
-    return cachedImage;
-  }
-  std::ifstream file(path, std::ios::binary);
-  cachedPath = path;
-  if (!file.good()) {
-    cachedImage = nullptr;
-    return nullptr;
-  }
-  const std::vector<uint8_t> bytes(
-      (std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-  cachedImage = decodeImageBytes(bytes);
-  return cachedImage;
+  static BackgroundImageCache cache(decodeImageBytes);
+  return cache.get(path);
 }
 
 MediaPageCacheResult getMediaLayerImageResult(const MediaLayerState &mediaLayer) {
@@ -305,8 +309,8 @@ std::shared_ptr<const RgbaImage> getMediaLayerImage(const MediaLayerState &media
   return getMediaLayerImageResult(mediaLayer).image;
 }
 
-void drawImageFit(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &target, const RgbaImage &image) {
-  if (target.width <= 0 || target.height <= 0 || image.width == 0 || image.height == 0 || image.rgba.empty()) {
+void drawImageFit(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const Rect &target, const RgbaImageView &image) {
+  if (target.width <= 0 || target.height <= 0 || image.empty()) {
     return;
   }
 
@@ -354,7 +358,7 @@ void drawImageFit(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, 
   }
 }
 
-void sampleImageBilinear(const RgbaImage &image, double sourceX, double sourceY, uint8_t sample[4]) {
+void sampleImageBilinear(const RgbaImageView &image, double sourceX, double sourceY, uint8_t sample[4]) {
   const uint32_t x0 = static_cast<uint32_t>(std::clamp(static_cast<int>(std::floor(sourceX)), 0, static_cast<int>(image.width) - 1));
   const uint32_t x1 = std::min(x0 + 1u, image.width - 1u);
   const double xWeight = std::clamp(sourceX - std::floor(sourceX), 0.0, 1.0);
@@ -376,7 +380,7 @@ void sampleImageBilinear(const RgbaImage &image, double sourceX, double sourceY,
 void blendSampledImagePixel(std::vector<uint8_t> &frame,
                             uint32_t width,
                             uint32_t height,
-                            const RgbaImage &image,
+                            const RgbaImageView &image,
                             double sourceX,
                             double sourceY,
                             int x,
@@ -414,7 +418,7 @@ void drawImageFitRotated(std::vector<uint8_t> &frame,
                          uint32_t width,
                          uint32_t height,
                          const Rect &target,
-                         const RgbaImage &image,
+                         const RgbaImageView &image,
                          double rotationXDeg,
                          double rotationYDeg,
                          double rotationZDeg) {
@@ -422,7 +426,7 @@ void drawImageFitRotated(std::vector<uint8_t> &frame,
     drawImageFit(frame, width, height, target, image);
     return;
   }
-  if (target.width <= 0 || target.height <= 0 || image.width == 0 || image.height == 0 || image.rgba.empty()) {
+  if (target.width <= 0 || target.height <= 0 || image.empty()) {
     return;
   }
 
@@ -780,7 +784,9 @@ bool frameHasTransparency(const VideoFrame *frame) {
 }
 
 
-void drawMediaLayer(std::vector<uint8_t> &frame, uint32_t width, uint32_t height, const MediaLayerState &mediaLayer) {
+void drawMediaLayer(std::vector<uint8_t> &frame, uint32_t width, uint32_t height,
+                    const MediaLayerState &mediaLayer,
+                    const VideoFrame *screenFrame) {
   if (!mediaLayer.enabled) {
     return;
   }
@@ -794,6 +800,15 @@ void drawMediaLayer(std::vector<uint8_t> &frame, uint32_t width, uint32_t height
       static_cast<int>(width * std::clamp(mediaLayer.width, 0.05, 1.0)),
       static_cast<int>(height * std::clamp(mediaLayer.height, 0.05, 1.0)),
     };
+  }
+  if (mediaLayer.source == "screen") {
+    if (screenFrame == nullptr || screenFrame->rgba.empty()) {
+      return;
+    }
+    drawImageFitRotated(frame, width, height, rect, *screenFrame,
+                        mediaLayer.rotationX, mediaLayer.rotationY,
+                        mediaLayer.rotation);
+    return;
   }
   const auto image = getMediaLayerImage(mediaLayer);
   if (image != nullptr) {
@@ -1239,6 +1254,7 @@ bool tryRenderProgramFrameGpu(const Options &options,
                               const AlphaMask *cameraMask,
                               const VideoFrame *backGraphicsFrame,
                               const VideoFrame *frontGraphicsFrame,
+                              const VideoFrame *screenFrame,
                               uint64_t frameIndex,
                               std::vector<uint8_t> &output) {
 #if defined(__APPLE__)
@@ -1281,13 +1297,31 @@ bool tryRenderProgramFrameGpu(const Options &options,
   // layer simply stays absent — no placeholder panel and no CPU fallback.
   std::shared_ptr<const RgbaImage> mediaImage;
   uint64_t mediaGeneration = 0;
-  if (snapshot.mediaLayer.enabled) {
+  const uint8_t *mediaRgba = nullptr;
+  uint32_t mediaWidth = 0u;
+  uint32_t mediaHeight = 0u;
+  uint64_t mediaCacheKey = 0u;
+  if (snapshot.mediaLayer.enabled && snapshot.mediaLayer.source == "screen") {
+    if (screenFrame != nullptr && !screenFrame->rgba.empty() &&
+        screenFrame->width > 0u && screenFrame->height > 0u) {
+      mediaRgba = screenFrame->rgba.data();
+      mediaWidth = screenFrame->width;
+      mediaHeight = screenFrame->height;
+      mediaCacheKey = screenFrame->timestampNs != 0u ? screenFrame->timestampNs : 1u;
+    }
+  } else if (snapshot.mediaLayer.enabled) {
     const MediaPageCacheResult mediaResult =
         getMediaLayerImageResult(snapshot.mediaLayer);
     mediaImage = mediaResult.image;
     mediaGeneration = mediaResult.generation;
+    if (mediaImage != nullptr) {
+      mediaRgba = mediaImage->rgba.data();
+      mediaWidth = mediaImage->width;
+      mediaHeight = mediaImage->height;
+      mediaCacheKey = mediaGeneration;
+    }
   }
-  if (mediaImage != nullptr) {
+  if (mediaRgba != nullptr && mediaWidth > 0u && mediaHeight > 0u) {
     Rect rect;
     if (snapshot.mediaLayer.mode == "fullscreen") {
       rect = {0, 0, static_cast<int>(plan.width), static_cast<int>(plan.height)};
@@ -1301,7 +1335,7 @@ bool tryRenderProgramFrameGpu(const Options &options,
     }
     double quadX[4];
     double quadY[4];
-    if (!projectedMediaQuad(rect, mediaImage->width, mediaImage->height,
+    if (!projectedMediaQuad(rect, mediaWidth, mediaHeight,
                             snapshot.mediaLayer.rotationX, snapshot.mediaLayer.rotationY,
                             snapshot.mediaLayer.rotation, quadX, quadY) ||
         !quadInverseHomography(quadX, quadY, plan.media.invHomography)) {
@@ -1311,10 +1345,10 @@ bool tryRenderProgramFrameGpu(const Options &options,
     // presentation renders as the pure image, matching the CPU path. The
     // shader keeps its shadow branch for ABI stability; it just never fires.
     plan.media.present = true;
-    plan.media.rgba = mediaImage->rgba.data();
-    plan.media.width = mediaImage->width;
-    plan.media.height = mediaImage->height;
-    plan.media.cacheKey = mediaGeneration;
+    plan.media.rgba = mediaRgba;
+    plan.media.width = mediaWidth;
+    plan.media.height = mediaHeight;
+    plan.media.cacheKey = mediaCacheKey;
   }
 
   const bool hasCameraFrame = snapshot.cameraRender.enabled && cameraFrame != nullptr &&
@@ -1488,11 +1522,13 @@ void renderProgramFrame(const Options &options,
                         const VideoFrame *backGraphicsFrame,
                         const VideoFrame *frontGraphicsFrame,
                         const VideoFrame *cameraPipFrame,
+                        const VideoFrame *screenFrame,
                         uint64_t frameIndex,
                         std::vector<uint8_t> &output) {
 #if defined(__APPLE__) || defined(_WIN32)
   if (tryRenderProgramFrameGpu(
-          options, snapshot, cameraFrame, cameraMask, backGraphicsFrame, frontGraphicsFrame, frameIndex, output)) {
+          options, snapshot, cameraFrame, cameraMask, backGraphicsFrame,
+          frontGraphicsFrame, screenFrame, frameIndex, output)) {
 #if defined(__APPLE__)
     g_lastCompositorBackend = "metal";
 #else
@@ -1545,10 +1581,10 @@ void renderProgramFrame(const Options &options,
     // Keyer ON with a real alpha frame:
     // Background/backplate -> fullscreen background media -> PiP -> keyed presenter -> Graphics -> Cornerbug.
     if (mediaLayerIsFullscreen) {
-      drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
+      drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer, screenFrame);
     }
     if (mediaLayerIsPip) {
-      drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
+      drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer, screenFrame);
     }
     if (snapshot.cameraRender.enabled) {
       drawKeyedPresenterLayer(
@@ -1575,7 +1611,7 @@ void renderProgramFrame(const Options &options,
           snapshot.cameraRender.mirror);
     }
     if (mediaLayerIsPip || mediaLayerIsFullscreen) {
-      drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer);
+      drawMediaLayer(output, options.width, options.height, snapshot.mediaLayer, screenFrame);
     }
   }
 

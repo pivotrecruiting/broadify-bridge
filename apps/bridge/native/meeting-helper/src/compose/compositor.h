@@ -32,6 +32,8 @@ const char *lastCompositorBackend();
 // camera frames arrive unkeyed.
 // cameraPipFrame: an optional second live camera drawn as a picture-in-picture
 // inset (nullptr = no camera PiP). Conference uses it for a second angle.
+// screenFrame: live RGBA frame used when mediaLayer.source == "screen";
+// nullptr means no screen frame is available yet and the layer draws nothing.
 void renderProgramFrame(const Options &options,
                         const CompositorSnapshot &snapshot,
                         const VideoFrame *cameraFrame,
@@ -39,6 +41,7 @@ void renderProgramFrame(const Options &options,
                         const VideoFrame *backGraphicsFrame,
                         const VideoFrame *frontGraphicsFrame,
                         const VideoFrame *cameraPipFrame,
+                        const VideoFrame *screenFrame,
                         uint64_t frameIndex,
                         std::vector<uint8_t> &output);
 

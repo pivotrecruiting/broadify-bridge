@@ -224,3 +224,36 @@ describe("MeetingHelperClient virtual camera output coupling", () => {
     expect(typeof result.message).toBe("string");
   });
 });
+
+describe("MeetingHelperClient screen RPC wrappers", () => {
+  let rpcSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    rpcSpy = jest
+      .spyOn(MeetingHelperClient.prototype as unknown as { rpc: () => unknown }, "rpc")
+      .mockResolvedValue({ ok: true });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("maps screen methods to helper RPC names", async () => {
+    const client = new MeetingHelperClient("/tmp/x.sock");
+
+    await client.screenList();
+    await client.screenStart({ source_id: "display:1", include_cursor: true });
+    await client.screenStop();
+    await client.screenPick({ include_cursor: false });
+
+    expect(rpcSpy).toHaveBeenNthCalledWith(1, "screen.list");
+    expect(rpcSpy).toHaveBeenNthCalledWith(2, "screen.start", {
+      source_id: "display:1",
+      include_cursor: true,
+    });
+    expect(rpcSpy).toHaveBeenNthCalledWith(3, "screen.stop");
+    expect(rpcSpy).toHaveBeenNthCalledWith(4, "screen.pick", {
+      include_cursor: false,
+    });
+  });
+});

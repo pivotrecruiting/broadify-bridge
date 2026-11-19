@@ -3,10 +3,11 @@ import { AtemAdapter } from "./atem-adapter.js";
 
 const mockAtemConnect = jest.fn();
 const mockAtemDisconnect = jest.fn();
+const mockAtemDestroy = jest.fn().mockResolvedValue(undefined);
 const mockMacroRun = jest.fn().mockResolvedValue(undefined);
 const mockMacroStop = jest.fn().mockResolvedValue(undefined);
 
-type MockAtemBehavior = "connect" | "error" | "timeout";
+type MockAtemBehavior = "connect" | "error" | "reject" | "timeout";
 let mockAtemBehavior: MockAtemBehavior = "connect";
 let mockAtemError: Error | string = new Error("ECONNREFUSED");
 
@@ -41,13 +42,15 @@ jest.mock("atem-connection", () => {
           if (mockAtemBehavior === "connect") {
             setImmediate(() => emitter.emit("connected"));
           } else if (mockAtemBehavior === "error") {
-            setImmediate(() =>
-              emitter.emit("error", mockAtemError instanceof Error ? mockAtemError : new Error(mockAtemError))
-            );
+            setImmediate(() => emitter.emit("error", mockAtemError));
+          } else if (mockAtemBehavior === "reject") {
+            return Promise.reject(mockAtemError);
           }
           // timeout: don't emit anything
+          return Promise.resolve();
         },
         disconnect: mockAtemDisconnect,
+        destroy: mockAtemDestroy,
         macroRun: mockMacroRun,
         macroStop: mockMacroStop,
         state,
@@ -55,6 +58,7 @@ jest.mock("atem-connection", () => {
         on: emitter.on.bind(emitter),
         once: emitter.once.bind(emitter),
         removeListener: emitter.removeListener.bind(emitter),
+        listenerCount: emitter.listenerCount.bind(emitter),
       };
       return atemInstance;
     }),
@@ -69,6 +73,7 @@ describe("AtemAdapter", () => {
     adapter = new AtemAdapter();
     mockAtemConnect.mockClear();
     mockAtemDisconnect.mockClear();
+    mockAtemDestroy.mockClear();
     mockMacroRun.mockClear();
     mockMacroStop.mockClear();
     mockAtemBehavior = "connect";
@@ -102,6 +107,7 @@ describe("AtemAdapter", () => {
         adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 })
       ).rejects.toThrow("Connection refused");
       expect(adapter.getStatus()).toBe("error");
+      expect(mockAtemDestroy).toHaveBeenCalled();
     });
 
     it("handles ENOTFOUND error as device unreachable", async () => {
@@ -128,12 +134,40 @@ describe("AtemAdapter", () => {
       ).rejects.toThrow("Network error");
     });
 
-    it("handles string error in onError", async () => {
+    it("does not reject the connect attempt on a library-internal string error", async () => {
       mockAtemBehavior = "error";
-      mockAtemError = "ECONNREFUSED";
+      mockAtemError = "MutateState failed: internal parser warning";
+      const connectPromise = adapter.connect({
+        type: "atem",
+        ip: "10.0.0.1",
+        port: 9910,
+      });
+      const atemConnection = (
+        adapter as unknown as {
+          atemConnection: {
+            emit: (event: string, payload?: unknown) => void;
+          };
+        }
+      ).atemConnection;
+
+      await new Promise((resolve) => setImmediate(resolve));
+      atemConnection.emit("connected");
+
+      await expect(connectPromise).resolves.toBeUndefined();
+      expect(adapter.getStatus()).toBe("connected");
+    });
+
+    it("routes a rejected atem.connect() promise into the connect error path", async () => {
+      mockAtemBehavior = "reject";
+      mockAtemError = new Error("ECONNREFUSED Connection refused");
+
       await expect(
         adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 })
-      ).rejects.toThrow("Connection refused");
+      ).rejects.toMatchObject({
+        code: "CONNECTION_REFUSED",
+      });
+      expect(adapter.getStatus()).toBe("error");
+      expect(mockAtemDestroy).toHaveBeenCalled();
     });
 
     it("times out when connection does not complete", async () => {
@@ -150,15 +184,16 @@ describe("AtemAdapter", () => {
       await jest.advanceTimersByTimeAsync(10001);
       await expectPromise;
       expect(adapter.getStatus()).toBe("error");
+      expect(mockAtemDestroy).toHaveBeenCalled();
       jest.useRealTimers();
     });
   });
 
   describe("disconnect", () => {
-    it("resets state and calls Atem.disconnect", async () => {
+    it("resets state and destroys the atem instance", async () => {
       await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
       await adapter.disconnect();
-      expect(mockAtemDisconnect).toHaveBeenCalled();
+      expect(mockAtemDestroy).toHaveBeenCalled();
       expect(adapter.getStatus()).toBe("disconnected");
     });
 
@@ -167,6 +202,23 @@ describe("AtemAdapter", () => {
       await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
       await expect(adapter.disconnect()).resolves.not.toThrow();
       expect(adapter.getStatus()).toBe("disconnected");
+    });
+
+    it("does not register duplicate listeners across connect cycles", async () => {
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      await adapter.disconnect();
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+
+      const atemConnection = (
+        adapter as unknown as {
+          atemConnection: {
+            listenerCount: (event: string) => number;
+          };
+        }
+      ).atemConnection;
+
+      expect(atemConnection.listenerCount("connected")).toBe(1);
+      expect(atemConnection.listenerCount("error")).toBe(1);
     });
   });
 
@@ -182,6 +234,69 @@ describe("AtemAdapter", () => {
       const macros = adapter.getMacros();
       expect(macros.length).toBeGreaterThanOrEqual(0);
       expect(Array.isArray(macros)).toBe(true);
+    });
+
+    it("re-enters connected and refreshes macros after a library-internal reconnect", async () => {
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      const atemConnection = (
+        adapter as unknown as {
+          atemConnection: {
+            state: ReturnType<typeof createMockState>;
+            emit: (event: string, payload?: unknown) => void;
+          };
+        }
+      ).atemConnection;
+
+      atemConnection.emit("disconnected");
+      atemConnection.state.macro.macroProperties = [
+        { name: "Recovered Macro" },
+      ];
+      atemConnection.emit("connected");
+
+      expect(adapter.getStatus()).toBe("connected");
+      expect(adapter.getMacros()).toEqual([
+        { id: 0, name: "Recovered Macro", status: "idle" },
+      ]);
+    });
+
+    it("reports connecting while the library reconnects", async () => {
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      const atemConnection = (
+        adapter as unknown as {
+          atemConnection: {
+            emit: (event: string, payload?: unknown) => void;
+          };
+        }
+      ).atemConnection;
+
+      atemConnection.emit("disconnected");
+
+      expect(adapter.getStatus()).toBe("connecting");
+    });
+
+    it("resolves the connect promise only once across repeated connected events", async () => {
+      mockAtemBehavior = "timeout";
+      const connectPromise = adapter.connect({
+        type: "atem",
+        ip: "10.0.0.1",
+        port: 9910,
+      });
+      const settleSpy = jest.fn();
+      void connectPromise.then(settleSpy);
+      const atemConnection = (
+        adapter as unknown as {
+          atemConnection: {
+            emit: (event: string, payload?: unknown) => void;
+          };
+        }
+      ).atemConnection;
+
+      atemConnection.emit("connected");
+      atemConnection.emit("connected");
+      await connectPromise;
+      await Promise.resolve();
+
+      expect(settleSpy).toHaveBeenCalledTimes(1);
     });
 
     it("marks pending macro before device state confirmation", async () => {

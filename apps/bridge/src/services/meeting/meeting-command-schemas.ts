@@ -52,6 +52,7 @@ export const MeetingKeyerConfigureSchema = z
       .enum(["transparent", "gradient", "solid_light", "checkerboard"])
       .optional(),
     background_type: z.enum(["mode"]).optional(),
+    background_asset_id: z.string().max(200).nullable().optional(),
     background_template_id: z.string().nullable().optional(),
     background_template_name: z.string().nullable().optional(),
     // Absolute local path of an uploaded company background image ("" clears).
@@ -73,7 +74,10 @@ export const MeetingKeyerConfigureSchema = z
     // over the un-keyed camera. Forwarded to the helper's keyer.configure.
     conference_mode: z.boolean().optional(),
   })
-  .strict()
+  // Forward-tolerant: unknown keys are stripped, not rejected, so a newer webapp
+  // field can never 400 this (soon-to-be-older) bridge version and take the
+  // whole keyer/background push down. Known fields stay fully validated.
+  .strip()
   .refine(
     (value) =>
       value.fresh_mask_age_ms === undefined ||
@@ -86,6 +90,19 @@ export const MeetingProgramUpdateSchema = z.object({
   section: z.enum(["camera", "cornerbug", "graphics", "speaker_layout", "media_layer"]),
   values: z.record(z.unknown()),
 });
+
+export const MeetingScreenStartSchema = z
+  .object({
+    source_id: z.string().min(1).max(256),
+    include_cursor: z.boolean().optional(),
+  })
+  .strip();
+
+export const MeetingScreenPickSchema = z
+  .object({
+    include_cursor: z.boolean().optional(),
+  })
+  .strip();
 
 export const MeetingOutputConfigureSchema = z.object({
   target: z.enum(["framebus", "virtual_camera"]),
@@ -177,7 +194,9 @@ export const MeetingContentVideoSetSchema = z
     loop: z.boolean().default(true),
     ...meetingContentPlacementFields,
   })
-  .strict();
+  // Forward-tolerant: strip unknown keys instead of rejecting, so a newer
+  // webapp placement/style field never 400s an older bridge and drops content.
+  .strip();
 
 export const MeetingBrowserSourceSetSchema = z
   .object({
@@ -185,13 +204,20 @@ export const MeetingBrowserSourceSetSchema = z
     url: z.string().url().max(2048).nullable(),
     ...meetingContentPlacementFields,
   })
-  .strict();
+  // Forward-tolerant: strip unknown keys instead of rejecting (see video schema).
+  .strip();
 
 export type MeetingContentVideoSetPayloadT = z.output<
   typeof MeetingContentVideoSetSchema
 >;
 export type MeetingBrowserSourceSetPayloadT = z.output<
   typeof MeetingBrowserSourceSetSchema
+>;
+export type MeetingScreenStartPayloadT = z.output<
+  typeof MeetingScreenStartSchema
+>;
+export type MeetingScreenPickPayloadT = z.output<
+  typeof MeetingScreenPickSchema
 >;
 
 export const MeetingMediaGetSchema = z

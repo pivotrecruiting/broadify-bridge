@@ -241,6 +241,13 @@ export class ModuleRegistry {
   }
 
   /**
+   * Get a registered module by name.
+   */
+  getModule(moduleName: string): DeviceModule | undefined {
+    return this.modules.find((module) => module.name === moduleName);
+  }
+
+  /**
    * Get number of registered modules.
    */
   getModuleCount(): number {

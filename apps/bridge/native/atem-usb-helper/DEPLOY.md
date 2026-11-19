@@ -5,13 +5,19 @@ binaries as pinned release assets (same flow as the DeckLink helper).
 Local `dist:*` runs build from source instead when the ATEM software is
 installed; no SDK files are ever committed or shipped.
 
+Compatibility rule: ship TypeScript support first, helper asset second. The
+bridge treats helpers without `protocol_version` in the `ready` event as v1:
+no heartbeat pings and legacy fire-and-forget `macro_run`. Once the v2 helper
+asset is released, the bridge enables heartbeat and macro ack/nack by feature
+detection.
+
 ## 1. Build the artifacts (once per helper change)
 
 macOS (both architectures; requires the ATEM software or ATEM_SDK_ROOT):
 
 ```bash
 npm run prepare:atem-usb-helper-release   # on an arm64 machine
-# repeat on an x64 machine (or build.sh under Rosetta with an x64 toolchain)
+ATEM_HELPER_ARCH=x86_64 npm run prepare:atem-usb-helper-release   # x64 cross-build on the same machine
 ```
 
 Windows (x64 Native Tools shell; no ATEM SDK required):
@@ -85,3 +91,22 @@ The workflows set `SKIP_ATEM_USB_HELPER_BUILD=1` and download instead;
 `scripts/download-atem-usb-helper.sh` verifies the SHA256 before install,
 and `scripts/verify-release-artifacts.sh` requires the binary in the
 packaged output.
+
+## 4. Protocol v2 release checklist
+
+1. Build macOS arm64 with `npm run prepare:atem-usb-helper-release`; repeat x64
+   on an x64 machine if available.
+2. Run the `ATEM USB Helper Windows` workflow manually and download
+   `atem-usb-helper-win-x64`.
+3. Confirm `--probe` emits `"protocol_version":2` for every asset.
+4. Upload assets to the private assets release and update
+   `ATEM_USB_HELPER_URL_*` / `ATEM_USB_HELPER_SHA256_*`.
+5. Cut the RC and verify the bridge log contains `[AtemUsb] Helper protocol v2`.
+
+## Asset location (as of 2026-09-24)
+
+The assets currently pinned in the secrets live in the `helper-assets-20260924`
+release of the bridge repository (`pivotrecruiting/broadify-bridge`) because the
+helper asset repository is not writable for the CI account. That release is
+deliberately not marked "Latest" and carries no `v*` tag, so neither the app
+updater nor the release workflow reacts to it.

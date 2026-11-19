@@ -1,18 +1,32 @@
-import { triggerLocalNetworkPermissionPrompt } from "./local-network-prompt.js";
+import {
+  sendLocalNetworkNudge,
+  triggerLocalNetworkPermissionPrompt,
+} from "./local-network-prompt.js";
 
 type SendCallbackT = (error: Error | null) => void;
+type BindCallbackT = () => void;
 
 const mockSend = jest.fn();
 const mockClose = jest.fn();
 const mockOnce = jest.fn();
+const mockBind = jest.fn();
+const mockSetMulticastInterface = jest.fn();
 const mockCreateSocket = jest.fn(() => ({
   send: mockSend,
   close: mockClose,
   once: mockOnce,
+  bind: mockBind,
+  setMulticastInterface: mockSetMulticastInterface,
 }));
 
 jest.mock("dgram", () => ({
   createSocket: (type: string) => mockCreateSocket(type),
+}));
+
+const mockNetworkInterfaces = jest.fn();
+
+jest.mock("os", () => ({
+  networkInterfaces: () => mockNetworkInterfaces(),
 }));
 
 const mockLogAppInfo = jest.fn();
@@ -31,11 +45,108 @@ function setPlatform(platform: NodeJS.Platform): () => void {
   };
 }
 
-describe("triggerLocalNetworkPermissionPrompt", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
+const flushAsync = (): Promise<void> =>
+  new Promise((resolve) => setImmediate(resolve));
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  // clearAllMocks wipes call history but not implementations, so restore the
+  // default socket factory (a prior test may have made it throw).
+  mockCreateSocket.mockImplementation(() => ({
+    send: mockSend,
+    close: mockClose,
+    once: mockOnce,
+    bind: mockBind,
+    setMulticastInterface: mockSetMulticastInterface,
+  }));
+  // Default: bind succeeds and send succeeds.
+  mockBind.mockImplementation((_opts: unknown, cb: BindCallbackT) => cb());
+  mockSend.mockImplementation(
+    (
+      _payload: Buffer,
+      _port: number,
+      _address: string,
+      cb: SendCallbackT,
+    ) => cb(null),
+  );
+  // Default: two active external interfaces plus internal loopback + IPv6.
+  mockNetworkInterfaces.mockReturnValue({
+    lo0: [{ family: "IPv4", internal: true, address: "127.0.0.1" }],
+    en9: [{ family: "IPv4", internal: false, address: "192.168.178.30" }],
+    en0: [
+      { family: "IPv4", internal: false, address: "192.168.1.10" },
+      { family: "IPv6", internal: false, address: "fe80::1" },
+    ],
+  });
+});
+
+describe("sendLocalNetworkNudge", () => {
+  it("sends one mDNS query pinned to each active, non-internal IPv4 interface", async () => {
+    const ok = await sendLocalNetworkNudge();
+
+    expect(ok).toBe(true);
+    // en9 + en0 IPv4 only — loopback and IPv6 excluded.
+    expect(mockCreateSocket).toHaveBeenCalledTimes(2);
+    const boundAddresses = mockBind.mock.calls.map(
+      (call) => (call[0] as { address: string }).address,
+    );
+    expect(boundAddresses.sort()).toEqual(["192.168.1.10", "192.168.178.30"]);
+    expect(mockSetMulticastInterface).toHaveBeenCalledWith("192.168.178.30");
+    expect(mockSetMulticastInterface).toHaveBeenCalledWith("192.168.1.10");
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    for (const call of mockSend.mock.calls) {
+      const [payload, port, address] = call as [Buffer, number, string];
+      expect(port).toBe(5353);
+      expect(address).toBe("224.0.0.251");
+      expect(payload.readUInt16BE(4)).toBe(1);
+      expect(payload.toString("ascii")).toContain("_services");
+    }
+    expect(mockClose).toHaveBeenCalledTimes(2);
   });
 
+  it("returns false and opens no socket when there is no active interface", async () => {
+    mockNetworkInterfaces.mockReturnValue({
+      lo0: [{ family: "IPv4", internal: true, address: "127.0.0.1" }],
+    });
+
+    const ok = await sendLocalNetworkNudge();
+
+    expect(ok).toBe(false);
+    expect(mockCreateSocket).not.toHaveBeenCalled();
+  });
+
+  it("returns false and warns when the send fails on every interface", async () => {
+    mockSend.mockImplementation(
+      (
+        _payload: Buffer,
+        _port: number,
+        _address: string,
+        cb: SendCallbackT,
+      ) => cb(new Error("EHOSTUNREACH")),
+    );
+
+    const ok = await sendLocalNetworkNudge();
+
+    expect(ok).toBe(false);
+    expect(mockLogAppWarn).toHaveBeenCalledWith(
+      expect.stringContaining("EHOSTUNREACH"),
+    );
+    expect(mockClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not throw and resolves false when a socket cannot be created", async () => {
+    mockCreateSocket.mockImplementation(() => {
+      throw new Error("no sockets");
+    });
+
+    await expect(sendLocalNetworkNudge()).resolves.toBe(false);
+    expect(mockLogAppWarn).toHaveBeenCalledWith(
+      expect.stringContaining("no sockets"),
+    );
+  });
+});
+
+describe("triggerLocalNetworkPermissionPrompt", () => {
   it("does nothing on non-macOS platforms", () => {
     const restore = setPlatform("win32");
     try {
@@ -46,63 +157,14 @@ describe("triggerLocalNetworkPermissionPrompt", () => {
     }
   });
 
-  it("sends one mDNS query to 224.0.0.251:5353 and closes the socket", () => {
+  it("sends the nudge on macOS", async () => {
     const restore = setPlatform("darwin");
     try {
       triggerLocalNetworkPermissionPrompt();
+      await flushAsync();
 
-      expect(mockCreateSocket).toHaveBeenCalledWith("udp4");
-      expect(mockSend).toHaveBeenCalledTimes(1);
-      const [payload, port, address, callback] = mockSend.mock.calls[0] as [
-        Buffer,
-        number,
-        string,
-        SendCallbackT,
-      ];
-      expect(port).toBe(5353);
-      expect(address).toBe("224.0.0.251");
-      // DNS wire format: standard query with exactly one question for the
-      // DNS-SD service enumeration name.
-      expect(payload.readUInt16BE(4)).toBe(1);
-      expect(payload.toString("ascii")).toContain("_services");
-
-      callback(null);
-      expect(mockClose).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalled();
       expect(mockLogAppInfo).toHaveBeenCalled();
-      expect(mockLogAppWarn).not.toHaveBeenCalled();
-    } finally {
-      restore();
-    }
-  });
-
-  it("logs a warning and still closes the socket when the send fails", () => {
-    const restore = setPlatform("darwin");
-    try {
-      triggerLocalNetworkPermissionPrompt();
-
-      const callback = mockSend.mock.calls[0][3] as SendCallbackT;
-      callback(new Error("network down"));
-
-      expect(mockLogAppWarn).toHaveBeenCalledWith(
-        expect.stringContaining("network down"),
-      );
-      expect(mockClose).toHaveBeenCalledTimes(1);
-    } finally {
-      restore();
-    }
-  });
-
-  it("logs a warning when the socket cannot be created", () => {
-    const restore = setPlatform("darwin");
-    try {
-      mockCreateSocket.mockImplementationOnce(() => {
-        throw new Error("no sockets");
-      });
-
-      expect(() => triggerLocalNetworkPermissionPrompt()).not.toThrow();
-      expect(mockLogAppWarn).toHaveBeenCalledWith(
-        expect.stringContaining("no sockets"),
-      );
     } finally {
       restore();
     }

@@ -21,14 +21,22 @@ import {
   FRAMEBUS_HEARTBEAT_INTERVAL_MS,
   shouldRepublishHeartbeatFrame,
 } from "./framebus-heartbeat.js";
+import { shouldSkipIdenticalPaint } from "./paint-dedup.js";
 import {
   bgraToRgba,
   downsampleRgbaBox,
   resampleRgbaBilinear,
 } from "./graphics-pixel-utils.js";
 import { frameBusWriterMatchesTarget } from "./framebus-writer-match.js";
-import { selectFrameBusSeedFrame } from "./framebus-seed-frame.js";
-import { resolvePerfLogging } from "./perf-logging.js";
+import {
+  selectFrameBusSeedFrame,
+  shouldSeedFreshWriter,
+} from "./framebus-seed-frame.js";
+import {
+  buildPerfLogFields,
+  resolvePerfLogging,
+  type PerfResizePathT,
+} from "./perf-logging.js";
 import {
   buildIdleFrameBuffer,
   resolveIdleFrameColor,
@@ -47,6 +55,8 @@ const LOG_PERF = process.env.BRIDGE_LOG_PERF === "1" || DEBUG_GRAPHICS;
 const STUDIO_CAPTURE_FALLBACK_MS = 300;
 const FRAMEBUS_READY_RETRY_ATTEMPTS = 30;
 const FRAMEBUS_READY_RETRY_DELAY_MS = 100;
+const RENDERER_WINDOW_FAILURE_WINDOW_MS = 60_000;
+const RENDERER_WINDOW_UNRESPONSIVE_RECOVERY_MS = 5_000;
 const disableGpu = process.env.BRIDGE_GRAPHICS_DISABLE_GPU === "1";
 let frameBusName = process.env.BRIDGE_FRAMEBUS_NAME || "";
 let frameBusSlotCount = 0;
@@ -101,6 +111,7 @@ let perfSentCount = 0;
 let perfDroppedCount = 0;
 let perfLatencyTotalMs = 0;
 let perfLatencyMaxMs = 0;
+let perfLastResizePath: CaptureResizePathT = "native";
 let firstFrameBusWriteLogged = false;
 let backpressureStartAt: number | null = null;
 let backpressureTotalMs = 0;
@@ -158,6 +169,10 @@ let singleWindowFormat: {
   fps: number;
   renderScale: number;
 } | null = null;
+let singleWindowRecoveryInFlight = false;
+let singleWindowLastFailureAtMs = 0;
+let singleWindowUnresponsiveTimer: ReturnType<typeof setTimeout> | null = null;
+let supersampleClampFallback = false;
 const singleLayerSnapshots = new Map<string, SingleLayerSnapshotT>();
 let frameBusModule: FrameBusModuleT | null = null;
 let frameBusWriter: FrameBusWriterT | null = null;
@@ -225,30 +240,60 @@ function stopFrameBusHeartbeat(): void {
 
 // Paint dedup state. Module-scoped on purpose: it used to live in the paint
 // handler closure, so the direct write paths (idle frame, captured frame) left
-// a stale checksum behind. The very paint that had to repair such a frame then
+// stale dedup state behind. The very paint that had to repair such a frame then
 // looked like a duplicate and was dropped, and the heartbeat re-published the
 // stale frame once per second for as long as the page stayed unchanged.
-let lastPaintChecksum = -1;
-let lastPaintChecksumAtMs = 0;
+let lastPaintBuffer: Buffer | null = null;
+let lastPaintBufferAtMs = 0;
 
 /**
- * Forget the last painted frame's checksum.
+ * Forget the last painted frame.
  *
  * Every FrameBus write that does NOT come from the paint handler must call
  * this: it changes what readers see, so the next paint is meaningful even when
  * it is pixel-identical to the previously *painted* frame.
  */
 function invalidatePaintDedup(): void {
-  lastPaintChecksum = -1;
-  lastPaintChecksumAtMs = 0;
+  lastPaintBuffer = null;
+  lastPaintBufferAtMs = 0;
 }
 
 const DEFAULT_SUPERSAMPLE_MAX_PIXELS = 1280 * 720;
+const MEETING_SUPERSAMPLE_MAX_PIXELS = 1920 * 1080;
+type CaptureResizePathT = PerfResizePathT;
 
-function resolveRenderScale(width: number, height: number): number {
-  const configured = Number(process.env.BRIDGE_GRAPHICS_SUPERSAMPLE);
-  if (Number.isFinite(configured) && configured >= 1) {
-    return Math.max(1, Math.min(3, Math.round(configured)));
+function clampRenderScale(value: number): number {
+  return Math.max(1, Math.min(3, Math.round(value)));
+}
+
+function resolveRenderScale(
+  width: number,
+  height: number,
+  meetingBus: boolean,
+  clampFallback: boolean,
+): number {
+  const configuredRaw = process.env.BRIDGE_GRAPHICS_SUPERSAMPLE;
+  const configured = Number(configuredRaw);
+  if (
+    configuredRaw !== undefined &&
+    configuredRaw.trim() !== "" &&
+    Number.isFinite(configured)
+  ) {
+    return clampRenderScale(configured);
+  }
+  if (clampFallback) {
+    return 1;
+  }
+  if (meetingBus && width * height <= MEETING_SUPERSAMPLE_MAX_PIXELS) {
+    const meetingConfiguredRaw = process.env.BRIDGE_GRAPHICS_MEETING_SUPERSAMPLE;
+    const meetingConfigured =
+      meetingConfiguredRaw === undefined || meetingConfiguredRaw.trim() === ""
+        ? 2
+        : Number(meetingConfiguredRaw);
+    if (!Number.isFinite(meetingConfigured) || meetingConfigured <= 1) {
+      return 1;
+    }
+    return clampRenderScale(meetingConfigured);
   }
   return width * height <= DEFAULT_SUPERSAMPLE_MAX_PIXELS ? 2 : 1;
 }
@@ -292,6 +337,68 @@ function normalizeCapturedRgbaFrame(
   );
 }
 
+type CapturableImageT = {
+  getSize: () => { width: number; height: number };
+  isEmpty: () => boolean;
+  toBitmap: () => Buffer;
+  resize?: (options: {
+    width: number;
+    height: number;
+    quality: "best";
+  }) => CapturableImageT;
+};
+
+function captureImageToRgba(
+  image: CapturableImageT,
+  width: number,
+  height: number,
+): { buffer: Buffer; resizePath: CaptureResizePathT } | null {
+  const imageSize = image.getSize();
+  if (imageSize.width === width && imageSize.height === height) {
+    const buffer = bgraToRgba(image.toBitmap());
+    return buffer.length === width * height * 4
+      ? { buffer, resizePath: "native" }
+      : null;
+  }
+
+  let fallbackImage = image;
+  let fallbackImageSize = imageSize;
+  if (typeof image.resize === "function") {
+    const resized = image.resize({ width, height, quality: "best" });
+    const resizedSize = resized.getSize();
+    if (resizedSize.width === width && resizedSize.height === height) {
+      const buffer = bgraToRgba(resized.toBitmap());
+      return buffer.length === width * height * 4
+        ? { buffer, resizePath: "native" }
+        : null;
+    }
+    fallbackImage = resized;
+    fallbackImageSize = resizedSize;
+  }
+
+  const sourceBuffer = bgraToRgba(fallbackImage.toBitmap());
+  if (
+    sourceBuffer.length !==
+    fallbackImageSize.width * fallbackImageSize.height * 4
+  ) {
+    return null;
+  }
+  try {
+    const buffer = normalizeCapturedRgbaFrame(
+      sourceBuffer,
+      fallbackImageSize.width,
+      fallbackImageSize.height,
+      width,
+      height,
+    );
+    return buffer.length === width * height * 4
+      ? { buffer, resizePath: "js" }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function logPerfIfNeeded(): void {
   const decision = resolvePerfLogging(LOG_PERF, isMeetingGraphicsBus());
   if (!decision.enabled) {
@@ -318,6 +425,10 @@ function logPerfIfNeeded(): void {
       latencyMsMax: Math.round(perfLatencyMaxMs),
       backpressureMs: backpressureTotalMs + backpressureActiveMs,
       ipcConnected: isIpcConnected,
+      ...buildPerfLogFields({
+        renderScale: singleWindowFormat?.renderScale ?? 1,
+        resizePath: perfLastResizePath,
+      }),
     },
     "[GraphicsRenderer] Perf",
   );
@@ -454,10 +565,6 @@ function resolveFrameBusCandidatesForLog(): string[] {
   }
 }
 
-function shouldForceRecreateFrameBus(): boolean {
-  return !MEETING_GRAPHICS_FRAMEBUS_NAMES.has(frameBusName);
-}
-
 const normalizeNativeFrameRate = (fps: number): number =>
   Math.min(240, Math.max(1, Math.round(fps)));
 
@@ -573,7 +680,10 @@ function ensureFrameBusWriter(
         ? (frameBusPixelFormat as 1 | 2 | 3)
         : 1,
       slotCount: frameBusSlotCount,
-      forceRecreate: shouldForceRecreateFrameBus(),
+      // Reuse by name is the normal recovery path: a replacement renderer must
+      // attach to the live region that helpers already map. Only incompatible
+      // stale regions are force-recreated in the self-heal below.
+      forceRecreate: false,
     };
     try {
       frameBusWriter = frameBusModule.createWriter(writerOptions);
@@ -598,28 +708,40 @@ function ensureFrameBusWriter(
         forceRecreate: true,
       });
     }
-    // Seed the fresh region. Hard zeros are only safe on an output that reads
-    // alpha: a writer swap also happens mid-show (geometry change, meeting
-    // reattach), and there a blank frame drops key/fill to key=0 and robs a
-    // downstream chroma keyer of its key colour, so the black frame gets keyed
-    // on air. Re-publish the retained frame whenever its geometry still fits,
-    // otherwise seed the session background - on a video output that is the
-    // key colour, so the very first frame is already keyable.
-    const initBuffer =
-      carriedFrame ?? buildIdleFrameBuffer(width, height, currentIdleFrameColor());
-    const initTimestampNs = BigInt(Date.now()) * 1_000_000n;
-    frameBusWriter.writeFrame(initBuffer, initTimestampNs);
-    // Retain the init frame too: if no paint ever fires (idle renderer), the
-    // heartbeat still keeps the seq advancing for readers.
-    noteFrameBusFrameWritten(initBuffer, initTimestampNs);
+    const existingSeq =
+      typeof frameBusWriter.header.seq === "bigint"
+        ? frameBusWriter.header.seq
+        : 0n;
+    const seedDecision = shouldSeedFreshWriter({
+      carriedFrame: carriedFrame !== null,
+      existingSeq,
+    });
+    if (seedDecision !== "existing_region") {
+      // Seed the fresh region. Hard zeros are only safe on an output that reads
+      // alpha: a writer swap also happens mid-show (geometry change, meeting
+      // reattach), and there a blank frame drops key/fill to key=0 and robs a
+      // downstream chroma keyer of its key colour, so the black frame gets keyed
+      // on air. Re-publish the retained frame whenever its geometry still fits,
+      // otherwise seed the session background - on a video output that is the
+      // key colour, so the very first frame is already keyable.
+      const initBuffer =
+        carriedFrame ?? buildIdleFrameBuffer(width, height, currentIdleFrameColor());
+      const initTimestampNs = BigInt(Date.now()) * 1_000_000n;
+      frameBusWriter.writeFrame(initBuffer, initTimestampNs);
+      // Retain the init frame too: if no paint ever fires (idle renderer), the
+      // heartbeat still keeps the seq advancing for readers.
+      noteFrameBusFrameWritten(initBuffer, initTimestampNs);
+    }
     invalidatePaintDedup();
     logger.info(
       {
         name: frameBusWriter.name,
         size: frameBusWriter.size,
         header: frameBusWriter.header,
-        seededFrom: carriedFrame ? "retained_frame" : "idle_color",
-        ...(carriedFrame ? {} : { idleColor: currentIdleFrameColor() }),
+        seededFrom: seedDecision,
+        ...(seedDecision === "idle_color"
+          ? { idleColor: currentIdleFrameColor() }
+          : {}),
       },
       "[GraphicsRenderer] FrameBus writer initialized",
     );
@@ -637,7 +759,6 @@ function ensureFrameBusWriter(
         fps,
         frameBusPixelFormat,
         frameBusSlotCount,
-        frameBusForceRecreate: shouldForceRecreateFrameBus(),
         candidates: resolveFrameBusCandidatesForLog(),
       },
       "[GraphicsRenderer] FrameBus init failed details",
@@ -657,6 +778,15 @@ function applyRendererConfig(message: unknown): void {
   }
 
   const config = parsed.data;
+  const previousConfig = rendererConfig;
+  if (
+    previousConfig &&
+    (previousConfig.width !== config.width ||
+      previousConfig.height !== config.height ||
+      previousConfig.fps !== config.fps)
+  ) {
+    supersampleClampFallback = false;
+  }
   rendererConfigGeneration += 1;
   const configGeneration = rendererConfigGeneration;
   clearFrameBusReadyRetry();
@@ -886,16 +1016,17 @@ function ensureWindowContentSize(
   window: BrowserWindow,
   width: number,
   height: number,
-): void {
+  logClampedError = true,
+): boolean {
   let initialWidth: number;
   let initialHeight: number;
   try {
     [initialWidth, initialHeight] = window.getContentSize();
   } catch {
-    return;
+    return true;
   }
   if (initialWidth === width && initialHeight === height) {
-    return;
+    return true;
   }
 
   try {
@@ -926,15 +1057,22 @@ function ensureWindowContentSize(
       details,
       "[GraphicsRenderer] Offscreen viewport recovered after work-area clamp",
     );
-    return;
+    return true;
   }
-  logger.error(
-    details,
-    "[GraphicsRenderer] Offscreen viewport still clamped; graphics are cropped and resampled",
-  );
+  if (logClampedError) {
+    logger.error(
+      details,
+      "[GraphicsRenderer] Offscreen viewport still clamped; graphics are cropped and resampled",
+    );
+  }
+  return false;
 }
 
 async function destroySingleWindow(): Promise<void> {
+  if (singleWindowUnresponsiveTimer) {
+    clearTimeout(singleWindowUnresponsiveTimer);
+    singleWindowUnresponsiveTimer = null;
+  }
   if (!singleWindow) {
     singleWindowReady = null;
     singleWindowFormat = null;
@@ -957,6 +1095,66 @@ async function destroySingleWindow(): Promise<void> {
     }
   } catch {
     // Ignore teardown errors; the renderer process is ephemeral.
+  }
+}
+
+async function recoverSingleWindow(reason: string): Promise<void> {
+  if (singleWindowRecoveryInFlight) {
+    logger.warn(
+      { reason },
+      "[GraphicsRenderer] Offscreen renderer recovery already in flight",
+    );
+    return;
+  }
+
+  const now = Date.now();
+  const repeated =
+    singleWindowLastFailureAtMs > 0 &&
+    now - singleWindowLastFailureAtMs <= RENDERER_WINDOW_FAILURE_WINDOW_MS;
+  singleWindowLastFailureAtMs = now;
+
+  if (repeated) {
+    logger.error(
+      { reason },
+      "[GraphicsRenderer] Repeated offscreen renderer failures; exiting",
+    );
+    process.exit(3);
+    return;
+  }
+
+  if (!rendererConfig) {
+    logger.warn(
+      { reason },
+      "[GraphicsRenderer] Offscreen renderer recovery skipped without config",
+    );
+    return;
+  }
+
+  singleWindowRecoveryInFlight = true;
+  logger.warn(
+    { reason },
+    "[GraphicsRenderer] Recovering offscreen renderer window",
+  );
+  stopFrameBusHeartbeat();
+
+  try {
+    await destroySingleWindow();
+    await ensureSingleWindow(
+      rendererConfig.width,
+      rendererConfig.height,
+      rendererConfig.fps,
+      rendererConfig.backgroundMode,
+    );
+  } catch (error) {
+    logger.error(
+      {
+        reason,
+        message: error instanceof Error ? error.message : String(error),
+      },
+      "[GraphicsRenderer] Offscreen renderer recovery failed",
+    );
+  } finally {
+    singleWindowRecoveryInFlight = false;
   }
 }
 
@@ -999,7 +1197,12 @@ async function ensureSingleWindow(
   fps: number,
   backgroundMode: string,
 ): Promise<BrowserWindow> {
-  const renderScale = resolveRenderScale(width, height);
+  const renderScale = resolveRenderScale(
+    width,
+    height,
+    isMeetingGraphicsBus(),
+    supersampleClampFallback,
+  );
   const renderWidth = width * renderScale;
   const renderHeight = height * renderScale;
   if (singleWindow && singleWindowFormat) {
@@ -1048,7 +1251,21 @@ async function ensureSingleWindow(
     });
 
     singleWindowFormat = { width, height, fps, renderScale };
-    ensureWindowContentSize(singleWindow, renderWidth, renderHeight);
+    const contentSizeFits = ensureWindowContentSize(
+      singleWindow,
+      renderWidth,
+      renderHeight,
+      renderScale === 1,
+    );
+    if (!contentSizeFits && renderScale > 1 && !supersampleClampFallback) {
+      supersampleClampFallback = true;
+      logger.warn(
+        { width, height, fps, renderScale },
+        "[GraphicsRenderer] Supersampling disabled after work-area clamp",
+      );
+      await destroySingleWindow();
+      return ensureSingleWindow(width, height, fps, backgroundMode);
+    }
 
     singleWindow.webContents.setFrameRate(normalizeNativeFrameRate(fps));
 
@@ -1090,25 +1307,14 @@ async function ensureSingleWindow(
         return;
       }
 
-      const sourceBuffer = bgraToRgba(image.toBitmap());
-      if (sourceBuffer.length !== imageSize.width * imageSize.height * 4) {
-        logger.warn("[GraphicsRenderer] Source frame buffer length mismatch (single)");
-        return;
-      }
-
-      let buffer: Buffer;
-      try {
-        buffer = normalizeCapturedRgbaFrame(
-          sourceBuffer,
-          imageSize.width,
-          imageSize.height,
-          width,
-          height,
-        );
-      } catch (error) {
+      const capturedFrame = captureImageToRgba(
+        image as CapturableImageT,
+        width,
+        height,
+      );
+      if (!capturedFrame) {
         logger.warn(
           {
-            message: error instanceof Error ? error.message : String(error),
             imageWidth: imageSize.width,
             imageHeight: imageSize.height,
             width,
@@ -1118,6 +1324,8 @@ async function ensureSingleWindow(
         );
         return;
       }
+      const { buffer, resizePath } = capturedFrame;
+      perfLastResizePath = resizePath;
       if (buffer.length !== width * height * 4) {
         logger.warn("[GraphicsRenderer] Frame buffer length mismatch after downsample (single)");
         return;
@@ -1130,22 +1338,21 @@ async function ensureSingleWindow(
         return;
       }
 
-      // Skip FrameBus writes for pixel-identical frames (static content),
-      // with a 1s heartbeat so readers still see a live stream.
-      let checksum = buffer.length >>> 0;
-      for (let i = 0; i < buffer.length; i += 4093) {
-        checksum = ((checksum * 31) ^ (buffer[i] ?? 0)) >>> 0;
-      }
       const writeNowMs = Date.now();
-      if (
-        checksum === lastPaintChecksum &&
-        writeNowMs - lastPaintChecksumAtMs < 1000
-      ) {
+      // Skip FrameBus writes only for pixel-identical frames (static content),
+      // with a 1s heartbeat so readers still see a live stream.
+      if (shouldSkipIdenticalPaint({
+        buffer,
+        lastWritten: lastPaintBuffer,
+        nowMs: writeNowMs,
+        lastWrittenAtMs: lastPaintBufferAtMs,
+        windowMs: 1000,
+      })) {
         logPerfIfNeeded();
         return;
       }
-      lastPaintChecksum = checksum;
-      lastPaintChecksumAtMs = writeNowMs;
+      lastPaintBuffer = buffer;
+      lastPaintBufferAtMs = writeNowMs;
 
       try {
         const frameTimestampNs = BigInt(writeNowMs) * 1_000_000n;
@@ -1167,6 +1374,7 @@ async function ensureSingleWindow(
               renderWidth: imageSize.width,
               renderHeight: imageSize.height,
               renderScale,
+              resizePath,
               fps,
               layerIds: Array.from(singleLayerSnapshots.keys()),
             },
@@ -1187,6 +1395,27 @@ async function ensureSingleWindow(
         );
       }
       logPerfIfNeeded();
+    });
+
+    singleWindow.webContents.on("render-process-gone", (_event, details) => {
+      void recoverSingleWindow(`render_process_gone:${details.reason}`);
+    });
+    singleWindow.on("unresponsive", () => {
+      if (singleWindowUnresponsiveTimer) {
+        clearTimeout(singleWindowUnresponsiveTimer);
+      }
+      singleWindowUnresponsiveTimer = setTimeout(() => {
+        singleWindowUnresponsiveTimer = null;
+        void recoverSingleWindow("unresponsive");
+      }, RENDERER_WINDOW_UNRESPONSIVE_RECOVERY_MS);
+      singleWindowUnresponsiveTimer.unref?.();
+    });
+    singleWindow.on("responsive", () => {
+      if (!singleWindowUnresponsiveTimer) {
+        return;
+      }
+      clearTimeout(singleWindowUnresponsiveTimer);
+      singleWindowUnresponsiveTimer = null;
     });
 
     singleWindowReady = new Promise((resolve) => {
@@ -1369,35 +1598,15 @@ async function writeCapturedWindowFrame(reason: string): Promise<boolean> {
       return false;
     }
 
-    const sourceBuffer = bgraToRgba(image.toBitmap());
-    if (sourceBuffer.length !== imageSize.width * imageSize.height * 4) {
+    const capturedFrame = captureImageToRgba(
+      image as CapturableImageT,
+      width,
+      height,
+    );
+    if (!capturedFrame) {
       logger.warn(
         {
           reason,
-          bufferLength: sourceBuffer.length,
-          expectedLength: imageSize.width * imageSize.height * 4,
-          imageWidth: imageSize.width,
-          imageHeight: imageSize.height,
-        },
-        "[GraphicsRenderer] Captured source frame buffer length mismatch",
-      );
-      return false;
-    }
-
-    let buffer: Buffer;
-    try {
-      buffer = normalizeCapturedRgbaFrame(
-        sourceBuffer,
-        imageSize.width,
-        imageSize.height,
-        width,
-        height,
-      );
-    } catch (error) {
-      logger.warn(
-        {
-          reason,
-          message: error instanceof Error ? error.message : String(error),
           imageWidth: imageSize.width,
           imageHeight: imageSize.height,
           width,
@@ -1407,6 +1616,8 @@ async function writeCapturedWindowFrame(reason: string): Promise<boolean> {
       );
       return false;
     }
+    const { buffer, resizePath } = capturedFrame;
+    perfLastResizePath = resizePath;
 
     if (buffer.length !== width * height * 4) {
       logger.warn(
@@ -1451,6 +1662,8 @@ async function writeCapturedWindowFrame(reason: string): Promise<boolean> {
         fps,
         imageWidth: imageSize.width,
         imageHeight: imageSize.height,
+        renderScale: singleWindowFormat?.renderScale ?? 1,
+        resizePath,
         nonTransparentPixels,
         maxAlpha,
         layerIds: Array.from(singleLayerSnapshots.keys()),

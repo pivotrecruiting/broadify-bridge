@@ -1,4 +1,4 @@
-import { resolvePerfLogging } from "./perf-logging.js";
+import { buildPerfLogFields, resolvePerfLogging } from "./perf-logging.js";
 
 describe("resolvePerfLogging", () => {
   it("always reports for meeting planes, at the calm 5s cadence", () => {
@@ -23,5 +23,12 @@ describe("resolvePerfLogging", () => {
 
   it("stays silent for studio without the env flag", () => {
     expect(resolvePerfLogging(false, false).enabled).toBe(false);
+  });
+
+  it("carries render scale and resize path into perf logs", () => {
+    expect(buildPerfLogFields({ renderScale: 2, resizePath: "native" })).toEqual({
+      renderScale: 2,
+      resizePath: "native",
+    });
   });
 });

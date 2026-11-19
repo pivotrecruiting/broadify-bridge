@@ -35,6 +35,13 @@ const VOLATILE_COUNTER_KEYS: ReadonlySet<string> = new Set([
   "inference_ms",
   "elapsed_seconds",
   "video_frames",
+  // Recorder audio diagnostics (Windows): per-sample counters, same nature
+  // as video_frames.
+  "audio_samples_written",
+  "audio_samples_dropped",
+  "updated_at",
+  // Screen capture frame ticks are telemetry, not a state transition.
+  "captured_frames",
   // Dirty flags flip true->false->true while the frame pipeline consumes them,
   // so they add projection noise. program_revision (monotonic) is the stable
   // on-change discriminator for program mutations instead.

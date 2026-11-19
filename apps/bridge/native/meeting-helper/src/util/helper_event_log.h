@@ -1,25 +1,14 @@
 #pragma once
 
-#include <string>
+// Implementation lives in helper-common (shared with the PGM helper); the
+// meeting namespace re-exports it so call sites stay unchanged.
+#include "helper_common/helper_event_log.h"
 
 namespace broadify::meeting {
 
-// Sets the sidecar file that mirrors every helper JSON event (empty disables
-// mirroring). The file is truncated on set - one file per helper run.
-void setHelperEventLogPath(const std::string &path);
-
-// Emits one JSON event line to stdout AND appends it to the sidecar file.
-// On macOS the bridge launches the helper through /usr/bin/open, which
-// swallows stdio - the sidecar file is the only channel that survives, and
-// the bridge dumps its tail into the process log when the helper dies.
-void emitHelperEvent(const std::string &jsonLine);
-
-// Records why the helper is about to exit deliberately (e.g.
-// "control_shutdown"); read back by the main teardown for the final
-// shutdown event. Last writer wins.
-void noteHelperExitReason(const std::string &reason);
-
-// The recorded exit reason, or an empty string when none was noted.
-std::string helperExitReason();
+using broadify::helper::emitHelperEvent;
+using broadify::helper::helperExitReason;
+using broadify::helper::noteHelperExitReason;
+using broadify::helper::setHelperEventLogPath;
 
 }  // namespace broadify::meeting

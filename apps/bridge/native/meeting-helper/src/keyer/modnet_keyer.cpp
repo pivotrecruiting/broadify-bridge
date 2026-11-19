@@ -1,9 +1,12 @@
 #include "keyer/modnet_keyer.h"
 
 #include "compose/d3d_adapter_select.h"
+#include "keyer/dml_device_input.h"
 #include "keyer/matting_common.h"
 #include "keyer/model_manifest.h"
 #include "keyer/ort_session_options_policy.h"
+#include "util/helper_event_log.h"
+#include "util/path_utf8.h"
 #include "util/sha256.h"
 
 #include <algorithm>
@@ -50,11 +53,6 @@ constexpr uint32_t kMaxCpuInferenceThreads = 4;
 double elapsedMs(std::chrono::steady_clock::time_point start,
                  std::chrono::steady_clock::time_point end) {
   return std::chrono::duration<double, std::milli>(end - start).count();
-}
-
-bool fileExists(const std::string &path) {
-  std::ifstream file(path, std::ios::binary);
-  return file.good();
 }
 
 uint32_t dimensionOrFallback(int64_t value) {
@@ -144,36 +142,57 @@ bool selfTestForcesCpuProvider() {
   }();
   return forced;
 }
+
+// Opt-in to the half-precision MODNet path (Windows/DirectML only). Off by
+// default: the shipped model is fp32 and flipping this only has an effect when a
+// converted "modnet-fp16" model is also present in the manifest — otherwise the
+// keyer transparently stays on fp32. Read once. See scripts/convert-modnet-fp16.py.
+// macOS keys via CoreML (ANE handles precision internally), so this is unused
+// there and left undefined to avoid an unused-function diagnostic.
+#if !defined(__APPLE__)
+bool keyerFp16Requested() {
+  static const bool requested = []() {
+    const char *value = std::getenv("BROADIFY_MEETING_KEYER_FP16");
+    return value != nullptr && value[0] == '1';
+  }();
+  return requested;
+}
+
+// Opt-in to ORT IoBinding for the DirectML keyer (Windows only, default off).
+// With CPU-sourced input this is a modest win (binding reuse only); it exists as
+// the integration seam for a future zero-copy GPU-resident input tensor, and as
+// an A/B toggle for the teststrecke. Fail-safe: any error disables it for the
+// process and the keyer reverts to the plain Run path. Read once.
+bool keyerIoBindingRequested() {
+  static const bool requested = []() {
+    const char *value = std::getenv("BROADIFY_MEETING_KEYER_IO_BINDING");
+    return value != nullptr && value[0] == '1';
+  }();
+  return requested;
+}
+
+// Opt-in to the zero-copy device-input path (Windows/DirectML only, default
+// off): a D3D12 compute shader builds the MODNet input tensor on the GPU and
+// binds it as a DML device input via IoBinding, replacing the per-frame CPU
+// tensor build + ORT's internal CPU->GPU input copy. Only active on the
+// dml1_selected_adapter path (the keyer owns device + queue there) and gated
+// by a one-time tensor parity check against the CPU reference. Fail-safe:
+// any error or parity miss disables it for the process and the keyer runs
+// the unchanged CPU path. Read once.
+bool keyerZeroCopyRequested() {
+  static const bool requested = []() {
+    const char *value = std::getenv("BROADIFY_MEETING_KEYER_ZEROCOPY");
+    return value != nullptr && value[0] == '1';
+  }();
+  return requested;
+}
+#endif
 #endif
 
 #if BROADIFY_ENABLE_MODNET && defined(_WIN32)
 using Microsoft::WRL::ComPtr;
 using DmlCreateDeviceFn = HRESULT(WINAPI *)(ID3D12Device *, DML_CREATE_DEVICE_FLAGS,
                                             REFIID, void **);
-
-std::wstring utf8ToWidePath(const std::string &path) {
-  if (path.empty()) {
-    return std::wstring();
-  }
-
-  const int requiredLength =
-      MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, nullptr, 0);
-  if (requiredLength <= 0) {
-    return std::wstring();
-  }
-
-  std::wstring widePath(static_cast<size_t>(requiredLength), L'\0');
-  const int convertedLength =
-      MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, widePath.data(), requiredLength);
-  if (convertedLength <= 0) {
-    return std::wstring();
-  }
-
-  if (!widePath.empty() && widePath.back() == L'\0') {
-    widePath.pop_back();
-  }
-  return widePath;
-}
 
 DmlCreateDeviceFn resolveDmlCreateDevice() {
   static DmlCreateDeviceFn fn = []() -> DmlCreateDeviceFn {
@@ -187,9 +206,14 @@ DmlCreateDeviceFn resolveDmlCreateDevice() {
   return fn;
 }
 
+// On success, deviceOut/queueOut receive the D3D12 device and command queue
+// handed to the DML EP - the zero-copy input stage submits its preprocessing
+// on that exact queue so it is ordered before the session's DML work.
 OrtStatus *appendDirectMlOnSelectedAdapter(Ort::SessionOptions &sessionOptions,
                                            const OrtDmlApi *dmlApi,
-                                           std::string *adapterStatus) {
+                                           std::string *adapterStatus,
+                                           ComPtr<ID3D12Device> *deviceOut,
+                                           ComPtr<ID3D12CommandQueue> *queueOut) {
   const D3DAdapterInfo &adapter = directMlD3DAdapter();
   if (!adapter.available || dmlApi == nullptr) {
     return nullptr;
@@ -229,6 +253,14 @@ OrtStatus *appendDirectMlOnSelectedAdapter(Ort::SessionOptions &sessionOptions,
       sessionOptions, dmlDevice.Get(), queue.Get());
   if (status == nullptr && adapterStatus != nullptr) {
     *adapterStatus = d3dAdapterStatusString(adapter);
+  }
+  if (status == nullptr) {
+    if (deviceOut != nullptr) {
+      *deviceOut = device;
+    }
+    if (queueOut != nullptr) {
+      *queueOut = queue;
+    }
   }
   return status;
 }
@@ -336,14 +368,95 @@ class ModnetKeyer::Impl {
 #endif
     status_.metrics.sessionInputSize = inputWidth_;
     const auto tensorStart = std::chrono::steady_clock::now();
+    // One input geometry per process (Fill on Windows unless
+    // BROADIFY_MEETING_KEYER_LETTERBOX=1, Letterbox elsewhere). Every tensor
+    // build below - CPU, fp16, zero-copy and its CPU parity reference - uses
+    // it, and `letterbox` holds the mapping that built the tensor (letterbox
+    // or fill) for the mask readback.
+    const ModnetInputGeometry inputGeometry =
+        modnetInputGeometryForThisPlatform();
     ModnetLetterboxMapping letterbox;
-    buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_,
-                           &letterbox);
-    const auto tensorEnd = std::chrono::steady_clock::now();
     std::array<int64_t, 4> inputShape = {1, 3, static_cast<int64_t>(inputHeight_), static_cast<int64_t>(inputWidth_)};
     Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-        memoryInfo, tensor_.data(), tensor_.size(), inputShape.data(), inputShape.size());
+    // Half-precision path (opt-in, Windows/DirectML): feed the model fp16 input,
+    // converting the fp32 tensor into a reused member buffer. modelInputIsFp16_
+    // is derived from the loaded model's declared input type, so an fp32 model
+    // always takes the fp32 branch — the flag only selects which model loads.
+    Ort::Value inputTensor{nullptr};
+    const auto createCpuInputTensor = [&]() {
+      if (modelInputIsFp16_) {
+        tensorFp16_.resize(tensor_.size());
+        for (size_t i = 0, n = tensor_.size(); i < n; ++i) {
+          tensorFp16_[i] = Ort::Float16_t(tensor_[i]);
+        }
+        inputTensor = Ort::Value::CreateTensor<Ort::Float16_t>(
+            memoryInfo, tensorFp16_.data(), tensorFp16_.size(), inputShape.data(),
+            inputShape.size());
+      } else {
+        inputTensor = Ort::Value::CreateTensor<float>(
+            memoryInfo, tensor_.data(), tensor_.size(), inputShape.data(),
+            inputShape.size());
+      }
+    };
+    // Zero-copy device input (opt-in): build the tensor on the GPU and skip
+    // the CPU build + upload entirely. Any failure falls through to the
+    // unchanged CPU path below within the same frame.
+    bool deviceInput = false;
+#if defined(_WIN32)
+    DmlDeviceInputStage *zeroCopyStage = nullptr;
+    if (zeroCopyEnabled_ && ioBindingActive_) {
+      auto zeroCopyIt = tierSessions_.find(inputWidth_);
+      if (zeroCopyIt != tierSessions_.end()) {
+        zeroCopyStage = zeroCopyIt->second.zeroCopy.get();
+      }
+    }
+    if (zeroCopyStage != nullptr) {
+      letterbox = modnetInputMapping(input.width, input.height, inputWidth_,
+                                     inputHeight_, inputGeometry);
+      deviceInput = zeroCopyStage->buildDeviceTensor(input, letterbox);
+      if (!deviceInput) {
+        // Process-wide fail-safe: never retry a broken GPU stage per frame.
+        zeroCopyEnabled_ = false;
+        std::cout << "{\"type\":\"meeting_keyer\",\"event\":"
+                     "\"zerocopy_disabled\",\"reason\":\"build_failed\"}"
+                  << std::endl;
+      } else if (!zeroCopyStage->parityValidated()) {
+        // One-time parity gate per tier: the GPU tensor must match the CPU
+        // reference elementwise before any mask produced from it is trusted.
+        buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_,
+                               nullptr, inputGeometry);
+        std::vector<float> gpuTensor;
+        double maxAbsDiff = -1.0;
+        bool parityOk = zeroCopyStage->readbackTensorFp32(gpuTensor) &&
+                        gpuTensor.size() == tensor_.size();
+        if (parityOk) {
+          for (size_t i = 0, n = tensor_.size(); i < n; ++i) {
+            maxAbsDiff = std::max(maxAbsDiff,
+                                  static_cast<double>(std::fabs(
+                                      gpuTensor[i] - tensor_[i])));
+          }
+          parityOk = maxAbsDiff <= 1e-2;
+        }
+        std::cout << "{\"type\":\"meeting_keyer\",\"event\":\"zerocopy_parity\""
+                  << ",\"input_size\":" << inputWidth_
+                  << ",\"max_abs_diff\":" << maxAbsDiff
+                  << ",\"ok\":" << (parityOk ? "true" : "false") << "}"
+                  << std::endl;
+        if (parityOk) {
+          zeroCopyStage->setParityValidated();
+        } else {
+          zeroCopyEnabled_ = false;
+          deviceInput = false;
+        }
+      }
+    }
+#endif
+    if (!deviceInput) {
+      buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_,
+                             &letterbox, inputGeometry);
+      createCpuInputTensor();
+    }
+    const auto tensorEnd = std::chrono::steady_clock::now();
 
     try {
       const auto runStart = std::chrono::steady_clock::now();
@@ -356,22 +469,77 @@ class ModnetKeyer::Impl {
         result.status = status_;
         return result;
       }
-      auto outputs = session->Run(
-          Ort::RunOptions{nullptr},
-          inputNames_.data(),
-          &inputTensor,
-          1,
-          outputNames_.data(),
-          1);
+      std::vector<Ort::Value> outputs;
+#if BROADIFY_ENABLE_MODNET && !defined(__APPLE__)
+      if (ioBindingActive_) {
+        try {
+          Ort::IoBinding binding(*session);
+#if defined(_WIN32)
+          if (deviceInput) {
+            binding.BindInput(inputNames_[0], zeroCopyStage->deviceTensor());
+          } else {
+            binding.BindInput(inputNames_[0], inputTensor);
+          }
+#else
+          binding.BindInput(inputNames_[0], inputTensor);
+#endif
+          const Ort::MemoryInfo cpuOutput = Ort::MemoryInfo::CreateCpu(
+              OrtDeviceAllocator, OrtMemTypeCPU);
+          binding.BindOutput(outputNames_[0], cpuOutput);
+          session->Run(Ort::RunOptions{nullptr}, binding);
+          outputs = binding.GetOutputValues();
+        } catch (...) {
+          // Disable IoBinding for the rest of the process and fall back to the
+          // plain Run below; keying must never fail because of an A/B toggle.
+          ioBindingActive_ = false;
+#if defined(_WIN32)
+          zeroCopyEnabled_ = false;
+#endif
+          outputs.clear();
+        }
+      }
+#endif
+      if (outputs.empty()) {
+        if (deviceInput) {
+          // The zero-copy binding failed after the GPU tensor build: the
+          // plain Run needs a CPU input tensor, which was skipped above.
+          buildModnetInputTensor(input, inputWidth_, inputHeight_, tensor_,
+                                 &letterbox, inputGeometry);
+          createCpuInputTensor();
+          deviceInput = false;
+        }
+        outputs = session->Run(
+            Ort::RunOptions{nullptr},
+            inputNames_.data(),
+            &inputTensor,
+            1,
+            outputNames_.data(),
+            1);
+      }
       const auto runEnd = std::chrono::steady_clock::now();
       if (outputs.empty() || !outputs[0].IsTensor()) {
         setFallback("invalid_output");
         result.status = status_;
         return result;
       }
-      const float *mask = outputs[0].GetTensorData<float>();
       const auto outputInfo = outputs[0].GetTensorTypeAndShapeInfo();
       const std::vector<int64_t> outputShape = outputInfo.GetShape();
+      // Read the mask as whatever the model emits. An fp16 model returns fp16;
+      // convert it into a reused fp32 buffer so the downstream mask copy is
+      // format-agnostic. fp32 models keep the original zero-copy data pointer.
+      const float *mask = nullptr;
+      if (outputInfo.GetElementType() ==
+          ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
+        const Ort::Float16_t *maskFp16 = outputs[0].GetTensorData<Ort::Float16_t>();
+        const size_t count = outputInfo.GetElementCount();
+        maskFp32_.resize(count);
+        for (size_t i = 0; i < count; ++i) {
+          maskFp32_[i] = maskFp16[i].ToFloat();
+        }
+        mask = maskFp32_.data();
+      } else {
+        mask = outputs[0].GetTensorData<float>();
+      }
       uint32_t maskHeight = inputHeight_;
       uint32_t maskWidth = inputWidth_;
       if (outputShape.size() >= 2u) {
@@ -448,6 +616,11 @@ class ModnetKeyer::Impl {
     std::unique_ptr<Ort::Session> session;
 #endif
     double probeMs = 0.0;
+#if BROADIFY_ENABLE_MODNET && defined(_WIN32)
+    // Zero-copy device-input stage for this tier (nullptr when the flag is
+    // off, the session is not on the dml1 path, or stage creation failed).
+    std::unique_ptr<DmlDeviceInputStage> zeroCopy;
+#endif
   };
 
   bool ensureLoaded() {
@@ -466,14 +639,40 @@ class ModnetKeyer::Impl {
     lastLoadAttemptAt_ = now;
     loadAttempted_ = true;
 
-    const ModelManifestEntry entry = findModelManifestEntry(options_.modelsDir, "modnet");
+    ModelManifestEntry entry;
+#if BROADIFY_ENABLE_MODNET && !defined(__APPLE__)
+    // Prefer the converted half-precision model when the operator opts in AND a
+    // deployable "modnet-fp16" model is actually present; otherwise transparently
+    // fall through to the fp32 model below.
+    if (keyerFp16Requested()) {
+      const ModelManifestEntry fp16 =
+          findModelManifestEntry(options_.modelsDir, "modnet-fp16");
+      // A manifest entry alone (declared but not yet built/hashed) must NOT
+      // divert the keyer to a missing file — that would drop it to passthrough.
+      // Require a real pinned hash and the file actually on disk; else stay fp32.
+      const bool fp16Usable =
+          !fp16.file.empty() && !fp16.sha256.empty() &&
+          fp16.sha256 != "release-artifact-required" &&
+          fileExistsUtf8(joinModelPath(options_.modelsDir, fp16.file));
+      if (fp16Usable) {
+        entry = fp16;
+      } else {
+        std::cout << "{\"type\":\"meeting_keyer\",\"event\":"
+                     "\"fp16_requested_no_model\",\"fallback\":\"fp32\"}"
+                  << std::endl;
+      }
+    }
+#endif
+    if (entry.file.empty()) {
+      entry = findModelManifestEntry(options_.modelsDir, "modnet");
+    }
     if (entry.file.empty()) {
       setFallback("manifest_missing");
       return false;
     }
     const std::string modelPath = joinModelPath(options_.modelsDir, entry.file);
     status_.modelPath = modelPath;
-    if (!fileExists(modelPath)) {
+    if (!fileExistsUtf8(modelPath)) {
       setFallback("model_missing");
       return false;
     }
@@ -483,7 +682,7 @@ class ModnetKeyer::Impl {
     }
     const std::string actualHash = sha256FileHex(modelPath);
     status_.modelHashOk = actualHash == entry.sha256;
-    if (!status_.modelHashOk) {
+    if (!*status_.modelHashOk) {
       setFallback("model_hash_mismatch");
       return false;
     }
@@ -524,18 +723,36 @@ class ModnetKeyer::Impl {
           outputName_ = outputNameAllocated.get();
           inputNames_[0] = inputName_.c_str();
           outputNames_[0] = outputName_.c_str();
+          // Derived once from the model itself: an fp16-converted model reports a
+          // FLOAT16 input type here, which drives the fp16 I/O path in apply().
+          modelInputIsFp16_ = builtSession->GetInputTypeInfo(0)
+                                  .GetTensorTypeAndShapeInfo()
+                                  .GetElementType() ==
+                              ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
         }
         double probeMs = 0.0;
         try {
-          std::vector<float> warmupTensor(
-              static_cast<size_t>(3u) * size * size, 0.0f);
+          const size_t warmupCount = static_cast<size_t>(3u) * size * size;
           std::array<int64_t, 4> warmupShape = {
               1, 3, static_cast<int64_t>(size), static_cast<int64_t>(size)};
           Ort::MemoryInfo memoryInfo =
               Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-          Ort::Value warmupInput = Ort::Value::CreateTensor<float>(
-              memoryInfo, warmupTensor.data(), warmupTensor.size(),
-              warmupShape.data(), warmupShape.size());
+          // Warm the DML kernels with an input of the model's own type so the
+          // first real inference does not pay the shape/type compile cost.
+          std::vector<float> warmupTensor;
+          std::vector<Ort::Float16_t> warmupTensorFp16;
+          Ort::Value warmupInput{nullptr};
+          if (modelInputIsFp16_) {
+            warmupTensorFp16.assign(warmupCount, Ort::Float16_t(0.0f));
+            warmupInput = Ort::Value::CreateTensor<Ort::Float16_t>(
+                memoryInfo, warmupTensorFp16.data(), warmupTensorFp16.size(),
+                warmupShape.data(), warmupShape.size());
+          } else {
+            warmupTensor.assign(warmupCount, 0.0f);
+            warmupInput = Ort::Value::CreateTensor<float>(
+                memoryInfo, warmupTensor.data(), warmupTensor.size(),
+                warmupShape.data(), warmupShape.size());
+          }
           std::array<double, 3> warmupRunMs = {0.0, 0.0, 0.0};
           for (size_t warmupRun = 0; warmupRun < warmupRunMs.size(); ++warmupRun) {
             const auto runStart = std::chrono::steady_clock::now();
@@ -550,6 +767,31 @@ class ModnetKeyer::Impl {
           probeMs = 0.0;
         }
         tierSessions_[size] = TierSession{std::move(builtSession), probeMs};
+        // Zero-copy stage (opt-in): only on the dml1 path, where the device
+        // and queue captured above are the ones the DML EP executes on.
+        if (keyerZeroCopyRequested() &&
+            status_.provider == std::string("directml") &&
+            status_.dmlPath == std::string("dml1_selected_adapter") &&
+            pendingDml1Device_ && pendingDml1Queue_ && dmlApi_ != nullptr) {
+          std::string zeroCopyError;
+          tierSessions_[size].zeroCopy = DmlDeviceInputStage::create(
+              pendingDml1Device_.Get(), pendingDml1Queue_.Get(), dmlApi_, size,
+              modelInputIsFp16_, &zeroCopyError);
+          if (tierSessions_[size].zeroCopy != nullptr) {
+            std::cout << "{\"type\":\"meeting_keyer\",\"event\":"
+                         "\"zerocopy_stage_ready\",\"input_size\":" << size
+                      << ",\"fp16\":" << (modelInputIsFp16_ ? "true" : "false")
+                      << "}" << std::endl;
+          } else {
+            std::cout << "{\"type\":\"meeting_keyer\",\"event\":"
+                         "\"zerocopy_stage_unavailable\",\"input_size\":" << size
+                      << ",\"reason\":\"" << zeroCopyError << "\"}" << std::endl;
+          }
+        } else if (keyerZeroCopyRequested()) {
+          std::cout << "{\"type\":\"meeting_keyer\",\"event\":"
+                       "\"zerocopy_stage_unavailable\",\"input_size\":" << size
+                    << ",\"reason\":\"dml1_path_required\"}" << std::endl;
+        }
         if (size == kFallbackInputSize) {
           status_.probeInferenceMs512 = probeMs;
         } else if (size == kBalancedInputSize) {
@@ -573,24 +815,53 @@ class ModnetKeyer::Impl {
       inputWidth_ = inputHeight_ = initialIt->first;
       status_.probeInferenceMs = initialIt->second.probeMs;
       sessionRunSize_ = initialIt->first;
-      const auto inputInfo = activeSession_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
+      // Only bind on the GPU provider: IoBinding buys nothing over a plain CPU
+      // Run when the CPU EP is active. Zero-copy rides on the IoBinding seam,
+      // so requesting it turns binding on as well.
+      zeroCopyEnabled_ = false;
+      for (const auto &tier : tierSessions_) {
+        if (tier.second.zeroCopy != nullptr) {
+          zeroCopyEnabled_ = true;
+          break;
+        }
+      }
+      ioBindingActive_ = (keyerIoBindingRequested() || zeroCopyEnabled_) &&
+                         status_.provider == std::string("directml");
+      // MODNet's ONNX graph is dynamic, but createSession() pins every tier to a
+      // concrete height/width through the DirectML free-dimension override, so
+      // GetInputTypeInfo() reports a *static* shape here regardless. Deriving
+      // dynamism from that reported shape (as we used to) silently latched the
+      // keyer to the fallback tier once the override landed, defeating the
+      // governor's step-down to 320/256. The reliable signal is that we built
+      // and warmed working sessions at more than one resolution — only a dynamic
+      // model lets the per-tier override produce distinct, runnable shapes. This
+      // re-enables apply()'s per-mode resolution switch.
+      modelDynamic_ = tierSessions_.size() > 1u;
+      // Once per process: the MODNet input geometry every tier session is fed.
+      // The events-log copy (emitHelperEvent also writes stdout) is what a
+      // user can read in meeting-helper-events.log.
+      static const bool inputGeometryLogged = []() {
+        const char *geometry = modnetInputGeometryForThisPlatform() ==
+                                       ModnetInputGeometry::Fill
+                                   ? "fill"
+                                   : "letterbox";
+        std::cout << "{\"type\":\"meeting_keyer\",\"event\":\"input_geometry\""
+                  << ",\"geometry\":\"" << geometry << "\"}" << std::endl;
+        emitHelperEvent(std::string("{\"type\":\"keyer_input_geometry\",\"geometry\":\"") +
+                        geometry + "\",\"backend\":\"modnet\"}");
+        return true;
+      }();
+      (void)inputGeometryLogged;
 #endif
+#if defined(__APPLE__)
+      // macOS keeps the size frozen into the CoreML free-dimension override at
+      // load; dynamism is informational only there (apply() never switches
+      // resolution on macOS), so read it straight from the reported shape.
       const std::vector<int64_t> inputShape = inputInfo.GetShape();
       if (inputShape.size() >= 4u) {
-        // A dynamic model (dims reported as <= 0) lets us pick the input
-        // resolution per frame from the performance mode; a static model is
-        // pinned to its declared size.
         modelDynamic_ = inputShape[2] <= 0 || inputShape[3] <= 0;
-#if !defined(__APPLE__)
-        if (!modelDynamic_) {
-          inputHeight_ = dimensionOrFallback(inputShape[2]);
-          inputWidth_ = dimensionOrFallback(inputShape[3]);
-        }
-#else
-        // macOS keeps the size chosen in apply() (frozen into the CoreML
-        // free-dimension override); don't overwrite it with the model's dims.
-#endif
       }
+#endif
 
       loaded_ = true;
       status_.activeKeyer = "modnet";
@@ -678,6 +949,8 @@ class ModnetKeyer::Impl {
     // Skipped when the self-test forces the CPU provider (see
     // selfTestForcesCpuProvider above); status_.provider then stays "cpu".
     // The sequential / mem-pattern settings above are harmless for CPU.
+    pendingDml1Device_.Reset();
+    pendingDml1Queue_.Reset();
     if (!selfTestForcesCpuProvider()) {
       OrtStatus *dmlStatus = nullptr;
       const char *attemptedDmlPath = "cpu";
@@ -693,9 +966,11 @@ class ModnetKeyer::Impl {
           dmlApi = nullptr;
         }
       }
+      dmlApi_ = dmlApi;
       if (dmlApi != nullptr) {
-        dmlStatus = appendDirectMlOnSelectedAdapter(sessionOptions, dmlApi,
-                                                    &status_.gpuAdapter);
+        dmlStatus = appendDirectMlOnSelectedAdapter(
+            sessionOptions, dmlApi, &status_.gpuAdapter, &pendingDml1Device_,
+            &pendingDml1Queue_);
         if (dmlStatus == nullptr && !status_.gpuAdapter.empty()) {
           status_.provider = "directml";
           status_.dmlPath = "dml1_selected_adapter";
@@ -745,7 +1020,9 @@ class ModnetKeyer::Impl {
     status_.provider = "cpu";
 #endif
 #if defined(_WIN32)
-    const std::wstring ortModelPath = utf8ToWidePath(modelPath_);
+    // Strict UTF-8 -> UTF-16 (helper-common); an empty result means the
+    // path is not valid UTF-8 and the caller reports model_path_invalid.
+    const std::wstring ortModelPath = utf8ToWide(modelPath_);
     if (ortModelPath.empty()) {
       return nullptr;
     }
@@ -798,6 +1075,23 @@ class ModnetKeyer::Impl {
   std::array<const char *, 1> inputNames_ = {nullptr};
   std::array<const char *, 1> outputNames_ = {nullptr};
   std::vector<float> tensor_;
+  // Half-precision keyer (opt-in). modelInputIsFp16_ is derived from the loaded
+  // model; the reused buffers convert fp32<->fp16 on the input/output edges so
+  // the tensor build and mask copy stay fp32 and format-agnostic.
+  bool modelInputIsFp16_ = false;
+  std::vector<Ort::Float16_t> tensorFp16_;
+  std::vector<float> maskFp32_;
+  // ORT IoBinding A/B toggle (Windows/DirectML only); cleared on first failure.
+  bool ioBindingActive_ = false;
+#if defined(_WIN32)
+  // Zero-copy device-input toggle; cleared on first failure or parity miss.
+  bool zeroCopyEnabled_ = false;
+  // D3D12 device/queue of the most recent dml1 session build (cleared at the
+  // start of createSession, consumed by ensureLoaded's stage creation).
+  ComPtr<ID3D12Device> pendingDml1Device_;
+  ComPtr<ID3D12CommandQueue> pendingDml1Queue_;
+  const OrtDmlApi *dmlApi_ = nullptr;
+#endif
 #endif
 };
 

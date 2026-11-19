@@ -10,7 +10,7 @@ export interface RuntimeConfig {
     output2: string;
   };
   engine?: {
-    type: "atem" | "tricaster" | "vmix";
+    type: "atem" | "tricaster" | "vmix" | "rodecaster";
     transport?: "network" | "usb";
     ip?: string;
     port?: number;

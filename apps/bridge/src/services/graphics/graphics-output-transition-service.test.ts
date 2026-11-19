@@ -56,6 +56,9 @@ describe("GraphicsOutputTransitionService", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.BRIDGE_FRAMEBUS_NAME;
+    delete process.env.BRIDGE_FRAMEBUS_SLOT_COUNT;
+    delete process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
     setBridgeContext({
       userDataDir: "/tmp",
       logPath: "/tmp/bridge.log",
@@ -101,6 +104,7 @@ describe("GraphicsOutputTransitionService", () => {
         resolveFrameBusConfig: jest.fn().mockReturnValue(mockFrameBusConfig),
         buildRendererConfig: jest.fn().mockReturnValue(mockRendererConfig),
         logFrameBusConfigChange: jest.fn(),
+        ownsProcessFrameBusEnv: true,
       });
 
       await expect(service.waitForTransition()).resolves.toBeUndefined();
@@ -125,6 +129,7 @@ describe("GraphicsOutputTransitionService", () => {
         resolveFrameBusConfig,
         buildRendererConfig,
         logFrameBusConfigChange,
+        ownsProcessFrameBusEnv: true,
       });
 
       await service.runAtomicTransition(baseConfig);
@@ -143,6 +148,102 @@ describe("GraphicsOutputTransitionService", () => {
       expect(logFrameBusConfigChange).toHaveBeenCalled();
     });
 
+    it("writes FrameBus env for the Studio owner path", async () => {
+      const service = new GraphicsOutputTransitionService({
+        getRenderer: () => mockRenderer as never,
+        getRuntime,
+        setRuntime,
+        selectOutputAdapter: jest.fn().mockResolvedValue({ ...mockAdapter }),
+        persistConfig: jest.fn().mockResolvedValue(undefined),
+        clearPersistedConfig: jest.fn().mockResolvedValue(undefined),
+        resolveFrameBusConfig: jest.fn().mockReturnValue(mockFrameBusConfig),
+        buildRendererConfig: jest.fn().mockReturnValue(mockRendererConfig),
+        logFrameBusConfigChange: jest.fn(),
+        ownsProcessFrameBusEnv: true,
+      });
+
+      await service.runAtomicTransition(baseConfig);
+
+      expect(process.env.BRIDGE_FRAMEBUS_NAME).toBe(mockFrameBusConfig.name);
+      expect(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT).toBe("2");
+    });
+
+    it("does not write FrameBus env in apply or rollback when the manager does not own process env", async () => {
+      process.env.BRIDGE_FRAMEBUS_NAME = "studio-bus";
+      process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "4";
+      process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT = "1";
+      const service = new GraphicsOutputTransitionService({
+        getRenderer: () => mockRenderer as never,
+        getRuntime,
+        setRuntime,
+        selectOutputAdapter: jest.fn().mockResolvedValue({ ...mockAdapter }),
+        persistConfig: jest.fn().mockResolvedValue(undefined),
+        clearPersistedConfig: jest.fn().mockResolvedValue(undefined),
+        resolveFrameBusConfig: jest.fn().mockReturnValue(mockFrameBusConfig),
+        buildRendererConfig: jest.fn().mockReturnValue(mockRendererConfig),
+        logFrameBusConfigChange: jest.fn(),
+        ownsProcessFrameBusEnv: false,
+      });
+
+      await service.runAtomicTransition(baseConfig);
+
+      expect(process.env.BRIDGE_FRAMEBUS_NAME).toBe("studio-bus");
+      expect(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT).toBe("4");
+
+      mockRenderer.configureSession.mockRejectedValueOnce(
+        new Error("configure failed"),
+      );
+      await expect(service.runAtomicTransition(baseConfig)).rejects.toMatchObject({
+        name: "GraphicsOutputTransitionError",
+        stage: "renderer_configure",
+      });
+
+      expect(process.env.BRIDGE_FRAMEBUS_NAME).toBe("studio-bus");
+      expect(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT).toBe("4");
+      expect(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT).toBe("1");
+    });
+
+    it("restores FrameBus env on rollback for the Studio owner path", async () => {
+      const previousFrameBusConfig = {
+        ...mockFrameBusConfig,
+        name: "previous-studio-bus",
+        slotCount: 3,
+      };
+      const previousConfig = { ...baseConfig };
+      const previousAdapter = { ...mockAdapter };
+      const runtime = {
+        outputConfig: previousConfig,
+        frameBusConfig: previousFrameBusConfig,
+        outputAdapter: previousAdapter,
+      };
+      const localSetRuntime = jest.fn((r: typeof runtime) => {
+        Object.assign(runtime, r);
+      });
+      mockRenderer.configureSession.mockRejectedValueOnce(
+        new Error("configure failed"),
+      );
+      const service = new GraphicsOutputTransitionService({
+        getRenderer: () => mockRenderer as never,
+        getRuntime: () => runtime,
+        setRuntime: localSetRuntime,
+        selectOutputAdapter: jest.fn().mockResolvedValue({ ...mockAdapter }),
+        persistConfig: jest.fn().mockResolvedValue(undefined),
+        clearPersistedConfig: jest.fn().mockResolvedValue(undefined),
+        resolveFrameBusConfig: jest.fn().mockReturnValue(mockFrameBusConfig),
+        buildRendererConfig: jest.fn().mockReturnValue(mockRendererConfig),
+        logFrameBusConfigChange: jest.fn(),
+        ownsProcessFrameBusEnv: true,
+      });
+
+      await expect(service.runAtomicTransition(baseConfig)).rejects.toMatchObject({
+        name: "GraphicsOutputTransitionError",
+        stage: "renderer_configure",
+      });
+
+      expect(process.env.BRIDGE_FRAMEBUS_NAME).toBe("previous-studio-bus");
+      expect(process.env.BRIDGE_FRAMEBUS_SLOT_COUNT).toBe("3");
+    });
+
     it("throws GraphicsOutputTransitionError with stage when a step fails", async () => {
       mockRenderer.configureSession.mockRejectedValueOnce(
         new Error("configure failed")
@@ -158,6 +259,7 @@ describe("GraphicsOutputTransitionService", () => {
         resolveFrameBusConfig: jest.fn().mockReturnValue(mockFrameBusConfig),
         buildRendererConfig: jest.fn().mockReturnValue(mockRendererConfig),
         logFrameBusConfigChange: jest.fn(),
+        ownsProcessFrameBusEnv: true,
       });
 
       await expect(service.runAtomicTransition(baseConfig)).rejects.toMatchObject({
@@ -184,6 +286,7 @@ describe("GraphicsOutputTransitionService", () => {
         resolveFrameBusConfig: jest.fn().mockReturnValue(mockFrameBusConfig),
         buildRendererConfig: jest.fn().mockReturnValue(mockRendererConfig),
         logFrameBusConfigChange: jest.fn(),
+        ownsProcessFrameBusEnv: true,
       });
 
       await expect(service.runAtomicTransition(baseConfig)).rejects.toMatchObject({

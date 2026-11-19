@@ -10,6 +10,7 @@ export enum EngineErrorCode {
   INVALID_PORT = "INVALID_PORT",
   DEVICE_NOT_FOUND = "DEVICE_NOT_FOUND",
   DEVICE_UNREACHABLE = "DEVICE_UNREACHABLE",
+  DEVICE_BUSY = "DEVICE_BUSY",
 
   // State errors
   ALREADY_CONNECTED = "ALREADY_CONNECTED",
@@ -67,9 +68,17 @@ export function createConnectionTimeoutError(
   port: number,
   timeoutMs: number
 ): EngineError {
+  // On macOS a granted-looking-but-blocked "Local Network" permission drops the
+  // app's local-subnet traffic silently, which surfaces here as a plain timeout
+  // even though the device is reachable (e.g. from ping / ATEM Software Control).
+  // Point the user at the permission so it isn't mistaken for a dead device.
+  const macHint =
+    process.platform === "darwin"
+      ? " On macOS, also check that Broadify Bridge is allowed under System Settings → Privacy & Security → Local Network — when that permission is off, the connection is blocked silently and looks like a timeout."
+      : "";
   return new EngineError(
     EngineErrorCode.CONNECTION_TIMEOUT,
-    `Connection timeout: Device at ${ip}:${port} did not respond within ${timeoutMs}ms. Check if the device is powered on and reachable.`,
+    `Connection timeout: Device at ${ip}:${port} did not respond within ${timeoutMs}ms. Check if the device is powered on and reachable.${macHint}`,
     { ip, port, timeoutMs }
   );
 }
@@ -164,11 +173,34 @@ export function createAtemSoftwareMissingError(): EngineError {
 /**
  * Create error for USB transport when no switcher is attached via USB.
  */
-export function createUsbSwitcherNotFoundError(): EngineError {
+export function createUsbSwitcherNotFoundError(
+  diagnostics: { hr?: string; failReason?: string } = {}
+): EngineError {
   return new EngineError(
     EngineErrorCode.DEVICE_NOT_FOUND,
-    "No ATEM switcher found on USB. Check the USB cable and that the switcher is powered on.",
-    { transport: "usb", reason: "no_usb_switcher_found" }
+    "No ATEM switcher found on USB. Check the USB cable, that the switcher is powered on, or the switcher is currently claimed by ATEM Software Control.",
+    {
+      transport: "usb",
+      reason: "no_usb_switcher_found",
+      ...(diagnostics.hr ? { hr: diagnostics.hr } : {}),
+      ...(diagnostics.failReason ? { failReason: diagnostics.failReason } : {}),
+    }
+  );
+}
+
+export function createUsbDeviceBusyError(
+  hr?: string,
+  failReason?: string
+): EngineError {
+  return new EngineError(
+    EngineErrorCode.DEVICE_BUSY,
+    "The ATEM switcher is already in use by another application (e.g. ATEM Software Control). Close it and try again.",
+    {
+      transport: "usb",
+      reason: "device_busy",
+      ...(hr ? { hr } : {}),
+      ...(failReason ? { failReason } : {}),
+    }
   );
 }
 
@@ -176,7 +208,10 @@ export function createUsbSwitcherNotFoundError(): EngineError {
  * Create error for USB transport connect failures reported by the helper
  * (e.g. incompatible firmware between switcher and installed ATEM software).
  */
-export function createUsbConnectFailedError(reason: string): EngineError {
+export function createUsbConnectFailedError(
+  reason: string,
+  diagnostics: { hr?: string; failReason?: string } = {}
+): EngineError {
   const code =
     reason === "incompatible_firmware"
       ? EngineErrorCode.PROTOCOL_ERROR
@@ -185,5 +220,10 @@ export function createUsbConnectFailedError(reason: string): EngineError {
     reason === "incompatible_firmware"
       ? "The switcher firmware and the installed ATEM software are incompatible. Update the Blackmagic ATEM software and switcher firmware to matching versions."
       : `USB connection to the ATEM switcher failed (${reason}). Reconnect the USB cable and try again.`;
-  return new EngineError(code, message, { transport: "usb", reason });
+  return new EngineError(code, message, {
+    transport: "usb",
+    reason,
+    ...(diagnostics.hr ? { hr: diagnostics.hr } : {}),
+    ...(diagnostics.failReason ? { failReason: diagnostics.failReason } : {}),
+  });
 }
