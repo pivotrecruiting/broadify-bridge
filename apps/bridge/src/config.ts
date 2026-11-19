@@ -21,6 +21,33 @@ const ConfigSchema = z.object({
 export type BridgeConfigT = z.infer<typeof ConfigSchema>;
 
 /**
+ * Normalize the optional post-production URL (`--postpro-api-url` /
+ * `POSTPRO_API_URL`). The value only switches an optional feature on
+ * (session log, ADR-0008), so a malformed one must never stop the bridge
+ * from starting: it is dropped with a warning instead of failing the schema.
+ *
+ * @param raw Raw CLI/env value.
+ * @returns Trimmed http(s) URL, or undefined when empty or invalid.
+ */
+export function normalizePostproApiUrl(raw: string | undefined): string | undefined {
+  const value = raw?.trim();
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const protocol = new URL(value).protocol;
+    if (protocol === "http:" || protocol === "https:") {
+      return value;
+    }
+  } catch {
+    // fall through to the warning
+  }
+  // Fixed text: the value may carry credentials and must not reach the log.
+  console.warn("[Config] Ignoring invalid post-production URL (expected an http(s) URL); session log stays off");
+  return undefined;
+}
+
+/**
  * Parse CLI arguments and return validated configuration
  */
 export function parseConfig(args: string[]): BridgeConfigT {
@@ -125,9 +152,9 @@ export function parseConfig(args: string[]): BridgeConfigT {
   if (!config.userDataDir && process.env.BRIDGE_USER_DATA_DIR) {
     config.userDataDir = process.env.BRIDGE_USER_DATA_DIR;
   }
-  if (!config.postproApiUrl && process.env.POSTPRO_API_URL) {
-    config.postproApiUrl = process.env.POSTPRO_API_URL;
-  }
+  // CLI first; a malformed CLI value falls back to the environment.
+  config.postproApiUrl =
+    normalizePostproApiUrl(config.postproApiUrl) ?? normalizePostproApiUrl(process.env.POSTPRO_API_URL);
 
   if (!config.relayEnabled) {
     config.bridgeId = undefined;
