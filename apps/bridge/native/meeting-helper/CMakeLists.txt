@@ -122,6 +122,7 @@ set(MEETING_HELPER_SOURCES
   src/preview/vcam_shm_layout.cpp
   src/preview/vcam_shm_ring_win.cpp
   src/recorder/recorder_frame_mailbox.cpp
+  src/util/frame_fit.cpp
   src/util/sha256.cpp
   src/util/pixel_swizzle.cpp
   src/util/win_qos.cpp
@@ -461,6 +462,11 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(program_geometry_test
     tests/program_geometry_test.cpp
   )
+  # Contain-fit (pillarbox) of a portrait program into the 16:9 virtual camera.
+  add_executable(frame_fit_test
+    tests/frame_fit_test.cpp
+    src/util/frame_fit.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -491,6 +497,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/preview/raw_frame_server.cpp
     src/preview/raw_frame_stream_header.cpp
     src/preview/preview_frame_store.cpp
+    src/util/frame_fit.cpp
     src/util/pixel_swizzle.cpp
     src/util/win_qos.cpp
   )
@@ -512,6 +519,7 @@ if(MEETING_HELPER_BUILD_TESTS)
       src/preview/vcam_shm_layout.cpp
       src/preview/vcam_shm_publisher.cpp
       src/preview/vcam_shm_ring_win.cpp
+      src/util/frame_fit.cpp
       src/util/pixel_swizzle.cpp
     )
     target_include_directories(shm_frame_reader_no_frame_test PRIVATE
@@ -600,6 +608,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     background_image_cache_test
     options_test
     program_geometry_test
+    frame_fit_test
     tier_handover_test
     matting_backend_test
     matting_common_test
@@ -629,7 +638,8 @@ if(MEETING_HELPER_BUILD_TESTS)
         # CommandLineToArgvW lives in shell32.
         target_link_libraries(${helper_test} PRIVATE shell32)
       endif()
-    elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")
+    elseif(APPLE AND (helper_test STREQUAL "raw_frame_server_test" OR
+                      helper_test STREQUAL "frame_fit_test"))
       target_link_libraries(${helper_test} PRIVATE "-framework Accelerate")
     endif()
     if(NOT WIN32 AND (helper_test STREQUAL "liveness_watchdog_test" OR

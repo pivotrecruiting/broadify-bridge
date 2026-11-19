@@ -21,6 +21,7 @@
 #include "recorder/meeting_recorder.h"
 #include "output/vcam_controller.h"
 #include "state/meeting_state.h"
+#include "util/frame_fit.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
 #include "util/path_utf8.h"
@@ -826,6 +827,8 @@ int main(int argc, char **argv) {
 #endif
                      std::ref(recorder), std::ref(g_running));
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
+  // Program geometry; the raw-frame server advertises and delivers the 16:9
+  // virtual-camera geometry derived from it (vcamOutputGeometry).
   const RawFrameStreamGeometry vcamGeometry{options.width, options.height, options.fps};
   std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, vcamGeometry, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   std::thread vcamShmLifecycle([&options, &state, &vcamShm
@@ -840,8 +843,12 @@ int main(int argc, char **argv) {
     while (g_running.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
       bool shouldUseShm = false;
-      uint32_t width = options.width;
-      uint32_t height = options.height;
+      // The shared-memory ring carries what VcamShmPublisher publishes: the
+      // program frame, or its 1920x1080 pillarbox for a portrait program.
+      const FrameGeometry vcamRingGeometry =
+          vcamOutputGeometry(options.width, options.height);
+      uint32_t width = vcamRingGeometry.width;
+      uint32_t height = vcamRingGeometry.height;
       uint32_t fps = options.fps;
       uint64_t writerGeneration = 0u;
       {

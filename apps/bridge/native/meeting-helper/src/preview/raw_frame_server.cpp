@@ -1,6 +1,7 @@
 #include "preview/raw_frame_server.h"
 
 #include "preview/raw_frame_record.h"
+#include "util/frame_fit.h"
 #include "util/helper_event_log.h"
 #include "util/pixel_swizzle.h"
 #include "util/win_qos.h"
@@ -17,6 +18,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -199,15 +201,45 @@ void writeBfrgHeaderV1(std::vector<uint8_t> &data,
   writeU64Le(data, offset + 24u, header.sequence);
 }
 
+// Swizzles RGBA to BGRA in place (the fitted portrait frame is produced in
+// the payload buffer itself, so there is no second full-frame buffer).
+void swizzleRgbaToBgraInPlace(uint8_t *pixels, uint32_t width, uint32_t height) {
+#if defined(__APPLE__)
+  vImage_Buffer buffer;
+  buffer.data = pixels;
+  buffer.height = height;
+  buffer.width = width;
+  buffer.rowBytes = static_cast<size_t>(width) * 4u;
+  const uint8_t kRgbaToBgra[4] = {2, 1, 0, 3};
+  if (vImagePermuteChannels_ARGB8888(&buffer, &buffer, kRgbaToBgra, kvImageNoFlags) == kvImageNoError) {
+    return;
+  }
+#endif
+  const size_t pixelCount = static_cast<size_t>(width) * height;
+  for (size_t pixel = 0u; pixel < pixelCount; ++pixel) {
+    std::swap(pixels[pixel * 4u + 0u], pixels[pixel * 4u + 2u]);
+  }
+}
+
 void writeRawFramePayload(const PreviewFrame &frame,
                           RawFrameProtocolVersion protocolVersion,
                           std::vector<uint8_t> &payload) {
   const size_t headerSize = rawFrameHeaderSize(protocolVersion);
-  payload.resize(headerSize + frame.rgba.size());
+  // The virtual camera is a 16:9-only sink: a portrait program frame is
+  // pillarboxed into 1920x1080 here, on the client's worker thread, so the
+  // CMIO extension and the Windows VCam DLL keep seeing the frame size the
+  // HTTP handshake advertised. Landscape frames take the unchanged path below.
+  const FrameGeometry output = vcamOutputGeometry(frame.width, frame.height);
+  const bool needsFit =
+      output.width != frame.width || output.height != frame.height;
+  const size_t pixelBytes = needsFit
+      ? static_cast<size_t>(output.width) * output.height * 4u
+      : frame.rgba.size();
+  payload.resize(headerSize + pixelBytes);
   BfrgRecordHeader header;
-  header.width = frame.width;
-  header.height = frame.height;
-  header.payloadSize = static_cast<uint32_t>(frame.rgba.size());
+  header.width = output.width;
+  header.height = output.height;
+  header.payloadSize = static_cast<uint32_t>(pixelBytes);
   header.sequence = frame.sequence;
   if (protocolVersion == RawFrameProtocolVersion::V2) {
     header.captureNs = frame.captureNs;
@@ -218,6 +250,26 @@ void writeRawFramePayload(const PreviewFrame &frame,
 
   uint8_t *dst = payload.data() + headerSize;
   const uint8_t *src = frame.rgba.data();
+  if (needsFit) {
+    if (frame.rgba.size() ==
+            static_cast<size_t>(frame.width) * frame.height * 4u &&
+        fitContainRgba(src, frame.width, frame.height,
+                       static_cast<size_t>(frame.width) * 4u, dst,
+                       output.width, output.height,
+                       static_cast<size_t>(output.width) * 4u)) {
+      swizzleRgbaToBgraInPlace(dst, output.width, output.height);
+    } else {
+      // Malformed frame: keep the record well-formed with an opaque black
+      // image instead of sending uninitialised bytes.
+      for (size_t offset = 0u; offset < pixelBytes; offset += 4u) {
+        dst[offset + 0u] = 0u;
+        dst[offset + 1u] = 0u;
+        dst[offset + 2u] = 0u;
+        dst[offset + 3u] = 255u;
+      }
+    }
+    return;
+  }
 #if defined(__APPLE__)
   // SIMD-accelerated RGBA->BGRA swizzle; the scalar loop cost several
   // milliseconds per frame per virtual-camera client.
@@ -451,6 +503,14 @@ void runRawFrameServer(uint16_t port,
                        PreviewFrameStore &previewFrames,
                        MeetingState &state,
                        std::atomic<bool> &running) {
+  // Advertise what writeRawFramePayload delivers: a portrait program is sent
+  // pillarboxed in 1920x1080, a landscape program unchanged.
+  {
+    const FrameGeometry output =
+        vcamOutputGeometry(geometry.width, geometry.height);
+    geometry.width = output.width;
+    geometry.height = output.height;
+  }
 #if defined(_WIN32)
   WSADATA wsa;
   WSAStartup(MAKEWORD(2, 2), &wsa);

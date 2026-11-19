@@ -243,6 +243,101 @@ void assertDisarmedHandshake(uint16_t port, MeetingState &state) {
   }
 }
 
+// A portrait program (engine 1080x1920) must reach the 16:9-only virtual
+// camera as 1920x1080: handshake headers, record header and payload size stay
+// landscape, the program sits pillarboxed between opaque black bars.
+void assertPortraitProgramIsPillarboxed() {
+  const uint16_t port = reservePort();
+  PreviewFrameStore previewFrames;
+  MeetingState state;
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.vcamRawRunning = true;
+  }
+  std::atomic<bool> running{true};
+  const RawFrameStreamGeometry programGeometry{1080, 1920, 30};
+  std::thread server([&] {
+    runRawFrameServer(port, programGeometry, previewFrames, state, running);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  constexpr uint32_t kProgramWidth = 1080u;
+  constexpr uint32_t kProgramHeight = 1920u;
+  constexpr uint32_t kVcamWidth = 1920u;
+  constexpr uint32_t kVcamHeight = 1080u;
+  // Solid RGBA (200, 40, 90): arrives as BGRA (90, 40, 200).
+  std::vector<uint8_t> rgba(static_cast<size_t>(kProgramWidth) *
+                            kProgramHeight * 4u);
+  for (size_t offset = 0; offset < rgba.size(); offset += 4u) {
+    rgba[offset + 0u] = 200u;
+    rgba[offset + 1u] = 40u;
+    rgba[offset + 2u] = 90u;
+    rgba[offset + 3u] = 255u;
+  }
+  previewFrames.publish(kProgramWidth, kProgramHeight, rgba.data(),
+                        rgba.size());
+
+  for (const bool acceptsV2 : {true, false}) {
+    const size_t headerSize =
+        acceptsV2 ? kRawFrameHeaderV2Size : kRawFrameHeaderV1Size;
+    const int client = connectClient(port, acceptsV2);
+    const std::string header = readHttpHeader(client);
+    if (header.find("X-Broadify-Frame-Width: 1920\r\n") == std::string::npos ||
+        header.find("X-Broadify-Frame-Height: 1080\r\n") ==
+            std::string::npos ||
+        header.find("X-Broadify-Frame-Fps: 30\r\n") == std::string::npos) {
+      fail("portrait program must advertise the 1920x1080 vcam geometry");
+    }
+    const RawFrameRecord record = readFrameRecord(client, headerSize);
+    closeSocketHandle(client);
+    if (readU32Le(record.header.data() + 8) != kVcamWidth ||
+        readU32Le(record.header.data() + 12) != kVcamHeight) {
+      fail("portrait frame record must be 1920x1080");
+    }
+    if (readU32Le(record.header.data() + 16) != kRawFramePixelFormatBgra8) {
+      fail("portrait frame record must stay BGRA8");
+    }
+    const size_t expectedPayload =
+        static_cast<size_t>(kVcamWidth) * kVcamHeight * 4u;
+    if (readU32Le(record.header.data() + 20) != expectedPayload ||
+        record.payload.size() != expectedPayload) {
+      fail("portrait frame payload must be a full 1920x1080 BGRA frame");
+    }
+    // 1080x1920 contained in 1920x1080: columns 656..1263 carry the program.
+    const auto pixel = [&](uint32_t x, uint32_t y) {
+      return record.payload.data() +
+             (static_cast<size_t>(y) * kVcamWidth + x) * 4u;
+    };
+    const auto isBlack = [](const uint8_t *p) {
+      return p[0] == 0u && p[1] == 0u && p[2] == 0u && p[3] == 255u;
+    };
+    const auto isProgram = [](const uint8_t *p) {
+      const auto close = [](uint8_t value, int expected) {
+        return value >= expected - 1 && value <= expected + 1;
+      };
+      return close(p[0], 90) && close(p[1], 40) && close(p[2], 200) &&
+             p[3] >= 254u;
+    };
+    for (const uint32_t y : {0u, 540u, 1079u}) {
+      if (!isBlack(pixel(0u, y)) || !isBlack(pixel(655u, y)) ||
+          !isBlack(pixel(1264u, y)) || !isBlack(pixel(1919u, y))) {
+        fail("portrait frame bars must be opaque black");
+      }
+      if (!isProgram(pixel(656u, y)) || !isProgram(pixel(960u, y)) ||
+          !isProgram(pixel(1263u, y))) {
+        fail("portrait program must sit centered between the bars");
+      }
+    }
+  }
+
+  running.store(false);
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.vcamRawRunning = false;
+  }
+  server.join();
+}
+
 }  // namespace
 
 int main() {
@@ -306,7 +401,14 @@ int main() {
   const int clientA = connectClient(port, true);
   const int clientB = connectClient(port, true);
   const int legacyClient = connectClient(port, false);
-  (void)readHttpHeader(clientA);
+  // Landscape/square programs are advertised with their own geometry.
+  const std::string landscapeHeader = readHttpHeader(clientA);
+  if (landscapeHeader.find("X-Broadify-Frame-Width: 2\r\n") ==
+          std::string::npos ||
+      landscapeHeader.find("X-Broadify-Frame-Height: 2\r\n") ==
+          std::string::npos) {
+    fail("landscape program geometry must be advertised unchanged");
+  }
   (void)readHttpHeader(clientB);
   (void)readHttpHeader(legacyClient);
 
@@ -362,6 +464,8 @@ int main() {
     state.vcamRawRunning = false;
   }
   server.join();
+
+  assertPortraitProgramIsPillarboxed();
 
 #if defined(_WIN32)
   WSACleanup();
