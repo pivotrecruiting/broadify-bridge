@@ -184,7 +184,7 @@ std::string videoContainerId(const std::string &videoDeviceId) {
 // Capture time on the helper's monotonic clock: WASAPI stamps each packet with
 // the performance counter (100 ns units), the counter std::steady_clock runs on.
 uint64_t packetTimeNs(UINT64 qpcPosition100ns, DWORD flags) {
-  const uint64_t now = monotonicNowNs();
+  const uint64_t now = broadify::live::monotonicNowNs();
   if ((flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) == 0) {
     const uint64_t packetNs = static_cast<uint64_t>(qpcPosition100ns) * 100ULL;
     if (packetNs <= now && now - packetNs < 1'000'000'000ULL) {
