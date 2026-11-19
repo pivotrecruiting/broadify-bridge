@@ -112,6 +112,37 @@ separate model binary is redistributed with this application.
 
 ---
 
+## LibreOffice
+
+This application bundles an unmodified LibreOffice runtime and runs it
+headless to convert PowerPoint files (PPTX) to PDF for Meeting content.
+
+**Provider:** The Document Foundation
+
+**License:** Mozilla Public License 2.0 (MPL-2.0)
+
+**License Text:** https://www.mozilla.org/MPL/2.0/
+
+**Website:** https://www.libreoffice.org/
+
+**Source Code:** https://www.libreoffice.org/about-us/source-code/
+
+**Bundled version:** macOS (arm64) ships the release pinned in
+`apps/bridge/vendor/presentation-runtime/manifest.json` (currently 26.2.4).
+Windows (x64) ships LibreOffice only when the release build is configured with
+a pinned archive (`PRESENTATION_RUNTIME_URL_WIN` /
+`PRESENTATION_RUNTIME_SHA256_WIN`, see
+`docs/bridge/windows-libreoffice-bundle.md`); the version is the one of that
+archive.
+
+LibreOffice includes third-party components under their own licenses. The
+license and notice files shipped by The Document Foundation are retained
+inside the bundled runtime (`presentation-runtime/` in the application
+resources). "LibreOffice" is a trademark of The Document Foundation; its use
+here does not imply endorsement.
+
+---
+
 ## Other Dependencies
 
 All npm dependencies are listed in `package.json` and `apps/bridge/package.json`. Most dependencies use permissive licenses (MIT, Apache-2.0, BSD-2-Clause, ISC).
