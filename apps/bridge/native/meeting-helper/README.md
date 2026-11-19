@@ -28,6 +28,33 @@ The current implementation is native-only:
 MediaPipe and Windows Media Foundation are added later without reintroducing
 Python.
 
+## Portrait Program (9:16)
+
+The program canvas is a start parameter (`--width` / `--height` / `--fps`,
+default 1920x1080). With a portrait canvas (`--width 1080 --height 1920`) the
+helper renders a real 1080x1920 program:
+
+- **Capture stays landscape.** Camera modes and screen-capture bounds are
+  requested with `captureRequestSize()` (`common/options.h`), i.e. 1920x1080
+  for a 1080x1920 canvas. The compositor cover-fits the camera; the keyed
+  presenter is scaled uniformly (`compose/program_geometry.h`) instead of
+  per axis, so it is never squeezed.
+- **Canvas-sized sinks** follow the canvas unchanged: FrameBus, MJPEG preview,
+  WebRTC program stream and the recorder (the file is 1080x1920).
+- **The virtual camera is a 16:9-only sink.** The helper pillarboxes the
+  portrait program into 1920x1080 (`util/frame_fit.h`: opaque black bars,
+  centered) before it leaves the process - in the raw-frame server (macOS
+  CMIO extension, Windows TCP fallback; the `X-Broadify-Frame-*` handshake
+  headers advertise 1920x1080) and in the Windows shared-memory publisher. The
+  system extension, the Windows service and the `vcam_shm_layout` limits are
+  untouched.
+- Camera PiP inset: 28% of the long edge, capped at 45% of the canvas width;
+  margin and border follow the short edge. Cornerbug size and the speaker
+  layout travel stay width-relative.
+
+A landscape canvas takes the same code paths as before (pinned by
+`program_geometry_test`, `frame_fit_test`, `raw_frame_server_test`).
+
 ## MODNet Dependencies
 
 The macOS build expects vendored ONNX Runtime here:

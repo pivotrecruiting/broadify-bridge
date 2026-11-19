@@ -271,6 +271,111 @@ bool runWorkerBurstCase(NSString *dir) {
   return ok;
 }
 
+// Portrait program (engine 1080x1920): the recorder takes the canvas geometry
+// as-is - writer, worker and the finished file are all 1080x1920, with the
+// bitrate the shared policy yields for that pixel count.
+bool runPortraitCase(NSString *dir) {
+  bool ok = true;
+  constexpr uint32_t kPortraitWidth = 1080;
+  constexpr uint32_t kPortraitHeight = 1920;
+  const std::string finalPath =
+      std::string([dir UTF8String]) + "/portrait.mp4";
+  const std::string sidecarPath = recorderSidecarPath(finalPath);
+  auto bundle =
+      makeRecorderWriter(sidecarPath, kPortraitWidth, kPortraitHeight, kFps);
+  ok &= expect(bundle.writer != nil,
+               ("portrait: writer builds (" + bundle.error + ")").c_str());
+  if (bundle.writer == nil) {
+    return false;
+  }
+  NSDictionary *outputSettings = bundle.videoInput.outputSettings;
+  ok &= expect([outputSettings[AVVideoWidthKey] unsignedIntValue] ==
+                       kPortraitWidth &&
+                   [outputSettings[AVVideoHeightKey] unsignedIntValue] ==
+                       kPortraitHeight,
+               "portrait: writer input is 1080x1920");
+  NSDictionary *compression = outputSettings[AVVideoCompressionPropertiesKey];
+  ok &= expect([compression[AVVideoAverageBitRateKey] unsignedLongLongValue] ==
+                   recorderVideoBitrateBps(kPortraitWidth, kPortraitHeight,
+                                           kFps),
+               "portrait: bitrate matches recorder policy");
+  ok &= expect(recorderVideoBitrateBps(kPortraitWidth, kPortraitHeight, kFps) ==
+                   recorderVideoBitrateBps(kPortraitHeight, kPortraitWidth,
+                                           kFps),
+               "portrait: bitrate equals the 1920x1080 bitrate");
+  ok &= expect([bundle.writer startWriting],
+               "portrait: startWriting succeeds");
+  const CMTime sessionStart = CMClockGetTime(CMClockGetHostTimeClock());
+  [bundle.writer startSessionAtSourceTime:sessionStart];
+
+  RecorderVideoWorker::Config config;
+  config.writer = bundle.writer;
+  config.videoInput = bundle.videoInput;
+  config.videoAdaptor = bundle.videoAdaptor;
+  config.sessionStart = sessionStart;
+  config.width = kPortraitWidth;
+  config.height = kPortraitHeight;
+  config.fps = kFps;
+  config.cfrEnabled = true;
+  RecorderVideoWorker worker(config);
+  worker.start();
+
+  constexpr uint32_t kPortraitFrames = 2u * kFps;
+  const size_t frameBytes =
+      static_cast<size_t>(kPortraitWidth) * kPortraitHeight * 4u;
+  std::vector<uint8_t> rgba(frameBytes);
+  for (uint32_t frame = 0; frame < kPortraitFrames; ++frame) {
+    std::memset(rgba.data(), static_cast<int>(40u + frame), frameBytes);
+    worker.offer(rgba.data(), kPortraitWidth, kPortraitHeight,
+                 nsForFrame(frame, kFps));
+  }
+  // The landscape geometry of the same pixel count is a mismatch here.
+  ok &= expect(!worker.offer(rgba.data(), kPortraitHeight, kPortraitWidth,
+                             nsForFrame(kPortraitFrames, kFps)),
+               "portrait: a 1920x1080 frame is rejected by a 1080x1920 worker");
+  worker.stop();
+  const RecorderVideoWorker::Counters counters = worker.counters();
+  ok &= expect(counters.videoFrames > 0u, "portrait: frames were written");
+  ok &= expect(worker.lastError().empty(),
+               ("portrait: no writer error (" + worker.lastError() + ")")
+                   .c_str());
+
+  const RecorderFinalizeResult result = finalizeRecorderWriter(
+      bundle.writer, bundle.videoInput, bundle.audioInput, counters.videoFrames,
+      sidecarPath, finalPath, kRecorderFinalizeTimeoutMs);
+  ok &= expect(result.outcome == RecorderFinalizeOutcome::Completed,
+               ("portrait: finalize completes (error=" + result.error + ")")
+                   .c_str());
+  ok &= expect(!fileExists(sidecarPath) && fileExists(finalPath),
+               "portrait: sidecar renamed to the final path");
+  if (!fileExists(finalPath)) {
+    return false;
+  }
+  AVAsset *asset = [AVAsset
+      assetWithURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:
+                                                        finalPath.c_str()]]];
+  NSArray<AVAssetTrack *> *videoTracks =
+      [asset tracksWithMediaType:AVMediaTypeVideo];
+  ok &= expect([videoTracks count] == 1, "portrait: file has one video track");
+  if ([videoTracks count] == 1) {
+    const CGSize size = videoTracks[0].naturalSize;
+    const CGAffineTransform transform = videoTracks[0].preferredTransform;
+    ok &= expect(size.width == kPortraitWidth && size.height == kPortraitHeight,
+                 ("portrait: encoded track is 1080x1920 (got " +
+                  std::to_string(size.width) + "x" +
+                  std::to_string(size.height) + ")")
+                     .c_str());
+    // Real portrait pixels, not a rotated landscape track.
+    ok &= expect(transform.a == 1.0 && transform.b == 0.0 &&
+                     transform.c == 0.0 && transform.d == 1.0,
+                 "portrait: track carries no rotation transform");
+  }
+  ok &= expect(countVideoSamples(finalPath) ==
+                   static_cast<int64_t>(counters.videoFrames),
+               "portrait: file holds the reported frames");
+  return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -511,6 +616,7 @@ int main() {
 
     ok &= runNoFramesCase(dir);
     ok &= runWorkerBurstCase(dir);
+    ok &= runPortraitCase(dir);
 
     [[NSFileManager defaultManager] removeItemAtPath:dir error:nil];
   }
