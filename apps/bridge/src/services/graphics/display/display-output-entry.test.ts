@@ -123,6 +123,29 @@ describe("display-output-entry", () => {
     expect(win?.setAlwaysOnTop).toHaveBeenCalledWith(true, "screen-saver");
   });
 
+  it("letterboxes the frame in the page script instead of stretching it", async () => {
+    process.env.BRIDGE_DISPLAY_PRELOAD = "/path/to/preload.js";
+    await import("./display-output-entry.js");
+
+    const readyHandler = mockApp.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "ready"
+    )?.[1];
+    readyHandler();
+    const win = mockBrowserWindow.mock.results[0]?.value;
+    const url = String(win?.loadURL.mock.calls[0]?.[0] ?? "");
+    const page = decodeURIComponent(url.replace("data:text/html;charset=utf-8,", ""));
+
+    expect(page).toContain("const computeContainRect = function computeContainRect(");
+    // WebGL: viewport on the contain rect (bottom-left origin).
+    expect(page).toContain("canvas.height - rect.y - rect.height");
+    // Canvas2D: draw into the contain rect, not the full canvas.
+    expect(page).toContain("ctx.drawImage(offscreen, rect.x, rect.y, rect.width, rect.height)");
+    expect(page).not.toContain("ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height)");
+    // The inline script must still parse with the embedded function.
+    const script = page.slice(page.indexOf("<script>") + 8, page.indexOf("</script>"));
+    expect(() => new Function(script)).not.toThrow();
+  });
+
   it("selects display by name when BRIDGE_DISPLAY_MATCH_NAME is set", async () => {
     mockScreen.getAllDisplays.mockReturnValue([
       {

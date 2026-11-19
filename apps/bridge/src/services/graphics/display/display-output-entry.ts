@@ -6,6 +6,7 @@ import {
   type FrameBusReaderT,
 } from "../framebus/framebus-client.js";
 import { getExpectedFrameBusSizeFromHeader } from "../framebus/framebus-layout.js";
+import { computeContainRect } from "./display-contain-rect.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",
@@ -95,6 +96,8 @@ const html = `<!doctype html>
         let pending = null;
         let rendererLabel = "Canvas2D";
         const api = window.displayOutput;
+        // Same function the bridge unit-tests; see display-contain-rect.ts.
+        const computeContainRect = ${computeContainRect.toString()};
         const setOverlay = (lines) => {
           if (!debugEnabled || !overlay) return;
           overlay.textContent = lines.join("\\n");
@@ -226,11 +229,9 @@ const html = `<!doctype html>
         }
 
         const resize = () => {
+          // Resizing clears the canvas; every frame sets its own viewport.
           canvas.width = window.innerWidth;
           canvas.height = window.innerHeight;
-          if (gl) {
-            gl.viewport(0, 0, canvas.width, canvas.height);
-          }
           setOverlay([
             "Display Output Debug",
             "Canvas: " + canvas.width + "x" + canvas.height,
@@ -297,7 +298,18 @@ const html = `<!doctype html>
                 data
               );
             }
+            // Letterbox instead of stretching: a frame whose aspect differs
+            // from the display (e.g. a portrait program) keeps its shape.
+            // The GL viewport origin is the bottom-left corner.
+            const rect = computeContainRect(width, height, canvas.width, canvas.height);
+            gl.viewport(0, 0, canvas.width, canvas.height);
             gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.viewport(
+              rect.x,
+              canvas.height - rect.y - rect.height,
+              rect.width,
+              rect.height
+            );
             gl.drawArrays(gl.TRIANGLES, 0, 6);
           } else if (ctx && offCtx && offscreen) {
             if (offscreen.width !== width || offscreen.height !== height) {
@@ -306,8 +318,10 @@ const html = `<!doctype html>
             }
             const imageData = new ImageData(new Uint8ClampedArray(buffer), width, height);
             offCtx.putImageData(imageData, 0, 0);
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height);
+            const rect = computeContainRect(width, height, canvas.width, canvas.height);
+            ctx.fillStyle = "#000";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(offscreen, rect.x, rect.y, rect.width, rect.height);
           }
           frameCount += 1;
           setOverlay([
