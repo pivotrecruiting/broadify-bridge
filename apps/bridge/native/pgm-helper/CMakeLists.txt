@@ -46,8 +46,13 @@ add_library(pgm_core STATIC
   src/signal/video_signal_tracker.cpp
   src/control/pgm_rpc.cpp
   src/common/pgm_options.cpp
+  src/capture/uvc_format_select.cpp
+  src/capture/snapshot_portable.cpp
+  src/audio/audio_pairing.cpp
 )
 target_include_directories(pgm_core PUBLIC src)
+# stb_image_write (JPEG for the portable snapshot) is vendored with the meeting helper.
+target_include_directories(pgm_core PRIVATE ../meeting-helper/third_party/stb)
 target_link_libraries(pgm_core PUBLIC helper_common live_stream_core)
 
 if(PGM_HELPER_BUILD_BINARY AND APPLE)
@@ -105,7 +110,8 @@ if(WIN32 AND PGM_HELPER_WINDOWS_COMPILE_CHECK)
 endif()
 
 if(PGM_HELPER_BUILD_TESTS)
-  foreach(pgm_test IN ITEMS video_signal_tracker_test pgm_rpc_dispatch_test recording_signal_gate_test pgm_options_test)
+  foreach(pgm_test IN ITEMS video_signal_tracker_test pgm_rpc_dispatch_test recording_signal_gate_test pgm_options_test
+      uvc_format_select_test audio_pairing_test snapshot_portable_test)
     add_executable(${pgm_test} tests/${pgm_test}.cpp)
     target_link_libraries(${pgm_test} PRIVATE pgm_core)
     if(WIN32)
@@ -113,4 +119,6 @@ if(PGM_HELPER_BUILD_TESTS)
     endif()
     add_test(NAME ${pgm_test} COMMAND ${pgm_test})
   endforeach()
+  # stb_image decodes the snapshot again.
+  target_include_directories(snapshot_portable_test PRIVATE ../meeting-helper/third_party/stb)
 endif()
