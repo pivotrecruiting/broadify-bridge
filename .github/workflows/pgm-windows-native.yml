@@ -1,0 +1,122 @@
+name: PGM Windows Native
+
+# Compile + ctest for the Windows side of the live program preview (ADR-0009,
+# docs/bridge/features/pgm-live-preview-windows.md). Runs on the stacked
+# feature/pgm-win-* branches and manually; it never builds or publishes a
+# release. Green here means "compiles and the tests pass on a hosted runner",
+# not "verified on hardware".
+#
+# Jobs:
+#   core     pure modules only (pgm_core, live_stream_core, helper_common):
+#            no WebRTC, no encoder, no network dependency.
+# Later units of the chain add their own jobs next to it (same checkout +
+# MSVC + Media Foundation steps): encoder (Media Foundation H.264 encoder),
+# full (pgm-helper.exe incl. WebRTC/OpenSSL), meeting (meeting-helper program
+# stream).
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "feature/pgm-win-**"
+    paths:
+      - apps/bridge/native/live-stream/**
+      - apps/bridge/native/pgm-helper/**
+      - apps/bridge/native/helper-common/**
+      - apps/bridge/native/meeting-helper/src/live/**
+      - .github/workflows/pgm-windows-native.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pgm-windows-native-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  PGM_HELPER_DIR: apps/bridge/native/pgm-helper
+  LIVE_STREAM_DIR: apps/bridge/native/live-stream
+  # Hosted runners have 4 cores; keep the same cap when run elsewhere.
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+
+jobs:
+  core:
+    name: core (pure modules, MSVC)
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      # Pure modules + tests only: the helper binary (capture, encoder, WebRTC)
+      # stays out of this job. The CMake files read these from the environment.
+      PGM_HELPER_BUILD_BINARY: "0"
+      PGM_HELPER_BUILD_TESTS: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: 2022
+
+      # Windows Server ships Media Foundation as an optional feature. The pure
+      # modules do not need it, but every later job does - fail early and in
+      # one place if a runner image drops it.
+      - name: Assert Media Foundation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mfplat = Join-Path $env:SystemRoot 'System32\mfplat.dll'
+          if (-not (Test-Path $mfplat)) {
+            Write-Host "mfplat.dll missing - trying Install-WindowsFeature Server-Media-Foundation"
+            try {
+              Install-WindowsFeature Server-Media-Foundation | Format-List
+            } catch {
+              Write-Host "Install-WindowsFeature failed: $_"
+            }
+          }
+          if (-not (Test-Path $mfplat)) {
+            throw "Media Foundation is not available on this runner ($mfplat missing; the feature may need a restart)."
+          }
+          Write-Host "Media Foundation present: $((Get-Item $mfplat).VersionInfo.FileVersion)"
+
+      - name: Tool versions
+        run: |
+          cmake --version
+          Write-Host "cl: $((Get-Command cl.exe).Source)"
+
+      # FETCHCONTENT_FULLY_DISCONNECTED turns any accidental network
+      # dependency of the pure modules into a configure error.
+      - name: Configure pgm-helper (pure modules)
+        run: >
+          cmake -S $env:PGM_HELPER_DIR -B "$env:PGM_HELPER_DIR/build"
+          -DLIVE_STREAM_WITH_WEBRTC=OFF
+          -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+
+      - name: Build pgm-helper (pure modules)
+        run: cmake --build "$env:PGM_HELPER_DIR/build" --config Release
+
+      - name: Test pgm-helper (pure modules)
+        run: >
+          ctest --test-dir "$env:PGM_HELPER_DIR/build" --build-config Release
+          --timeout 120 --output-on-failure
+
+      # The same core as a stand-alone project, the way the meeting helper
+      # consumes it: catches anything that only works inside the pgm-helper tree.
+      - name: Configure live-stream core
+        run: >
+          cmake -S $env:LIVE_STREAM_DIR -B "$env:LIVE_STREAM_DIR/build"
+          -DLIVE_STREAM_WITH_WEBRTC=OFF
+          -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+
+      - name: Build live-stream core
+        run: cmake --build "$env:LIVE_STREAM_DIR/build" --config Release
+
+      - name: Test live-stream core
+        run: >
+          ctest --test-dir "$env:LIVE_STREAM_DIR/build" --build-config Release
+          --timeout 120 --output-on-failure
