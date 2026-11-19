@@ -98,7 +98,7 @@ class VideoToolboxEncoder final : public VideoEncoder {
     }
   }
 
-  EncoderInfo info() const override { return {"videotoolbox", true}; }
+  EncoderInfo info() const override { return {"videotoolbox", true, {}, {}}; }
 
  private:
   void set(CFStringRef key, CFTypeRef value) { VTSessionSetProperty(session_, key, value); }
@@ -201,5 +201,7 @@ class VideoToolboxEncoder final : public VideoEncoder {
 }  // namespace
 
 std::unique_ptr<VideoEncoder> createVideoToolboxEncoder() { return std::make_unique<VideoToolboxEncoder>(); }
+
+std::unique_ptr<VideoEncoder> createHardwareEncoder() { return createVideoToolboxEncoder(); }
 
 }  // namespace broadify::live

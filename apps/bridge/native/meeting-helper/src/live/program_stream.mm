@@ -92,7 +92,7 @@ struct ProgramStream::Impl {
       return true;
     }
     teardownEncoderLocked();
-    encoder = live::createVideoToolboxEncoder();
+    encoder = live::createHardwareEncoder();
     if (!encoder) {
       lastErrorCode = "encoder_unavailable";
       lastErrorMessage = "No hardware H.264 encoder on this machine.";

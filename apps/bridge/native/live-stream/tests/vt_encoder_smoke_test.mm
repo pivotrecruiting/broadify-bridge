@@ -21,7 +21,10 @@ using namespace broadify::live;
 static void fail(const char *m) { std::cerr << "vt_encoder_smoke_test failed: " << m << std::endl; std::exit(1); }
 
 int main() {
-  auto encoder = createVideoToolboxEncoder();
+  // The portable factory hands out the VideoToolbox encoder on macOS.
+  auto encoder = createHardwareEncoder();
+  if (!encoder) fail("createHardwareEncoder returned no encoder");
+  if (encoder->info().backend != "videotoolbox" || !encoder->info().hardware) fail("hardware factory backend");
   EncodeTarget target = selectEncodeTarget(1280, 720, 30, 1, EncodeProfile::Lan);
   std::string code;
   std::string error;

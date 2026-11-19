@@ -316,9 +316,7 @@ bool PgmEngine::ensureEncoderForSignalLocked(std::string &errorCode, std::string
     return true;
   }
   if (!encoder_) {
-#if defined(__APPLE__)
-    encoder_ = createVideoToolboxEncoder();
-#endif
+    encoder_ = createHardwareEncoder();
     if (!encoder_) {
       errorCode = "encoder_unavailable";
       error = "No hardware encoder on this platform.";
@@ -517,9 +515,7 @@ std::string PgmEngine::recordingStart(const std::string &filePath) {
   // the capture queue; hardware only, failure surfaces as encoder_unavailable.
   const EncodeTarget target = selectRecordingTarget(signal.width, signal.height, signal.fpsNum, signal.fpsDen);
   std::shared_ptr<VideoEncoder> encoder;
-#if defined(__APPLE__)
-  encoder = createVideoToolboxEncoder();
-#endif
+  encoder = createHardwareEncoder();
   if (!encoder) {
     throw RpcFailure{"encoder_unavailable", "No hardware encoder on this platform."};
   }
