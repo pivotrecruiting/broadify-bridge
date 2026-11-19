@@ -45,6 +45,7 @@ add_library(live_stream_core STATIC
   src/rgba_to_nv12.cpp
   src/yuv422_to_nv12.cpp
   src/nv12_scale.cpp
+  src/mf_encoder_policy.cpp
 )
 target_include_directories(live_stream_core PUBLIC include)
 target_compile_features(live_stream_core PUBLIC cxx_std_17)
@@ -103,7 +104,7 @@ endif()
 
 if(LIVE_STREAM_BUILD_TESTS)
   foreach(live_test IN ITEMS h264_annexb_test bitrate_ladder_test rgba_to_nv12_test yuv422_to_nv12_test
-    nv12_scale_test)
+    nv12_scale_test mf_encoder_policy_test)
     add_executable(${live_test} tests/${live_test}.cpp)
     target_link_libraries(${live_test} PRIVATE live_stream_core)
     add_test(NAME ${live_test} COMMAND ${live_test})
