@@ -18,6 +18,8 @@ export type SessionLogUploaderOptionsT = {
   logger?: { info: (m: string) => void; warn: (m: string) => void };
   /** Session currently being written; never uploaded by a scan. */
   isSessionOpen?: (sessionId: string) => boolean;
+  /** Runs before each periodic rescan (retention); failures are ignored. */
+  beforePeriodicScan?: () => Promise<unknown>;
 };
 
 /**
@@ -50,7 +52,10 @@ export class SessionLogUploader {
     this.stopPeriodicScan();
     this.rescanTimer = setInterval(() => {
       this.attempts.clear();
-      void this.scan();
+      void Promise.resolve()
+        .then(() => this.options.beforePeriodicScan?.())
+        .catch(() => undefined)
+        .then(() => this.scan());
     }, intervalMs);
     this.rescanTimer.unref?.();
   }

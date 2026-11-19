@@ -67,4 +67,41 @@ describe("SessionLogUploader", () => {
     expect(warn).toHaveBeenCalledTimes(2);
     await expect(fs.access(path.join(dir, "sess-0001-abcd.uploaded.json"))).rejects.toBeDefined();
   });
+
+  test("periodic rescan runs the retention hook first and survives its failure", async () => {
+    jest.useFakeTimers();
+    try {
+      const dir = await makeDir();
+      const order: string[] = [];
+      const fetchFn = jest.fn(async () => {
+        order.push("upload");
+        return { ok: false, status: 503, text: async () => "down" };
+      });
+      let fail = false;
+      const beforePeriodicScan = jest.fn(async () => {
+        order.push("retention");
+        if (fail) {
+          throw new Error("retention failed");
+        }
+      });
+      const uploader = new SessionLogUploader({ apiBaseUrl: "https://app.example", dir, getIdentity: async () => identity, fetchFn, beforePeriodicScan });
+      uploader.startPeriodicScan(1000);
+      expect(beforePeriodicScan).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1000);
+      jest.useRealTimers();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(order.slice(0, 2)).toEqual(["retention", "upload"]);
+
+      fail = true;
+      jest.useFakeTimers();
+      uploader.startPeriodicScan(1000);
+      await jest.advanceTimersByTimeAsync(1000);
+      jest.useRealTimers();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      uploader.stopPeriodicScan();
+      expect(order.filter((step) => step === "upload").length).toBe(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
