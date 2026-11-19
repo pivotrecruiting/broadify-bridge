@@ -55,7 +55,8 @@ target_include_directories(pgm_core PUBLIC src)
 target_include_directories(pgm_core PRIVATE ../meeting-helper/third_party/stb)
 target_link_libraries(pgm_core PUBLIC helper_common live_stream_core)
 
-if(PGM_HELPER_BUILD_BINARY AND APPLE)
+# Opus for the audio track of the helper binary (macOS and Windows).
+macro(pgm_helper_fetch_opus)
   include(FetchContent)
   set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
   set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -64,6 +65,10 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
     GIT_TAG v1.5.2
     GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(opus)
+endmacro()
+
+if(PGM_HELPER_BUILD_BINARY AND APPLE)
+  pgm_helper_fetch_opus()
 
   add_executable(pgm-helper MACOSX_BUNDLE
     src/main.cpp
@@ -94,19 +99,30 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
   )
 endif()
 
-# Windows (ADR-0009): the helper executable follows with the Windows capture
-# sources. Until then the portable entry point, the engine and the Windows
-# platform host can be compiled on request (object library: nothing is linked,
-# nothing ships) so the CI workflow keeps them MSVC-clean.
-option(PGM_HELPER_WINDOWS_COMPILE_CHECK "Compile the portable pgm-helper sources and the Windows platform host (no executable)" OFF)
-if(WIN32 AND PGM_HELPER_WINDOWS_COMPILE_CHECK)
-  add_library(pgm_helper_portable_objects OBJECT
+# Windows (ADR-0009): pgm-helper.exe exists only when the WebRTC part of
+# live-stream was configured, i.e. behind -DLIVE_STREAM_WITH_WEBRTC=ON or the
+# build switch BROADIFY_PGM_WINDOWS=1 (build.ps1 passes the former). Without
+# them this directory configures the pure modules and their tests, nothing else.
+if(PGM_HELPER_BUILD_BINARY AND WIN32 AND TARGET live_stream)
+  pgm_helper_fetch_opus()
+
+  add_executable(pgm-helper
     src/main.cpp
     src/pgm_engine.cpp
     src/platform/platform_host_win.cpp
+    src/capture/uvc_mediafoundation.cpp
+    src/capture/synthetic_source.cpp
+    src/capture/frame_holder_portable.cpp
+    src/audio/audio_capture_wasapi.cpp
+    src/audio/opus_encoder.cpp
+    src/recorder/mp4_recorder_stub.cpp
   )
-  target_include_directories(pgm_helper_portable_objects PRIVATE src)
-  target_link_libraries(pgm_helper_portable_objects PRIVATE pgm_core)
+  target_include_directories(pgm-helper PRIVATE src)
+  # Media Foundation and winsock come with live_stream; the rest is capture
+  # (cfgmgr32: hot-plug and device container), WASAPI (ole32, avrt), the camera
+  # privacy setting (advapi32) and the wide command line (shell32).
+  target_link_libraries(pgm-helper PRIVATE pgm_core live_stream opus
+    mf mfplat mfuuid mfreadwrite ole32 cfgmgr32 avrt advapi32 shell32)
 endif()
 
 if(PGM_HELPER_BUILD_TESTS)
