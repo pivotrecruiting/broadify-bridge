@@ -26,7 +26,7 @@ macOS-Fassung; unter Windows kommt nur `recording_unsupported` dazu.
 | Ton | AVFoundation, Paarung über Modellname | WASAPI Shared Mode, Paarung über Container-ID, ersatzweise Name | D7 |
 | Standbild | ImageIO | portabler JPEG-Pfad | D7 |
 | Aufnahme | zweiter VT-Encoder + AVAssetWriter (ADR-0006) | Stub, `recording_unsupported` | D7, D9 |
-| Helper-Einstieg | `main.mm` | `main.cpp` + Plattform-Host | D6 |
+| Helper-Einstieg | `main.cpp` + `platform/platform_host_mac.mm` (bis D6 `main.mm`) | dasselbe `main.cpp` + `platform/platform_host_win.cpp` | D6 |
 | Meeting-Programm | `program_stream.mm` | gemeinsamer `program_stream.cpp` + Konverter je Plattform | D8 |
 | Bridge-Gate | `platform === "darwin"` | `isPgmPlatformSupported()` mit `BRIDGE_PGM_WINDOWS`, `windowsHide` beim Start | D9 |
 | Packaging | signierte Helper-App | `pgm-helper.exe` in Packaging-, Signier-, VC-Runtime- und Artefaktlisten, nur mit Build-Schalter | D10 |
@@ -76,7 +76,8 @@ npm run test:meeting-helper-native
 
 CI: Workflow `pgm-windows-native.yml` (D1; `windows-2022`, Push auf `feature/pgm-win-*` und manuell) kompiliert und
 fährt ctest: Job `core` ohne jeden Schalter (das, was ein Windows-Release heute kompiliert), Job `encoder` mit
-`LIVE_STREAM_WITH_MF=ON`, Job `full` mit `LIVE_STREAM_WITH_WEBRTC=ON` (vcpkg-OpenSSL und libdatachannel, beide im
+`LIVE_STREAM_WITH_MF=ON`, Job `helper` (nur Kompilieren der portablen Helper-Quellen, siehe „Portabler Helper (D6)“),
+Job `full` mit `LIVE_STREAM_WITH_WEBRTC=ON` (vcpkg-OpenSSL und libdatachannel, beide im
 Cache; `webrtc_loopback_test` mit einer Wiederholung; `dumpbin` prüft, dass keine OpenSSL-DLL importiert wird). Der
 Encoder-Smoke-Test überspringt dort mangels Hardware-MFT. Grün im CI heißt: es kompiliert, die
 Media-Foundation-Verdrahtung hält gegen den Software-MFT und der Publisher verbindet sich über Loopback. Es heißt
@@ -89,6 +90,28 @@ $env:BRIDGE_PGM_WINDOWS = "1"
 $env:BRIDGE_LOG_PERF = "1"
 $env:BRIDGE_PGM_HELPER_PATH = "<repo>\apps\bridge\native\pgm-helper\pgm-helper.exe"
 ```
+
+## Portabler Helper (D6)
+
+Der PGM-Helper ist in einen portablen Kern und je eine Plattformschicht geteilt. Das macOS-Verhalten ist dasselbe wie
+vorher; unter Windows gibt es noch keine ausführbare Datei (die kommt mit den Capture-Quellen in D7).
+
+| Naht | Portable Deklaration | macOS | Windows |
+|---|---|---|---|
+| Prozess-Host | `src/platform/platform_host.h`: `processArgumentsUtf8`, `installSignalHandlers`, `configureStdoutForEvents`, `initializePlatform`, `startParentWatchdog`, `runPlatformLoop`, `probeEncoderJson` | `platform_host_mac.mm`: SIGINT/SIGTERM, SIGPIPE ignoriert, `NSApplication` als Accessory, Watchdog mit `kill(pid, 0)` alle 2 s, stdout zeilengepuffert | `platform_host_win.cpp`: `SetConsoleCtrlHandler`, COM-MTA + `MFStartup`, Watchdog mit `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject`, Argumente über `CommandLineToArgvW`, stdout ungepuffert (die UCRT lehnt `_IOLBF` mit Puffergröße 0 ab) |
+| Videoquellen | `capture/video_source.h`: `createUvcEnumerator()`, `createSyntheticSource()` | `uvc_avfoundation.mm`, `synthetic_source.mm` | D7 |
+| Ton | `audio/audio_source.h`: `createPairedAudioSource()` | `audio_capture_avfoundation.mm` | D7 |
+| Standbild | `capture/frame_holder.h`: `retainFrame()` hält das letzte Bild über den Capture-Callback hinaus; `capture/snapshot.h`: `jpegBase64FromFrame()` | `frame_holder_mac.mm` (hält den `CVPixelBuffer`), `snapshot.mm` | D7 |
+| Aufnahme | `recorder/mp4_recorder.h`: `appendVideo(const EncodedAccessUnit &)`, `appendAudio(const AudioChunk &)` | `mp4_recorder.mm` reicht an die bisherigen `CMSampleBuffer`-Wege weiter | Stub (D7) |
+| Encoder-Sample | `live_stream/video_encoder.h`: `releaseEncodedSample()` | gibt das `CMSampleBuffer` der Einheit frei | nichts zu tun |
+
+- `src/main.cpp` und `src/pgm_engine.cpp` enthalten keine Plattformweichen mehr
+  (`scripts/pgm-helper-portable-contract.test.cjs`, Teil von `test:release-contracts`).
+- Eine Fabrik darf `nullptr` liefern: ohne UVC-Backend meldet die Engine `input_not_found`, ohne Ton läuft die Vorschau
+  stumm. Der Encoder kommt wie bisher aus `createHardwareEncoder()`.
+- CMake-Option `PGM_HELPER_WINDOWS_COMPILE_CHECK` (Standard aus, nur Windows): kompiliert `main.cpp`, `pgm_engine.cpp`
+  und `platform_host_win.cpp` als Objektbibliothek `pgm_helper_portable_objects`. Es wird nichts gelinkt und nichts
+  ausgeliefert; der CI-Job `helper` hält die Dateien damit MSVC-sauber, bis D7 daraus `pgm-helper.exe` macht.
 
 ## WebRTC-Build (D5)
 
@@ -170,6 +193,7 @@ Tests:
 | `mf_encoder_fake_mft_test` | Windows mit `LIVE_STREAM_WITH_MF` | Encoder gegen einen asynchronen MFT im Test: Reihenfolge der Einrichtung, Ereignisschleife, Postfach, erzwungener Keyframe, Formatwechsel, Drain, Ausweichen auf den nächsten Kandidaten, Abbau |
 | `mf_encoder_software_seam_test` | wie oben | Microsofts Software-H.264-MFT, in den Test-MFT eingewickelt und nur über die Test-Naht (`src/mf_encoder_internal.h`) erreichbar: echte H.264-Daten durch die Media-Foundation-Verdrahtung. Überspringt (77), wenn der MFT fehlt |
 | `mf_encoder_smoke_test` | wie oben | echter Hardware-MFT über `createHardwareEncoder()`, 60 NV12-Bilder 720p30. Überspringt (77) ohne Hardware-MFT, also auf dem CI-Runner |
+| `pgm_options_test` | alle Plattformen | Kommandozeile des PGM-Helpers: die UTF-8-Argumentliste des Plattform-Hosts ergibt dasselbe wie `argc`/`argv` |
 | `webrtc_loopback_test` | macOS; Windows mit `LIVE_STREAM_WITH_WEBRTC` | Publisher gegen einen libdatachannel-„Browser“ im selben Prozess: Answer, ICE über Loopback, RTP für eine synthetische IDR-Einheit |
 
 Offen bis zur Sitzung am Gerät (im CI nicht prüfbar):
