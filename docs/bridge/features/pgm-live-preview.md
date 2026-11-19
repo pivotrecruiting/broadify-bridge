@@ -1,10 +1,13 @@
 # Live-PGM-Vorschau (Studio)
 
-Status: Phase 0 (Gerüst). Feature-Gate `BRIDGE_PGM_PREVIEW=1`, Web-App zusätzlich Entitlement `feature_live_program`.
+Status: Phase 1 (macOS) umgesetzt und standardmäßig an; `BRIDGE_PGM_PREVIEW=0` ist der Notaus je Rechner (siehe
+„Betrieb“), die Web-App schaltet zusätzlich über das Entitlement `feature_live_program` frei. Windows ist in
+Vorbereitung: `docs/bridge/features/pgm-live-preview-windows.md` (ADR-0009).
 
 ## Ziel
 Programmbild des Mischers (UVC: ATEM Mini, RØDECaster Video, Elgato; DeckLink-Eingänge) live in broadifyStudio,
-per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Entscheidungen: ADR-0002 bis 0004.
+per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Entscheidungen: ADR-0002 bis 0006,
+für Windows ADR-0009.
 
 ## Verträge
 - Typen: `packages/protocol/src/index.ts` (`VideoSignalT`, `VideoInputDescriptorT`, `PgmStatusT`,
@@ -75,7 +78,7 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
   Schreiben in geschützte Zielordner einen Freigabedialog zeigt statt still mit einem Berechtigungsfehler abzubrechen.
 - Standbild: `pgm_snapshot {quality?}` liefert JPEG als Base64 (Relay-Grenze 2 MB beachtet), Download im Browser.
 - Noch offen in Phase 1: Browser-Test mit echtem ATEM/RØDECaster (Ton, TURN von außerhalb), Latenzmessung.
-- Phase 2: Windows UVC. Phase 3/4: DeckLink macOS/Windows. Phase 5: Ausbau. Phase 6: PGM-Aufzeichnung.
+- Phase 2: Windows UVC (Vorbereitung hinter Schaltern, Runbook: `pgm-live-preview-windows.md`). Phase 3/4: DeckLink macOS/Windows. Phase 5: Ausbau. Phase 6: PGM-Aufzeichnung.
 
 ## Betrieb
 - Standardmäßig an (der Helper startet erst bei Quelle oder Zuschauer); `BRIDGE_PGM_PREVIEW=0` ist der Notaus je Rechner, `BRIDGE_PGM_MAX_VIEWERS` (Standard 4, höchstens 16) begrenzt Zuschauer. Wer das Programm sehen darf, entscheidet die Web-App über `feature_live_program`; `capabilities.live_program.enabled` spiegelt den Notaus, `supported` die Bridge-Version.

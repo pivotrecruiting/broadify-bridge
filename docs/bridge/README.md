@@ -23,6 +23,9 @@
 - Feature: Device Outputs: `docs/bridge/features/device-outputs.md`
 - Feature: macOS Display Output Detection: `docs/bridge/features/display-output-detection-macos.md`
 - Feature: Relay-Protokoll: `docs/bridge/features/relay-protocol.md`
+- Feature: Live-PGM-Vorschau (Studio, Meeting-Programm): `docs/bridge/features/pgm-live-preview.md`
+- Feature: Live-PGM-Vorschau unter Windows (Vorbereitung, Runbook für den Gerätetest): `docs/bridge/features/pgm-live-preview-windows.md`
+- Entscheidungen (ADR): `docs/bridge/architecture/adr/README.md`
 - Support: Relay hinter TLS-Inspection (Firmennetz): `docs/bridge/support/relay-tls-trust-runbook.md`
 - Support: Bildqualität in Teams und Zoom: `docs/bridge/support/meeting-apps-teams-zoom.md`
 - Support: Virtuelle Kamera: `docs/bridge/support/vcam-runbook.md`
