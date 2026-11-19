@@ -53,7 +53,10 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
   private pendingCompletionTimeout: NodeJS.Timeout | null = null;
   private readonly switcherEventListeners = new Set<(event: SwitcherEventT) => void>();
   private lastSwitcherState: AtemStateLikeT | undefined = undefined;
-  /** House timecode: last `TimeCommand` reading, polled once a second while connected. */
+  /**
+   * House timecode: last `TimeCommand` reading, polled once a second while
+   * connected AND someone listens for switcher events (session log on).
+   */
   private timecodeReading: TimecodeReadingT | null = null;
   private timecodeTimer: NodeJS.Timeout | null = null;
   private readonly timecodePollMs = 1000;
@@ -101,7 +104,9 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
 
     // Set up connected handler
     const onConnected = () => {
-      this.startTimecodePolling();
+      if (this.switcherEventListeners.size > 0) {
+        this.startTimecodePolling();
+      }
       if (timeoutId) {
         clearTimeout(timeoutId);
         timeoutId = null;
@@ -195,8 +200,11 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
 
     const onStateChanged = () => {
       this.updateMacrosFromState();
-      this.trackTimecode();
-      this.emitSwitcherEvents();
+      // Session log off (no listener): no snapshot, no timecode tracking.
+      if (this.switcherEventListeners.size > 0) {
+        this.trackTimecode();
+        this.emitSwitcherEvents();
+      }
     };
 
     atem.on("connected", onConnected);
@@ -352,12 +360,22 @@ export class AtemAdapter extends EventEmitter implements EngineAdapter {
   /**
    * Subscribe to switcher events (program/preview, keyers, recording,
    * streaming) derived from atem-connection state changes. Observability
-   * only: listeners never affect macro control.
+   * only: listeners never affect macro control. Timecode polling and state
+   * snapshots run only while there is at least one listener: they start with
+   * the first subscription and stop with the last unsubscribe.
    */
   onSwitcherEvent(callback: (event: SwitcherEventT) => void): () => void {
+    const wasIdle = this.switcherEventListeners.size === 0;
     this.switcherEventListeners.add(callback);
+    if (wasIdle && this.atemConnection && this.state.status === "connected") {
+      this.startTimecodePolling();
+    }
     return () => {
       this.switcherEventListeners.delete(callback);
+      if (this.switcherEventListeners.size === 0) {
+        this.lastSwitcherState = undefined;
+        this.stopTimecodePolling();
+      }
     };
   }
 

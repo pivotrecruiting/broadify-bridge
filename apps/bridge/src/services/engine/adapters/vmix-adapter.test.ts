@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+import type { Socket } from "node:net";
 import { VmixAdapter } from "./vmix-adapter.js";
 
 const mockFetch = jest.fn();
@@ -474,6 +476,72 @@ describe("VmixAdapter", () => {
       expect(state.ip).toBe("10.0.0.1");
       expect(state.port).toBe(8088);
       expect(state.type).toBe("vmix");
+    });
+  });
+
+  describe("activator feed (session log) follows the listeners", () => {
+    class FakeSocket extends EventEmitter {
+      readonly connect = jest.fn();
+      readonly write = jest.fn();
+      readonly setTimeout = jest.fn();
+      readonly setKeepAlive = jest.fn();
+      readonly destroy = jest.fn();
+    }
+    let sockets: FakeSocket[];
+    const createActivatorSocket = () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket as unknown as Socket;
+    };
+
+    beforeEach(() => {
+      sockets = [];
+      mockFetch.mockResolvedValue(okResponse("<vmix></vmix>"));
+      adapter = new VmixAdapter({ createActivatorSocket });
+    });
+
+    it("opens TCP 8099 on connect when subscribed before connect (engine service order)", async () => {
+      const received: Array<{ type: string }> = [];
+      const unsubscribe = adapter.onSwitcherEvent((event) => received.push(event));
+      expect(sockets).toHaveLength(0); // not connected yet
+      await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
+      expect(sockets).toHaveLength(1);
+      expect(sockets[0].connect).toHaveBeenCalledWith(8099, "10.0.0.1");
+
+      sockets[0].emit("data", Buffer.from("ACTS OK Recording 0 1\r\n"));
+      expect(received.map((event) => event.type)).toEqual(["recording_started"]);
+
+      unsubscribe();
+      expect(sockets[0].destroy).toHaveBeenCalledTimes(1);
+      expect(sockets).toHaveLength(1);
+    });
+
+    it("opens with the first subscription on a connected vMix and closes with the last unsubscribe", async () => {
+      await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
+      expect(sockets).toHaveLength(0);
+
+      const first = adapter.onSwitcherEvent(() => undefined);
+      const second = adapter.onSwitcherEvent(() => undefined);
+      expect(sockets).toHaveLength(1);
+
+      first();
+      expect(sockets[0].destroy).not.toHaveBeenCalled();
+      second();
+      expect(sockets[0].destroy).toHaveBeenCalledTimes(1);
+
+      // Nothing reconnects after the last unsubscribe, and disconnect stays clean.
+      sockets[0].emit("close");
+      await adapter.disconnect();
+      expect(sockets).toHaveLength(1);
+    });
+
+    it("does not reopen after disconnect when a listener is still subscribed", async () => {
+      adapter.onSwitcherEvent(() => undefined);
+      await adapter.connect({ type: "vmix", ip: "10.0.0.1", port: 8088 });
+      await adapter.disconnect();
+      expect(sockets[0].destroy).toHaveBeenCalledTimes(1);
+      adapter.onSwitcherEvent(() => undefined);
+      expect(sockets).toHaveLength(1);
     });
   });
 });

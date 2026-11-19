@@ -12,6 +12,7 @@ import type {
   EngineStateT,
 } from "../../engine-types.js";
 import { EventEmitter } from "events";
+import type { Socket } from "node:net";
 import {
   EngineError,
   EngineErrorCode,
@@ -42,8 +43,19 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
   private consecutivePollingFailures = 0;
   private client: VmixHttpClient | null = null;
   private activators: VmixActivatorsClient | null = null;
+  /** IP of the connected vMix; the activator feed attaches to it on demand. */
+  private activatorsIp: string | null = null;
   private readonly switcherEventListeners = new Set<(event: SwitcherEventT) => void>();
   private inputNames = new Map<number, string>();
+  private readonly createActivatorSocket: (() => Socket) | undefined;
+
+  /**
+   * @param options.createActivatorSocket Socket factory of the activator feed (tests).
+   */
+  constructor(options: { createActivatorSocket?: () => Socket } = {}) {
+    super();
+    this.createActivatorSocket = options.createActivatorSocket;
+  }
 
   /**
    * Connect to vMix instance
@@ -90,7 +102,10 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
 
       // Start polling for status updates
       this.startPolling();
-      this.startActivators(config.ip);
+      this.activatorsIp = config.ip;
+      if (this.switcherEventListeners.size > 0) {
+        this.startActivators(config.ip);
+      }
     } catch (error: unknown) {
       const engineError =
         error instanceof EngineError
@@ -342,19 +357,30 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
 
   /**
    * Subscribe to switcher events from the vMix TCP activator feed (session log).
+   * The second connection (TCP 8099) exists only while there is at least one
+   * listener: opened with the first subscription, closed with the last
+   * unsubscribe.
    */
   onSwitcherEvent(callback: (event: SwitcherEventT) => void): () => void {
+    const wasIdle = this.switcherEventListeners.size === 0;
     this.switcherEventListeners.add(callback);
+    if (wasIdle && this.activatorsIp && this.state.status === "connected") {
+      this.startActivators(this.activatorsIp);
+    }
     return () => {
       this.switcherEventListeners.delete(callback);
+      if (this.switcherEventListeners.size === 0) {
+        this.closeActivators();
+      }
     };
   }
 
   private startActivators(ip: string): void {
-    this.stopActivators();
+    this.closeActivators();
     try {
       this.activators = new VmixActivatorsClient({
         ip,
+        createSocket: this.createActivatorSocket,
         inputName: (input) => this.inputNames.get(input) ?? null,
         onEvent: (event) => {
           for (const listener of this.switcherEventListeners) {
@@ -373,6 +399,11 @@ export class VmixAdapter extends EventEmitter implements EngineAdapter {
   }
 
   private stopActivators(): void {
+    this.activatorsIp = null;
+    this.closeActivators();
+  }
+
+  private closeActivators(): void {
     this.activators?.close();
     this.activators = null;
     this.inputNames.clear();
