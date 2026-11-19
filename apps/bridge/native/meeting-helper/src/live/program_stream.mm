@@ -1,12 +1,12 @@
 #include "live/program_stream.h"
 
+#include "live/program_stream_frame_copy.h"
 #include "live_stream/bitrate_ladder.h"
 #include "live_stream/monotonic_clock.h"
 #include "live_stream/publisher.h"
 #include "live_stream/video_encoder.h"
 #include "preview/preview_frame_store.h"
 #include "state/meeting_state.h"
-#include "util/pixel_swizzle.h"
 #include "helper_common/helper_event_log.h"
 #include "helper_common/json_utils.h"
 
@@ -30,7 +30,6 @@ namespace {
 constexpr auto kIdlePoll = std::chrono::milliseconds(100);
 constexpr auto kFrameWait = std::chrono::milliseconds(200);
 constexpr auto kHousekeeping = std::chrono::seconds(1);
-constexpr int kPoolMinBuffers = 3;
 
 }  // namespace
 
@@ -49,7 +48,7 @@ struct ProgramStream::Impl {
   std::string profile = "auto";
   std::string lastErrorCode;
   std::string lastErrorMessage;
-  CVPixelBufferPoolRef pool = nullptr;
+  ProgramFramePool pool;
 
   std::thread worker;
   std::atomic<bool> running{false};
@@ -78,10 +77,7 @@ struct ProgramStream::Impl {
   void teardownEncoderLocked() {
     encoder.reset();
     encoderConfigured = false;
-    if (pool != nullptr) {
-      CVPixelBufferPoolRelease(pool);
-      pool = nullptr;
-    }
+    pool.reset();
   }
 
   bool ensureEncoderLocked(uint32_t width, uint32_t height) {
@@ -107,15 +103,7 @@ struct ProgramStream::Impl {
       encoder.reset();
       return false;
     }
-    NSDictionary *attrs = @{
-      (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
-      (__bridge NSString *)kCVPixelBufferWidthKey : @(wanted.width),
-      (__bridge NSString *)kCVPixelBufferHeightKey : @(wanted.height),
-      (__bridge NSString *)kCVPixelBufferIOSurfacePropertiesKey : @{},
-    };
-    NSDictionary *poolAttrs = @{(__bridge NSString *)kCVPixelBufferPoolMinimumBufferCountKey : @(kPoolMinBuffers)};
-    if (CVPixelBufferPoolCreate(kCFAllocatorDefault, (__bridge CFDictionaryRef)poolAttrs, (__bridge CFDictionaryRef)attrs, &pool) !=
-        kCVReturnSuccess) {
+    if (!pool.configure(wanted.width, wanted.height)) {
       lastErrorCode = "encoder_unavailable";
       lastErrorMessage = "CVPixelBufferPool for the program stream could not be created.";
       teardownEncoderLocked();
@@ -155,23 +143,14 @@ struct ProgramStream::Impl {
         droppedFrames.fetch_add(1);
         return;
       }
-      if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer) != kCVReturnSuccess || pixelBuffer == nullptr) {
+      pixelBuffer = pool.createBuffer();
+      if (pixelBuffer == nullptr) {
         droppedFrames.fetch_add(1);  // every pooled buffer still sits in the encoder: drop, never block
         return;
       }
       activeEncoder = encoder.get();
     }
-    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-    uint8_t *dst = static_cast<uint8_t *>(CVPixelBufferGetBaseAddress(pixelBuffer));
-    const size_t dstStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
-    const size_t srcStride = static_cast<size_t>(frame.width) * 4;
-    const size_t rows = static_cast<size_t>(frame.height);
-    if (frame.rgba.size() >= srcStride * rows) {
-      for (size_t row = 0; row < rows; ++row) {
-        swizzleRgbaToBgra(frame.rgba.data() + row * srcStride, dst + row * dstStride, frame.width);
-      }
-    }
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    copyRgbaFrameToPixelBuffer(frame.rgba.data(), frame.rgba.size(), frame.width, frame.height, pixelBuffer);
     live::CapturedFrame captured;
     captured.pixelBuffer = pixelBuffer;
     captured.width = frame.width;
