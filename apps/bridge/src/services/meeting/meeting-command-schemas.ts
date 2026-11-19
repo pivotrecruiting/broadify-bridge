@@ -174,7 +174,8 @@ export const MeetingMediaFetchSchema = z
 
 // Shared placement fields for bridge-internal content layers (video files
 // and browser sources) on the meeting BACK graphics plane. Fractions of the
-// 1920x1080 stage; ignored in fullscreen mode.
+// stage (1920x1080, or the plane size of a portrait program); ignored in
+// fullscreen mode.
 const meetingContentPlacementFields = {
   mode: z.enum(["pip", "fullscreen"]).default("pip"),
   x: z.number().min(0).max(1).default(0.6),

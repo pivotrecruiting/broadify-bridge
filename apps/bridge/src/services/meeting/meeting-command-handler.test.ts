@@ -4,6 +4,8 @@ const mockGetStatus = jest.fn();
 const mockStart = jest.fn();
 const mockStop = jest.fn();
 const mockGetFullStatus = jest.fn();
+const mockGetProgramFormat = jest.fn();
+const mockGetMeetingCapabilities = jest.fn(() => ({ program_portrait: true }));
 const mockNotifyRecordingChanged = jest.fn();
 const mockRequestStatusPublish = jest.fn();
 const mockMeetingBackGraphicsConfigureOutputs = jest.fn();
@@ -31,6 +33,7 @@ jest.mock("./meeting-helper-manager.js", () => ({
     start: (...args: unknown[]) => mockStart(...args),
     stop: (...args: unknown[]) => mockStop(...args),
     getFullStatus: (...args: unknown[]) => mockGetFullStatus(...args),
+    getProgramFormat: (...args: unknown[]) => mockGetProgramFormat(...args),
     noteCameraCall: () => undefined,
     noteCameraStopped: () => undefined,
     noteVirtualCameraStarted: () => undefined,
@@ -41,6 +44,14 @@ jest.mock("./meeting-helper-manager.js", () => ({
     requestStatusPublish: (...args: unknown[]) =>
       mockRequestStatusPublish(...args),
   },
+}));
+
+jest.mock("./meeting-capabilities.js", () => ({
+  ...jest.requireActual<typeof import("./meeting-capabilities.js")>(
+    "./meeting-capabilities.js",
+  ),
+  getMeetingCapabilities: (...args: unknown[]) =>
+    mockGetMeetingCapabilities(...args),
 }));
 
 jest.mock("./meeting-graphics-manager.js", () => ({
@@ -167,6 +178,8 @@ describe("meeting-command-handler", () => {
     delete process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT;
     mockGetClient.mockReturnValue(mockClient);
     mockIsRunning.mockReturnValue(true);
+    mockGetProgramFormat.mockReturnValue(null);
+    mockGetMeetingCapabilities.mockReturnValue({ program_portrait: true });
     mockClient.getState.mockResolvedValue({ camera_permission_status: "authorized" });
     mockMeetingBackGraphicsConfigureOutputs.mockResolvedValue(undefined);
     mockMeetingFrontGraphicsConfigureOutputs.mockResolvedValue(undefined);
@@ -314,6 +327,158 @@ describe("meeting-command-handler", () => {
       await expect(
         handleMeetingCommand("meeting_engine_start", { width: 1 }),
       ).rejects.toThrow("Invalid payload for meeting_engine_start");
+    });
+
+    describe("program geometry", () => {
+      const LANDSCAPE = { width: 1920, height: 1080, fps: 30 };
+      const PORTRAIT = { width: 1080, height: 1920, fps: 30 };
+      const settlePrewarm = () =>
+        new Promise((resolve) => setImmediate(resolve));
+
+      it("refuses a portrait start on a platform without the capability", async () => {
+        mockIsRunning.mockReturnValueOnce(false);
+        mockGetMeetingCapabilities.mockReturnValue({ program_portrait: false });
+
+        const result = await handleMeetingCommand("meeting_engine_start", PORTRAIT);
+
+        expect(result.success).toBe(false);
+        expect(result.errorCode).toBe("meeting_program_portrait_unsupported");
+        expect(mockStart).not.toHaveBeenCalled();
+        expect(mockFrameBusCreateWriter).not.toHaveBeenCalled();
+      });
+
+      it("refuses portrait on an incapable platform even while a landscape engine runs", async () => {
+        mockGetMeetingCapabilities.mockReturnValue({ program_portrait: false });
+        mockGetProgramFormat.mockReturnValue(LANDSCAPE);
+
+        const result = await handleMeetingCommand("meeting_engine_start", PORTRAIT);
+
+        expect(result.errorCode).toBe("meeting_program_portrait_unsupported");
+      });
+
+      it("still starts landscape on a platform without the capability", async () => {
+        mockIsRunning.mockReturnValueOnce(false);
+        mockGetMeetingCapabilities.mockReturnValue({ program_portrait: false });
+        mockStart.mockResolvedValue({ state: "running", program_format: LANDSCAPE });
+
+        const result = await handleMeetingCommand("meeting_engine_start", LANDSCAPE);
+        await settlePrewarm();
+
+        expect(result.success).toBe(true);
+        expect(mockStart).toHaveBeenCalledWith(LANDSCAPE);
+      });
+
+      it("starts a portrait engine where the capability is present", async () => {
+        mockIsRunning.mockReturnValueOnce(false);
+        mockStart.mockResolvedValue({ state: "running", program_format: PORTRAIT });
+
+        const result = await handleMeetingCommand("meeting_engine_start", PORTRAIT);
+        await settlePrewarm();
+
+        expect(result.success).toBe(true);
+        expect(mockStart).toHaveBeenCalledWith(PORTRAIT);
+      });
+
+      it("requires a restart when the running engine has a different geometry", async () => {
+        mockGetProgramFormat.mockReturnValue(LANDSCAPE);
+        mockGetStatus.mockReturnValue({ state: "running", program_format: LANDSCAPE });
+        mockClient.recordingStatus.mockResolvedValue({ recording: { active: false } });
+
+        const result = await handleMeetingCommand("meeting_engine_start", PORTRAIT);
+
+        expect(result.success).toBe(false);
+        expect(result.errorCode).toBe("meeting_engine_restart_required");
+        expect(result.error).toContain("1920x1080");
+        expect(result.data).toEqual({ state: "running", program_format: LANDSCAPE });
+        // Never restart or touch the live graphics regions from here.
+        expect(mockStart).not.toHaveBeenCalled();
+        expect(mockStop).not.toHaveBeenCalled();
+        expect(mockFrameBusCreateWriter).not.toHaveBeenCalled();
+        expect(mockMeetingBackGraphicsInvalidate).not.toHaveBeenCalled();
+      });
+
+      it("names the running recording when a geometry change is refused", async () => {
+        mockGetProgramFormat.mockReturnValue(LANDSCAPE);
+        mockGetStatus.mockReturnValue({ state: "running" });
+        mockClient.recordingStatus.mockResolvedValue({ recording: { active: true } });
+
+        const result = await handleMeetingCommand("meeting_engine_start", PORTRAIT);
+
+        expect(result.errorCode).toBe("meeting_engine_restart_required");
+        expect(result.error).toContain("recording");
+        expect(mockStop).not.toHaveBeenCalled();
+        expect(mockClient.recordingStop).not.toHaveBeenCalled();
+      });
+
+      it("still refuses the geometry change when recording.status fails", async () => {
+        mockGetProgramFormat.mockReturnValue(PORTRAIT);
+        mockGetStatus.mockReturnValue({ state: "running" });
+        mockClient.recordingStatus.mockRejectedValue(new Error("rpc down"));
+
+        const result = await handleMeetingCommand("meeting_engine_start", LANDSCAPE);
+
+        expect(result.errorCode).toBe("meeting_engine_restart_required");
+      });
+
+      it.each([
+        ["explicit landscape", LANDSCAPE, LANDSCAPE],
+        ["defaults", {}, LANDSCAPE],
+        ["portrait", PORTRAIT, PORTRAIT],
+        ["another frame rate", { ...LANDSCAPE, fps: 60 }, LANDSCAPE],
+      ])("stays idempotent for the same geometry (%s)", async (_name, payload, running) => {
+        mockGetProgramFormat.mockReturnValue(running);
+        mockGetStatus.mockReturnValue({ state: "running", program_format: running });
+
+        const result = await handleMeetingCommand("meeting_engine_start", payload);
+
+        expect(result).toEqual({
+          success: true,
+          data: { state: "running", program_format: running },
+        });
+        expect(mockStart).not.toHaveBeenCalled();
+        expect(mockClient.recordingStatus).not.toHaveBeenCalled();
+        expect(mockFrameBusCreateWriter).not.toHaveBeenCalled();
+      });
+
+      it("reports restart-required when it joined a start with another geometry", async () => {
+        mockIsRunning.mockReturnValueOnce(false);
+        mockStart.mockResolvedValue({ state: "running", program_format: LANDSCAPE });
+
+        const result = await handleMeetingCommand("meeting_engine_start", PORTRAIT);
+
+        expect(result.success).toBe(false);
+        expect(result.errorCode).toBe("meeting_engine_restart_required");
+      });
+
+      it("pre-warms the graphics planes at 1920x1080@30 for a landscape engine", async () => {
+        mockIsRunning.mockReturnValueOnce(false);
+        mockStart.mockResolvedValue({ state: "running" });
+
+        await handleMeetingCommand("meeting_engine_start", { width: 1280, height: 720 });
+        await settlePrewarm();
+
+        expect(mockMeetingBackGraphicsConfigureOutputs).toHaveBeenCalledWith(
+          expect.objectContaining({ format: LANDSCAPE }),
+        );
+        expect(mockMeetingFrontGraphicsConfigureOutputs).toHaveBeenCalledWith(
+          expect.objectContaining({ format: LANDSCAPE }),
+        );
+      });
+
+      it("pre-warms the graphics planes at the canvas size for a portrait engine", async () => {
+        mockIsRunning.mockReturnValueOnce(false);
+        mockStart.mockResolvedValue({ state: "running", program_format: PORTRAIT });
+
+        await handleMeetingCommand("meeting_engine_start", PORTRAIT);
+        await settlePrewarm();
+
+        expect(mockMeetingBackGraphicsConfigureOutputs).toHaveBeenCalledWith(
+          expect.objectContaining({ format: PORTRAIT }),
+        );
+        expect(mockMeetingFrontGraphicsConfigureOutputs).toHaveBeenCalledWith(
+          expect.objectContaining({ format: PORTRAIT }),
+        );
+      });
     });
   });
 
@@ -836,6 +1001,53 @@ describe("meeting-command-handler", () => {
       expect(process.env.BRIDGE_FRAMEBUS_PIXEL_FORMAT).toBeUndefined();
     });
 
+    it("follows a portrait engine when the request is landscape", async () => {
+      mockGetProgramFormat.mockReturnValue({ width: 1080, height: 1920, fps: 30 });
+
+      const result = await handleMeetingCommand(
+        "meeting_graphics_configure_outputs",
+        { width: 1920, height: 1080, fps: 25 },
+      );
+
+      expect(mockMeetingBackGraphicsConfigureOutputs).toHaveBeenCalledWith(
+        expect.objectContaining({ format: { width: 1080, height: 1920, fps: 25 } }),
+      );
+      expect(mockMeetingFrontGraphicsConfigureOutputs).toHaveBeenCalledWith(
+        expect.objectContaining({ format: { width: 1080, height: 1920, fps: 25 } }),
+      );
+      // The response reports what was configured, not what was asked for.
+      expect(result.data).toMatchObject({ width: 1080, height: 1920, fps: 25 });
+    });
+
+    it("follows a landscape engine when the request is portrait", async () => {
+      mockGetProgramFormat.mockReturnValue({ width: 1280, height: 720, fps: 30 });
+
+      const result = await handleMeetingCommand(
+        "meeting_graphics_configure_outputs",
+        { width: 1080, height: 1920, fps: 24 },
+      );
+
+      expect(result.data).toMatchObject({ width: 1280, height: 720, fps: 24 });
+    });
+
+    it("keeps the requested size when the orientation matches the engine", async () => {
+      // A 1280x720 engine with 1920x1080 planes is today's default pairing.
+      mockGetProgramFormat.mockReturnValue({ width: 1280, height: 720, fps: 30 });
+
+      const landscape = await handleMeetingCommand(
+        "meeting_graphics_configure_outputs",
+        { width: 1920, height: 1080, fps: 23 },
+      );
+      expect(landscape.data).toMatchObject({ width: 1920, height: 1080, fps: 23 });
+
+      mockGetProgramFormat.mockReturnValue({ width: 1080, height: 1920, fps: 30 });
+      const portrait = await handleMeetingCommand(
+        "meeting_graphics_configure_outputs",
+        { width: 720, height: 1280, fps: 23 },
+      );
+      expect(portrait.data).toMatchObject({ width: 720, height: 1280, fps: 23 });
+    });
+
     it("restores FrameBus env when meeting graphics configuration fails", async () => {
       process.env.BRIDGE_FRAMEBUS_NAME = "studio-bus";
       process.env.BRIDGE_FRAMEBUS_SLOT_COUNT = "4";
@@ -1152,6 +1364,61 @@ describe("meeting-command-handler", () => {
       expect(mockRequestStatusPublish).toHaveBeenCalledWith(
         "browser_source_set",
       );
+    });
+  });
+
+  describe("content layer stage", () => {
+    const sentHtml = (): string =>
+      (mockMeetingBackGraphicsSendInternalLayer.mock.calls.at(-1)?.[0] as { html: string })
+        .html;
+
+    it("places content layers on the 1920x1080 stage for landscape planes", async () => {
+      await handleMeetingCommand("meeting_graphics_configure_outputs", {
+        width: 1280,
+        height: 720,
+        fps: 22,
+      });
+
+      await handleMeetingCommand("meeting_browser_source_set", {
+        url: "https://example.test/source",
+        mode: "fullscreen",
+      });
+      expect(sentHtml()).toContain("width:1920px;height:1080px;");
+
+      await handleMeetingCommand("meeting_content_video_set", {
+        asset_id: "asset-video",
+        mode: "pip",
+        x: 0.5,
+        y: 0.5,
+        width: 0.5,
+        height: 0.5,
+      });
+      expect(sentHtml()).toContain("left:960px;top:540px;width:960px;height:540px;");
+    });
+
+    it("places content layers on the plane size of a portrait program", async () => {
+      mockGetProgramFormat.mockReturnValue({ width: 1080, height: 1920, fps: 30 });
+      await handleMeetingCommand("meeting_graphics_configure_outputs", {
+        width: 1920,
+        height: 1080,
+        fps: 21,
+      });
+
+      await handleMeetingCommand("meeting_browser_source_set", {
+        url: "https://example.test/source",
+        mode: "fullscreen",
+      });
+      expect(sentHtml()).toContain("width:1080px;height:1920px;");
+
+      await handleMeetingCommand("meeting_content_video_set", {
+        asset_id: "asset-video",
+        mode: "pip",
+        x: 0.5,
+        y: 0.5,
+        width: 0.5,
+        height: 0.5,
+      });
+      expect(sentHtml()).toContain("left:540px;top:960px;width:540px;height:960px;");
     });
   });
 

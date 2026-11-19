@@ -26,8 +26,10 @@ import {
   videoMimeForFilename,
 } from "./meeting-media-service.js";
 import {
+  DEFAULT_MEETING_CONTENT_STAGE_SIZE,
   MEETING_BROWSER_SOURCE_LAYER_ID,
   MEETING_CONTENT_VIDEO_LAYER_ID,
+  type MeetingContentStageSizeT,
   buildBrowserSourceLayerHtml,
   buildVideoLayerHtml,
   validateBrowserSourceUrl,
@@ -65,6 +67,14 @@ import {
   meetingFrontGraphicsManager,
 } from "./meeting-graphics-manager.js";
 import { loadFrameBusModule } from "../graphics/framebus/framebus-client.js";
+import {
+  MEETING_ENGINE_RESTART_REQUIRED_CODE,
+  MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE,
+  getMeetingCapabilities,
+  isPortraitGeometry,
+  isSameProgramGeometry,
+  resolveMeetingProgramFormat,
+} from "./meeting-capabilities.js";
 
 /** Reads `recording.active` out of a recording.* RPC result, default false. */
 function isRecordingActive(data: unknown): boolean {
@@ -127,6 +137,41 @@ function requireClient(): MeetingHelperClient {
 let lastConfiguredGraphicsOutputsKey: string | null = null;
 let pendingGraphicsOutputsKey: string | null = null;
 let graphicsOutputsQueue: Promise<void> = Promise.resolve();
+/**
+ * Size of the most recently requested meeting graphics planes. The internal
+ * content layers (video file, browser source) are laid out in plane pixels,
+ * so their stage has to follow it once the planes are portrait.
+ */
+let requestedGraphicsPlaneSize: { width: number; height: number } | null = null;
+
+/**
+ * Meeting graphics plane size for a requested format. The native compositor
+ * cover-scales each plane onto the canvas, so a plane in the other orientation
+ * would lose most of its picture (a 1920x1080 plane on a 1080x1920 canvas
+ * keeps ~32% of its width). When the orientation of the request differs from
+ * the running engine, the planes take the engine geometry instead; requests in
+ * the engine's orientation pass through unchanged.
+ */
+function resolveMeetingGraphicsPlaneSize(
+  requested: { width: number; height: number },
+  engine: { width: number; height: number } | null,
+): { width: number; height: number } {
+  if (engine && isPortraitGeometry(requested) !== isPortraitGeometry(engine)) {
+    return { width: engine.width, height: engine.height };
+  }
+  return { width: requested.width, height: requested.height };
+}
+
+/**
+ * Stage the internal content layers are placed on. Landscape keeps the fixed
+ * 1920x1080 stage; a portrait program uses the size of its graphics planes.
+ */
+function resolveMeetingContentStageSize(): MeetingContentStageSizeT {
+  if (requestedGraphicsPlaneSize && isPortraitGeometry(requestedGraphicsPlaneSize)) {
+    return requestedGraphicsPlaneSize;
+  }
+  return DEFAULT_MEETING_CONTENT_STAGE_SIZE;
+}
 
 type ConfigureGraphicsOutputsResultT = {
   completion: Promise<void>;
@@ -179,6 +224,7 @@ function configureMeetingGraphicsOutputs(
   fps: number,
 ): ConfigureGraphicsOutputsResultT {
   const configKey = `${width}x${height}@${fps}`;
+  requestedGraphicsPlaneSize = { width, height };
   const alreadySatisfiedOrPending =
     lastConfiguredGraphicsOutputsKey === configKey || pendingGraphicsOutputsKey === configKey;
   pendingGraphicsOutputsKey = configKey;
@@ -417,7 +463,37 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_engine_start",
       );
+      const requestedFormat = resolveMeetingProgramFormat(options);
+      if (
+        isPortraitGeometry(requestedFormat) &&
+        !getMeetingCapabilities().program_portrait
+      ) {
+        return {
+          success: false,
+          error: "A portrait meeting program is not supported on this platform.",
+          errorCode: MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE,
+        };
+      }
       if (meetingHelperManager.isRunning()) {
+        const runningFormat = meetingHelperManager.getProgramFormat();
+        if (runningFormat && !isSameProgramGeometry(runningFormat, requestedFormat)) {
+          // The canvas size is fixed for the lifetime of the helper process.
+          // Never restart from here: a stop finalizes a running recording and
+          // drops camera and virtual camera, so that decision stays with the
+          // web app (explicit meeting_engine_stop + meeting_engine_start).
+          const recording = await meetingHelperManager
+            .getClient()
+            ?.recordingStatus()
+            .catch(() => null);
+          return {
+            success: false,
+            error: isRecordingActive(recording)
+              ? "The meeting engine is recording; stop the recording before changing the program format."
+              : `The meeting engine is running at ${runningFormat.width}x${runningFormat.height}; stop it before starting ${requestedFormat.width}x${requestedFormat.height}.`,
+            errorCode: MEETING_ENGINE_RESTART_REQUIRED_CODE,
+            data: meetingHelperManager.getStatus(),
+          };
+        }
         // Idempotent re-start (e.g. a second webapp client's autostart while
         // the engine is live): do NOT clear the graphics FrameBus - the
         // force-recreate would yank the regions out from under the running
@@ -439,6 +515,7 @@ export async function handleMeetingCommand(
           lastConfiguredGraphicsOutputsKey = null;
         })
         .catch(() => {});
+      requestedGraphicsPlaneSize = null;
       const status = await meetingHelperManager.start(options);
       if (status.state !== "running") {
         return {
@@ -447,17 +524,38 @@ export async function handleMeetingCommand(
           data: status,
         };
       }
+      if (
+        status.program_format &&
+        !isSameProgramGeometry(status.program_format, requestedFormat)
+      ) {
+        // Joined a start that was already in flight with another geometry.
+        return {
+          success: false,
+          error: `The meeting engine is running at ${status.program_format.width}x${status.program_format.height}; stop it before starting ${requestedFormat.width}x${requestedFormat.height}.`,
+          errorCode: MEETING_ENGINE_RESTART_REQUIRED_CODE,
+          data: status,
+        };
+      }
       // Pre-warm the graphics renderers in the background: the Electron
       // processes take seconds to spawn, and doing it now means toggling a
       // background later only costs a layer send instead of a cold start.
       // Format must match what the web app sends (MEETING_GRAPHICS_FORMAT,
-      // 1920x1080@30) so the later configure call is a cache hit.
+      // 1920x1080@30) so the later configure call is a cache hit. A portrait
+      // engine pre-warms the planes at its own canvas size instead.
       // Auto-arm the virtual camera with the engine so "Broadify Camera"
       // exists in Teams/Zoom without the live-test click. Fire-and-forget:
       // failures surface as meeting error events with the stable vcam codes
       // (W1) instead of failing the engine start.
       autoArmVirtualCamera();
-      configureMeetingGraphicsOutputs(1920, 1080, 30).completion.catch((error: unknown) => {
+      const prewarmPlane = resolveMeetingGraphicsPlaneSize(
+        DEFAULT_MEETING_GRAPHICS_FORMAT,
+        requestedFormat,
+      );
+      configureMeetingGraphicsOutputs(
+        prewarmPlane.width,
+        prewarmPlane.height,
+        DEFAULT_MEETING_GRAPHICS_FORMAT.fps,
+      ).completion.catch((error: unknown) => {
         console.warn(
           `[meeting] graphics renderer pre-warm failed: ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -801,6 +899,7 @@ export async function handleMeetingCommand(
           rotationY: data.rotation_y,
         },
         { muted: data.muted, loop: data.loop },
+        resolveMeetingContentStageSize(),
       );
       await meetingBackGraphicsManager.sendInternalLayer({
         layerId: MEETING_CONTENT_VIDEO_LAYER_ID,
@@ -840,16 +939,20 @@ export async function handleMeetingCommand(
         };
       }
       // Browser-source URLs must never be interpolated into logs or errors.
-      const html = buildBrowserSourceLayerHtml(validatedUrl, {
-        mode: data.mode,
-        x: data.x,
-        y: data.y,
-        width: data.width,
-        height: data.height,
-        rotation: data.rotation,
-        rotationX: data.rotation_x,
-        rotationY: data.rotation_y,
-      });
+      const html = buildBrowserSourceLayerHtml(
+        validatedUrl,
+        {
+          mode: data.mode,
+          x: data.x,
+          y: data.y,
+          width: data.width,
+          height: data.height,
+          rotation: data.rotation,
+          rotationX: data.rotation_x,
+          rotationY: data.rotation_y,
+        },
+        resolveMeetingContentStageSize(),
+      );
       await meetingBackGraphicsManager.sendInternalLayer({
         layerId: MEETING_BROWSER_SOURCE_LAYER_ID,
         category: "slides",
@@ -1083,13 +1186,18 @@ export async function handleMeetingCommand(
 
     case "meeting_graphics_configure_outputs": {
       const {
-        width = 1280,
-        height = 720,
+        width: requestedWidth = 1280,
+        height: requestedHeight = 720,
         fps = 30,
       } = parseRelayPayload(
         MeetingGraphicsConfigureOutputsSchema,
         payload ?? {},
         "Invalid payload for meeting_graphics_configure_outputs",
+      );
+      // The response reports the size that was actually configured.
+      const { width, height } = resolveMeetingGraphicsPlaneSize(
+        { width: requestedWidth, height: requestedHeight },
+        meetingHelperManager.getProgramFormat(),
       );
       const outputsConfiguration = configureMeetingGraphicsOutputs(width, height, fps);
       if (outputsConfiguration.alreadySatisfiedOrPending) {
