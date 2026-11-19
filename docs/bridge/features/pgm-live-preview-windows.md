@@ -65,7 +65,7 @@ $env:BROADIFY_PGM_WINDOWS = "1"
 # Statisches OpenSSL aus dem vcpkg-Manifest (einmalig, einige Minuten; danach überspringt das Skript)
 .\scripts\prepare-windows-pgm-deps.ps1
 
-# PGM-Helper (Skript kommt mit D7; baut pgm-helper.exe und die Tests)
+# PGM-Helper: baut pgm-helper.exe neben das Skript und dazu die Tests (D7)
 .\apps\bridge\native\pgm-helper\build.ps1
 ctest --test-dir apps\bridge\native\pgm-helper\build --build-config Release --timeout 120 --output-on-failure
 
@@ -74,14 +74,20 @@ npm run build:meeting-helper
 npm run test:meeting-helper-native
 ```
 
+`build.ps1` konfiguriert mit `-DLIVE_STREAM_WITH_WEBRTC=ON`; es selbst auszuführen ist also schon das Einschalten.
+Der Weg über npm (`npm run build:pgm-helper` → `scripts/build-pgm-helper.sh`) ruft es unter Windows nur mit
+`BROADIFY_PGM_WINDOWS=1` auf und überspringt sonst wie bisher. `PGM_HELPER_BUILD_TESTS=0` baut nur den Helper,
+`PGM_HELPER_CMAKE_EXTRA_ARGS` reicht weitere Konfigurationsargumente durch (z. B. `-DFETCHCONTENT_SOURCE_DIR_OPUS=…`).
+
 CI: Workflow `pgm-windows-native.yml` (D1; `windows-2022`, Push auf `feature/pgm-win-*` und manuell) kompiliert und
 fährt ctest: Job `core` ohne jeden Schalter (das, was ein Windows-Release heute kompiliert), Job `encoder` mit
-`LIVE_STREAM_WITH_MF=ON`, Job `helper` (nur Kompilieren der portablen Helper-Quellen, siehe „Portabler Helper (D6)“),
-Job `full` mit `LIVE_STREAM_WITH_WEBRTC=ON` (vcpkg-OpenSSL und libdatachannel, beide im
+`LIVE_STREAM_WITH_MF=ON`, Job `full` mit `LIVE_STREAM_WITH_WEBRTC=ON` (vcpkg-OpenSSL, libdatachannel und opus im
 Cache; `webrtc_loopback_test` mit einer Wiederholung; `dumpbin` prüft, dass keine OpenSSL-DLL importiert wird). Der
-Encoder-Smoke-Test überspringt dort mangels Hardware-MFT. Grün im CI heißt: es kompiliert, die
-Media-Foundation-Verdrahtung hält gegen den Software-MFT und der Publisher verbindet sich über Loopback. Es heißt
-nicht: auf Hardware geprüft.
+Encoder-Smoke-Test überspringt dort mangels Hardware-MFT. Seit D7 baut `full` außerdem den Helper so, wie der
+Build-Schalter ihn baut, und prüft ihn (siehe „Windows-Quellen des Helpers (D7)“). Grün im CI heißt: es kompiliert,
+die Media-Foundation-Verdrahtung hält gegen den Software-MFT, der Publisher verbindet sich über Loopback und der
+Helper startet, lässt sich steuern und meldet ohne Hardware-Encoder `encoder_unavailable`. Es heißt nicht: auf
+Hardware geprüft. UVC-Capture und WASAPI laufen im CI nie (kein Gerät am Runner); sie sind dort nur kompiliert.
 
 Start aus einem Dev-Build:
 
@@ -91,27 +97,117 @@ $env:BRIDGE_LOG_PERF = "1"
 $env:BRIDGE_PGM_HELPER_PATH = "<repo>\apps\bridge\native\pgm-helper\pgm-helper.exe"
 ```
 
+## Windows-Quellen des Helpers (D7)
+
+`pgm-helper.exe` entsteht nur, wenn der WebRTC-Teil von `live-stream` konfiguriert wurde (CMake:
+`if(PGM_HELPER_BUILD_BINARY AND WIN32 AND TARGET live_stream)`), also hinter `BROADIFY_PGM_WINDOWS=1` bzw.
+`-DLIVE_STREAM_WITH_WEBRTC=ON`. Ohne Schalter konfiguriert ein Windows-Build des Verzeichnisses wie bisher nur die
+reinen Module und ihre Tests (`scripts/pgm-helper-windows-contract.test.cjs`, Teil von `test:release-contracts`).
+
+| Datei | Inhalt |
+|---|---|
+| `capture/uvc_format_select` (rein) | Wahl des Gerätemodus: größte Geometrie bis 1080 Zeilen, dann höchste Bildrate, dann NV12 > YUY2 > UYVY > MJPG. Dazu die Zuordnung HRESULT → Fehlercode |
+| `capture/uvc_mediafoundation.cpp` | UVC über den Media-Foundation-Source-Reader, asynchron, `MF_LOW_LATENCY`, ohne Videoprozessor |
+| `capture/synthetic_source.cpp` | Testbild (Farbbalken, Bildzähler) als NV12 im Systemspeicher; dasselbe Bild wie `synthetic_source.mm` |
+| `capture/snapshot_portable` (rein) | Bild → NV12 → RGB (BT.709, Video-Range) → JPEG mit `stb_image_write` (liegt bei `meeting-helper/third_party/stb`) → base64 |
+| `capture/frame_holder_portable.cpp` | Hält für Standbilder eine Kopie des letzten Bildes, höchstens alle 200 ms eine neue |
+| `audio/audio_pairing` (rein) | Paarung Video ↔ Audio: gleiche Container-ID, sonst die Namensregel von macOS |
+| `audio/audio_capture_wasapi.cpp` | WASAPI-Capture im Shared Mode, ereignisgetrieben, 48 kHz Stereo Float über `AUTOCONVERTPCM` |
+| `recorder/mp4_recorder_stub.cpp` | Recorder ohne Funktion; `pgm.recording.start` antwortet `recording_unsupported` |
+| `build.ps1` | Baut `pgm-helper.exe` neben das Skript, nach dem Muster von `meeting-helper/build.ps1` |
+
+UVC (`uvc_mediafoundation.cpp`):
+- **Liste**: `MFEnumDeviceSources` (Video-Capture). `device_id` ist der symbolische Link des Geräts, `stable_key`
+  derselbe Link in Kleinbuchstaben (Gerätepfade unterscheiden keine Groß-/Kleinschreibung), `id` = `uvc:<stable_key>`.
+  Die virtuelle Broadify-Kamera wird ausgefiltert. `in_use` ist immer `false`: ob ein Gerät belegt ist, zeigt sich
+  erst beim Öffnen.
+- **Hot-Plug**: `CM_Register_Notification` auf die Geräteklassen Kamera und Video, ohne Fenster und Nachrichtenschleife.
+  Die Meldungen werden 300 ms gesammelt, dann kommt genau ein `pgm_inputs_changed`.
+- **Moduswahl**: Alle nativen Modi stehen als Ereignis `pgm_uvc_modes` im Log, der gewählte als
+  `pgm_uvc_mode_selected`. Lehnt der Reader einen Modus ab (`pgm_uvc_mode_rejected` mit HRESULT), wird der
+  nächstbeste versucht.
+- **MJPG**: Nur wenn der höchste Modus nicht unkomprimiert angeboten wird. Der Reader bekommt dann NV12 als
+  Ausgabetyp (er setzt dafür den MJPEG-Decoder ein), ersatzweise YUY2; den Rest erledigt `frame_to_nv12`. Das Signal
+  trägt in diesem Fall `"decode":"mjpg"` (in `pgm_signal` und in `pgm_status.signal`); sonst fehlt das Feld.
+- **Bilder**: NV12, YUY2 oder UYVY als Ebenen im Systemspeicher (`CapturedFrame.planes`) mit dem echten Zeilenabstand
+  aus `IMF2DBuffer2::Lock2DSize` bzw. `IMF2DBuffer::Lock2D`; der flache `Lock` ist nur der Ausweichweg. Das
+  `IMFSample` selbst wird nicht weitergereicht (`nativeHandle` bleibt leer): der Encoder kopiert jedes Bild einmal
+  in sein eigenes Sample. Der kopierfreie Weg aus D4 ist damit vorhanden, aber nicht in Benutzung.
+- **Zeitstempel**: der Geräte-Zeitstempel des Samples (`MFSampleExtension_DeviceTimestamp`, Performance-Counter),
+  wenn er plausibel ist (nicht in der Zukunft, jünger als 1 s), sonst die Ankunftszeit; beides auf der Uhr aus
+  `monotonic_clock.h`.
+- **Fehlercodes** wie auf macOS: `camera_permission_denied` (Zugriff verweigert), `unsupported_format` (kein
+  Medientyp aushandelbar), sonst `device_in_use`. `start` wartet bis zu 750 ms auf das erste Bild oder den ersten
+  Fehler, damit ein belegtes Gerät als Antwort auf `pgm.source.select` scheitert. Spätere Fehler (Kabel gezogen)
+  kommen als Ereignis `pgm_capture_error` mit Code, HRESULT und Grund; der Status fällt über die Signalmessung auf
+  „kein Signal“.
+- **Kamera-Datenschutz**: Windows fragt Desktop-Programme nicht. `camera_permission` liest die Einstellung aus der
+  Registrierung (`CapabilityAccessManager\ConsentStore\webcam`, dazu `NonPackaged`): `denied` bei „Deny“ für den
+  Benutzer, `restricted` bei „Deny“ für das ganze Gerät, sonst `authorized`.
+
+Ton (`audio_capture_wasapi.cpp`):
+- Paarung zuerst über die Container-ID: vom symbolischen Link des Videogeräts über die Geräteinstanz zu
+  `DEVPKEY_Device_ContainerId`, verglichen mit `PKEY_Device_ContainerId` der aktiven Aufnahme-Endpunkte. Die leere
+  Container-ID und die des Rechners selbst (alles Eingebaute teilt sie) zählen nicht. Danach die Namensregel gegen
+  Endpunkt- und Gerätenamen. Welche Regel griff, steht im Ereignis `pgm_audio_paired` (`rule`: `container` oder
+  `name`). Ohne Treffer: `pgm_audio_unavailable` mit Code `audio_not_paired`, die Vorschau läuft stumm.
+- Zeitstempel je Paket aus WASAPI (Performance-Counter), mit derselben Plausibilitätsprüfung wie beim Bild.
+- Geht das Gerät im Betrieb verloren (`AUDCLNT_E_DEVICE_INVALIDATED` u. ä.), endet der Capture-Thread mit
+  `pgm_audio_unavailable` (Code `audio_device_lost`); das Bild läuft weiter.
+- `stop()` wartet nicht auf den Capture-Thread: die Engine stoppt den Ton unter ihrem Mutex, auf den ein laufender
+  Callback gerade warten kann. Der Thread hält seinen Zustand selbst und räumt ihn ab.
+
+Standbild und Aufnahme:
+- `pgm.snapshot` liefert unter Windows ein JPEG aus dem portablen Weg. Das Bild kann bis zu 200 ms alt sein.
+- `pgm.recording.start` antwortet `recording_unsupported`, bevor irgendetwas geprüft wird; `pgm.recording.stop` und
+  `pgm.recording.status` antworten wie ohne laufende Aufnahme.
+
+CI (Job `full`), in dieser Reihenfolge:
+1. `scripts/build-pgm-helper.sh` ohne Schalter überspringt und hinterlässt weder Build-Verzeichnis noch `pgm-helper.exe`.
+2. Derselbe Aufruf mit `BROADIFY_PGM_WINDOWS=1` baut `pgm-helper.exe` und die Tests; ctest läuft im Helper-Verzeichnis.
+3. `pgm-helper.exe --probe`: eine JSON-Zeile, Exit-Code 0, leere Geräteliste (der Runner hat keine Kamera).
+4. Lauf mit `--synthetic-source 1280x720@30`: Der Runner hat keinen Hardware-Encoder, also muss `pgm_error` mit
+   `encoder_unavailable` kommen und darf kein `pgm_encoder_configured` erscheinen (kein stiller Software-Weg). Über
+   die Steuer-Pipe werden danach `pgm.status` (`state: error`, kein Encoder), `pgm.snapshot` (JPEG 1280×720),
+   `pgm.recording.start` (`recording_unsupported`) und `control.shutdown` (Exit-Code 0, letztes Ereignis `shutdown`
+   mit `control_shutdown`) geprüft.
+5. `verify-windows-native-dependencies.cjs` auf der wie im Paket abgelegten Datei
+   (`resources/native/pgm-helper/` mit der VC-Runtime daneben): nur Windows-eigene DLLs und die VC-Runtime.
+6. `pgm-helper.exe` wird unsigniert als Artefakt `pgm-helper-windows-x64-unsigned-<sha>` hochgeladen (14 Tage), für
+   die Sitzung am Gerät. Es ist kein Release-Artefakt.
+
+Offen bis zur Sitzung am Gerät (im CI nicht prüfbar, Runbook Abschnitte 5 und 6):
+- Der gesamte UVC- und WASAPI-Weg ist nur kompiliert, nie gelaufen: Aushandlung, Zeilenabstände, Lage der
+  Chroma-Ebene bei NV12 aus dem MJPEG-Decoder, Hot-Plug, Fehlercodes bei belegtem Gerät.
+- Ob die Container-ID bei ATEM Mini und RØDECaster Video für Video und Audio gleich ist (`pgm_audio_paired`).
+- Ob die Registrierungswerte der Kamera-Datenschutzeinstellung auf allen Windows-Ständen so heißen; ein falsches
+  `denied` würde die Quellenwahl sperren.
+- Geht der Ton im Betrieb verloren, meldet `pgm_status.audio` weiter `true` (die Engine erfährt es nur als Ereignis).
+- Ohne Hardware-Encoder versucht die Engine die Einrichtung bei jedem Bild neu (wie auf macOS); auf einem Rechner
+  ohne Hardware-MFT ist das eine `MFTEnumEx`-Abfrage je Bild.
+- `--probe` nennt als Encoder weiter fest `"mediafoundation"`, ohne nach einem Hardware-MFT zu suchen, und keinen
+  Gerätemodus (dafür müsste es das Gerät öffnen). Der gewählte Modus steht in `pgm_uvc_mode_selected` und im Signal.
+
 ## Portabler Helper (D6)
 
 Der PGM-Helper ist in einen portablen Kern und je eine Plattformschicht geteilt. Das macOS-Verhalten ist dasselbe wie
-vorher; unter Windows gibt es noch keine ausführbare Datei (die kommt mit den Capture-Quellen in D7).
+vorher. Die Windows-Spalte ist seit D7 vollständig.
 
 | Naht | Portable Deklaration | macOS | Windows |
 |---|---|---|---|
 | Prozess-Host | `src/platform/platform_host.h`: `processArgumentsUtf8`, `installSignalHandlers`, `configureStdoutForEvents`, `initializePlatform`, `startParentWatchdog`, `runPlatformLoop`, `probeEncoderJson` | `platform_host_mac.mm`: SIGINT/SIGTERM, SIGPIPE ignoriert, `NSApplication` als Accessory, Watchdog mit `kill(pid, 0)` alle 2 s, stdout zeilengepuffert | `platform_host_win.cpp`: `SetConsoleCtrlHandler`, COM-MTA + `MFStartup`, Watchdog mit `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject`, Argumente über `CommandLineToArgvW`, stdout ungepuffert (die UCRT lehnt `_IOLBF` mit Puffergröße 0 ab) |
-| Videoquellen | `capture/video_source.h`: `createUvcEnumerator()`, `createSyntheticSource()` | `uvc_avfoundation.mm`, `synthetic_source.mm` | D7 |
-| Ton | `audio/audio_source.h`: `createPairedAudioSource()` | `audio_capture_avfoundation.mm` | D7 |
-| Standbild | `capture/frame_holder.h`: `retainFrame()` hält das letzte Bild über den Capture-Callback hinaus; `capture/snapshot.h`: `jpegBase64FromFrame()` | `frame_holder_mac.mm` (hält den `CVPixelBuffer`), `snapshot.mm` | D7 |
-| Aufnahme | `recorder/mp4_recorder.h`: `appendVideo(const EncodedAccessUnit &)`, `appendAudio(const AudioChunk &)` | `mp4_recorder.mm` reicht an die bisherigen `CMSampleBuffer`-Wege weiter | Stub (D7) |
+| Videoquellen | `capture/video_source.h`: `createUvcEnumerator()`, `createSyntheticSource()`, `VideoSource::decode()` | `uvc_avfoundation.mm`, `synthetic_source.mm` | `uvc_mediafoundation.cpp`, `synthetic_source.cpp` |
+| Ton | `audio/audio_source.h`: `createPairedAudioSource(Anzeigename, Geräte-ID)` | `audio_capture_avfoundation.mm` (nutzt nur den Namen) | `audio_capture_wasapi.cpp` |
+| Standbild | `capture/frame_holder.h`: `retainFrame()` hält das letzte Bild über den Capture-Callback hinaus; `capture/snapshot.h`: `jpegBase64FromFrame()` | `frame_holder_mac.mm` (hält den `CVPixelBuffer`), `snapshot.mm` | `frame_holder_portable.cpp` (Kopie), `snapshot_portable.cpp` |
+| Aufnahme | `recorder/mp4_recorder.h`: `supported()`, `appendVideo(const EncodedAccessUnit &)`, `appendAudio(const AudioChunk &)` | `mp4_recorder.mm` reicht an die bisherigen `CMSampleBuffer`-Wege weiter | `mp4_recorder_stub.cpp` |
 | Encoder-Sample | `live_stream/video_encoder.h`: `releaseEncodedSample()` | gibt das `CMSampleBuffer` der Einheit frei | nichts zu tun |
 
 - `src/main.cpp` und `src/pgm_engine.cpp` enthalten keine Plattformweichen mehr
   (`scripts/pgm-helper-portable-contract.test.cjs`, Teil von `test:release-contracts`).
 - Eine Fabrik darf `nullptr` liefern: ohne UVC-Backend meldet die Engine `input_not_found`, ohne Ton läuft die Vorschau
   stumm. Der Encoder kommt wie bisher aus `createHardwareEncoder()`.
-- CMake-Option `PGM_HELPER_WINDOWS_COMPILE_CHECK` (Standard aus, nur Windows): kompiliert `main.cpp`, `pgm_engine.cpp`
-  und `platform_host_win.cpp` als Objektbibliothek `pgm_helper_portable_objects`. Es wird nichts gelinkt und nichts
-  ausgeliefert; der CI-Job `helper` hält die Dateien damit MSVC-sauber, bis D7 daraus `pgm-helper.exe` macht.
+- Die CMake-Option `PGM_HELPER_WINDOWS_COMPILE_CHECK` und der CI-Job `helper` aus D6 (nur Kompilieren) sind mit D7
+  entfallen: dieselben Dateien werden jetzt als Teil von `pgm-helper.exe` gebaut.
 
 ## WebRTC-Build (D5)
 
@@ -194,6 +290,10 @@ Tests:
 | `mf_encoder_software_seam_test` | wie oben | Microsofts Software-H.264-MFT, in den Test-MFT eingewickelt und nur über die Test-Naht (`src/mf_encoder_internal.h`) erreichbar: echte H.264-Daten durch die Media-Foundation-Verdrahtung. Überspringt (77), wenn der MFT fehlt |
 | `mf_encoder_smoke_test` | wie oben | echter Hardware-MFT über `createHardwareEncoder()`, 60 NV12-Bilder 720p30. Überspringt (77) ohne Hardware-MFT, also auf dem CI-Runner |
 | `pgm_options_test` | alle Plattformen | Kommandozeile des PGM-Helpers: die UTF-8-Argumentliste des Plattform-Hosts ergibt dasselbe wie `argc`/`argv` |
+| `uvc_format_select_test` | alle Plattformen | Moduswahl (Geometrie, Rate, Subtyp, 1080-Zeilen-Grenze, ohne MJPG-Decoder) und HRESULT → Fehlercode |
+| `audio_pairing_test` | alle Plattformen | Container-ID vor Name, zwei gleiche Geräte, Rechner-Container zählt nicht, Namensregel, nie ein fremdes Mikrofon |
+| `snapshot_portable_test` | alle Plattformen | NV12 (mit Zeilenauffüllung) und YUY2 → JPEG → base64; das JPEG wird mit `stb_image` wieder dekodiert und auf Größe und Farben geprüft |
+| `portable_sources_test` | alle Plattformen | die Windows-Bausteine in reinem C++: synthetische Quelle (Form, Takt, Bildzähler), kopierender Bildhalter mit Standbild, Recorder-Stub |
 | `webrtc_loopback_test` | macOS; Windows mit `LIVE_STREAM_WITH_WEBRTC` | Publisher gegen einen libdatachannel-„Browser“ im selben Prozess: Answer, ICE über Loopback, RTP für eine synthetische IDR-Einheit |
 
 Offen bis zur Sitzung am Gerät (im CI nicht prüfbar):

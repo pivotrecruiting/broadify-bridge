@@ -93,6 +93,10 @@ für Windows ADR-0009.
 `pgm.snapshot {quality}` → `{jpeg_base64,width,height,captured_at_ms}`. Ereignisse: `ready`, `pgm_status`, `pgm_signal`, `pgm_error`,
 `pgm_encoder_configured`, `pgm_recording`, `pgm_recording_signal_mismatch`, `pgm_recording_fps_changed`, `pgm_inputs_changed`,
 `pgm_viewer_state`, `pgm_audio_unavailable`, `pgm_perf`, `shutdown`.
+Nur der Windows-Helper (vorbereitet, `pgm-live-preview-windows.md`): das Signal trägt `"decode":"mjpg"`, wenn das
+Gerät MJPG liefert und vor dem Encoder dekodiert wird; `pgm.recording.start` antwortet `recording_unsupported`; dazu
+die Ereignisse `pgm_uvc_modes`, `pgm_uvc_mode_selected`, `pgm_uvc_mode_rejected`, `pgm_capture_error`,
+`pgm_audio_paired`. Auf macOS ändert sich an Signal, Antworten und Ereignissen nichts.
 
 ## Build
 - `npm run build:pgm-helper` (macOS): CMake, libdatachannel v0.22.6 und libopus 1.5.2 per FetchContent (fester Tag),
