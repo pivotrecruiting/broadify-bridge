@@ -25,11 +25,16 @@ std::string inputJson(const VideoInputInfo &info) {
   return out.str();
 }
 
-std::string signalJson(const VideoSignal &signal) {
+/** `decode` names the codec the capture backend decodes before delivery ("mjpg"); empty leaves the field out. */
+std::string signalJson(const VideoSignal &signal, const std::string &decode) {
   std::ostringstream out;
   out << "{\"width\":" << signal.width << ",\"height\":" << signal.height << ",\"fps_num\":" << signal.fpsNum
       << ",\"fps_den\":" << signal.fpsDen << ",\"scan\":\"progressive\",\"pixel_format\":\"" << jsonEscape(signal.pixelFormat)
-      << "\",\"no_signal\":" << (signal.noSignal ? "true" : "false") << "}";
+      << "\",\"no_signal\":" << (signal.noSignal ? "true" : "false");
+  if (!decode.empty()) {
+    out << ",\"decode\":\"" << jsonEscape(decode) << "\"";
+  }
+  out << "}";
   return out.str();
 }
 
@@ -52,7 +57,7 @@ PgmEngine::PgmEngine(PgmEngineConfig config) : config_(std::move(config)) {
         }
       }
       if (!present && tracker_.markNoSignal()) {
-        emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJson(tracker_.signal()) + "}");
+        emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJsonLocked() + "}");
       }
     }
   });
@@ -97,6 +102,10 @@ std::string PgmEngine::inputsListJson() {
   return json + "\"}";
 }
 
+std::string PgmEngine::signalJsonLocked() const {
+  return signalJson(tracker_.signal(), source_ ? source_->decode() : std::string());
+}
+
 std::string PgmEngine::stateLocked() const {
   if (!lastErrorCode_.empty()) {
     return "error";
@@ -113,7 +122,7 @@ std::string PgmEngine::stateLocked() const {
 std::string PgmEngine::statusJsonLocked() const {
   std::ostringstream out;
   out << "{\"enabled\":true,\"state\":\"" << stateLocked() << "\",\"input\":" << (hasInput_ ? inputJson(input_) : "null")
-      << ",\"signal\":" << (hasInput_ ? signalJson(tracker_.signal()) : "null") << ",\"encoder\":";
+      << ",\"signal\":" << (hasInput_ ? signalJsonLocked() : "null") << ",\"encoder\":";
   if (encoderConfigured_ && encoder_) {
     const EncoderInfo info = encoder_->info();
     out << "{\"backend\":\"" << jsonEscape(info.backend) << "\",\"hardware\":" << (info.hardware ? "true" : "false")
@@ -222,7 +231,7 @@ void PgmEngine::selectSource(const std::string &inputId, const std::string &prof
       hasInput_ = false;
       setErrorLocked(errorCode, error);
     } else if (inputId.rfind("synthetic:", 0) != 0) {
-      startAudioLocked(info.displayName);
+      startAudioLocked(info);
     }
   }
   if (!errorCode.empty()) {
@@ -258,8 +267,8 @@ void PgmEngine::clearSource() {
   emitStatus();
 }
 
-void PgmEngine::startAudioLocked(const std::string &displayName) {
-  audioSource_ = createPairedAudioSource(displayName);
+void PgmEngine::startAudioLocked(const VideoInputInfo &video) {
+  audioSource_ = createPairedAudioSource(video.displayName, video.deviceId);
   if (!audioSource_) {
     return;
   }
@@ -345,7 +354,7 @@ void PgmEngine::onFrame(const CapturedFrame &frame) {
     }
     const bool signalChanged = tracker_.onFrame(frame.width, frame.height, frame.pixelFormat, frame.captureNs);
     if (signalChanged) {
-      emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJson(tracker_.signal()) + "}");
+      emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJsonLocked() + "}");
       std::string code;
       std::string error;
       if (!ensureEncoderForSignalLocked(code, error) && !code.empty()) {
@@ -385,7 +394,7 @@ void PgmEngine::onFrame(const CapturedFrame &frame) {
         recordingEncoder = recordingEncoder_;
       }
       if (recording.mismatchStarted || recording.mismatchEnded || recordingFpsChanged) {
-        signalForEvent = signalJson(tracker_.signal());
+        signalForEvent = signalJsonLocked();
         // The geometry the recording is bound to, including the pixel format the gate compares against.
         recordingForEvent = recordingEncoderJsonLocked();
         recordingForEvent.back() = ',';
@@ -465,6 +474,9 @@ std::string PgmEngine::recordingJsonLocked() const {
 }
 
 std::string PgmEngine::recordingStart(const std::string &filePath) {
+  if (!Mp4Recorder::supported()) {
+    throw RpcFailure{"recording_unsupported", "Recording the program is not supported on this platform yet."};
+  }
   bool audio = false;
   VideoSignal signal;
   {
@@ -598,7 +610,7 @@ void PgmEngine::housekeeping() {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (hasInput_ && tracker_.onTick(monotonicNowNs())) {
-        emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJson(tracker_.signal()) + "}");
+        emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJsonLocked() + "}");
         changed = true;
       }
     }

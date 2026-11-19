@@ -39,6 +39,8 @@ struct Mp4Recorder::Impl {
   }
 };
 
+bool Mp4Recorder::supported() { return true; }
+
 Mp4Recorder::Mp4Recorder() : impl_(new Impl) {}
 
 Mp4Recorder::~Mp4Recorder() {

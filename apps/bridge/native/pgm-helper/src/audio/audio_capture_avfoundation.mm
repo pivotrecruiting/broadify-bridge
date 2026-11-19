@@ -159,7 +159,7 @@ class AvFoundationAudioSource final : public AudioSource {
 
 }  // namespace
 
-std::unique_ptr<AudioSource> createPairedAudioSource(const std::string &videoDisplayName) {
+std::unique_ptr<AudioSource> createPairedAudioSource(const std::string &videoDisplayName, const std::string &) {
   @autoreleasepool {
     AVCaptureDevice *device = findPairedAudioDevice(videoDisplayName);
     if (device == nil) {

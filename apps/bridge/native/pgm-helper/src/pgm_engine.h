@@ -62,10 +62,11 @@ class PgmEngine final : public PgmEngineApi {
   void housekeeping();
   bool ensureEncoderForSignalLocked(std::string &errorCode, std::string &error);
   void setErrorLocked(const std::string &code, const std::string &message);
+  std::string signalJsonLocked() const;
   std::string stateLocked() const;
   std::string statusJsonLocked() const;
   void emitStatus();
-  void startAudioLocked(const std::string &displayName);
+  void startAudioLocked(const VideoInputInfo &video);
   void stopAudioLocked();
   std::string recordingJsonLocked() const;
   std::string recordingEncoderJsonLocked() const;

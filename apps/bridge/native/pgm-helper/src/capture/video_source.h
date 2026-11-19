@@ -29,6 +29,8 @@ class VideoSource {
   virtual bool start(FrameSink sink, std::string &errorCode, std::string &error) = 0;
   virtual void stop() = 0;
   virtual bool isRunning() const = 0;
+  /** Codec the backend decodes before delivery ("mjpg"), empty when frames arrive as the device sends them. Any thread. */
+  virtual std::string decode() const { return ""; }
 };
 
 class VideoInputEnumerator {
@@ -42,7 +44,8 @@ class VideoInputEnumerator {
   virtual std::unique_ptr<VideoSource> open(const std::string &stableKey) = 0;
 };
 
-// Implemented once per platform (macOS: uvc_avfoundation.mm, synthetic_source.mm).
+// Implemented once per platform (macOS: uvc_avfoundation.mm, synthetic_source.mm;
+// Windows: uvc_mediafoundation.cpp, synthetic_source.cpp).
 /** The platform's UVC backend; nullptr where none exists. */
 std::unique_ptr<VideoInputEnumerator> createUvcEnumerator();
 /** Test pattern source (NV12); nullptr where the platform has none. */

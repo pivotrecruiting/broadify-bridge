@@ -38,6 +38,9 @@ class Mp4Recorder {
   Mp4Recorder(const Mp4Recorder &) = delete;
   Mp4Recorder &operator=(const Mp4Recorder &) = delete;
 
+  /** False where the platform has no recording backend (mp4_recorder_stub.cpp); `start` then always fails. */
+  static bool supported();
+
   bool start(const std::string &filePath, bool withAudio, std::string &error);
   bool stop(std::string &error);
   bool isActive() const;

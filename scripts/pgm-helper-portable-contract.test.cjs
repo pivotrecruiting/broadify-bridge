@@ -11,8 +11,8 @@ const read = (relativePath) =>
 // ADR-0009 / docs/bridge/features/pgm-live-preview-windows.md: the PGM helper's
 // entry point and engine are portable; everything the operating system has to
 // provide sits behind platform/platform_host.h and the per-platform factories.
-// These checks keep that split, and the "no Windows executable yet" state, true
-// at the source level.
+// These checks keep that split true at the source level; the Windows
+// executable and its sources are pinned in pgm-helper-windows-contract.test.cjs.
 const PGM_HELPER = "apps/bridge/native/pgm-helper";
 const cmake = read(`${PGM_HELPER}/CMakeLists.txt`);
 
@@ -45,7 +45,7 @@ test("the platform factories are declared without platform conditionals", () => 
   const audio = stripComments(read(`${PGM_HELPER}/src/audio/audio_source.h`));
   assert.match(
     audio,
-    /\n\nstd::unique_ptr<AudioSource> createPairedAudioSource\(const std::string &videoDisplayName\);\n\n\}/,
+    /\n\nstd::unique_ptr<AudioSource> createPairedAudioSource\(const std::string &videoDisplayName, const std::string &videoDeviceId\);\n\n\}/,
     "createPairedAudioSource must be declared outside any #if block",
   );
 
@@ -69,30 +69,35 @@ test("stdout is never line-buffered on the Windows CRT", () => {
   assert.doesNotMatch(stripComments(read(`${PGM_HELPER}/src/main.cpp`)), /setvbuf/);
 });
 
-test("the helper executable is still macOS-only and the Windows compile check is opt-in", () => {
-  const executables = cmake.match(/add_executable\(pgm-helper\b/g) || [];
-  assert.equal(executables.length, 1, "exactly one pgm-helper executable");
+test("the macOS executable keeps its own block and platform sources", () => {
   assert.match(
     cmake,
     /if\(PGM_HELPER_BUILD_BINARY AND APPLE\)\n[\s\S]*?add_executable\(pgm-helper MACOSX_BUNDLE\n/,
   );
-  assert.match(
-    cmake,
-    /option\(PGM_HELPER_WINDOWS_COMPILE_CHECK "[^"]*" OFF\)\nif\(WIN32 AND PGM_HELPER_WINDOWS_COMPILE_CHECK\)\n\s+add_library\(pgm_helper_portable_objects OBJECT\n/,
-  );
-  // The Windows platform host appears in that opt-in block only.
-  assert.equal(cmake.split("platform_host_win.cpp").length - 1, 1);
-  const optIn = cmake.match(
-    /if\(WIN32 AND PGM_HELPER_WINDOWS_COMPILE_CHECK\)\n([\s\S]*?)\nendif\(\)/,
-  );
-  assert.ok(optIn && optIn[1].includes("src/platform/platform_host_win.cpp"));
-
-  // No npm script and no release workflow turns the compile check on.
-  assert.ok(!read("package.json").includes("PGM_HELPER_WINDOWS_COMPILE_CHECK"));
-  for (const workflow of ["release.yml", "test-release.yml"]) {
-    assert.ok(
-      !read(`.github/workflows/${workflow}`).includes("PGM_HELPER_WINDOWS_COMPILE_CHECK"),
-      workflow,
-    );
+  const mac = cmake.match(/if\(PGM_HELPER_BUILD_BINARY AND APPLE\)\n([\s\S]*?)\nendif\(\)/);
+  assert.ok(mac, "macOS executable block");
+  for (const source of [
+    "src/main.cpp",
+    "src/pgm_engine.cpp",
+    "src/platform/platform_host_mac.mm",
+    "src/capture/uvc_avfoundation.mm",
+    "src/capture/synthetic_source.mm",
+    "src/capture/frame_holder_mac.mm",
+    "src/audio/audio_capture_avfoundation.mm",
+    "src/capture/snapshot.mm",
+    "src/recorder/mp4_recorder.mm",
+  ]) {
+    assert.ok(mac[1].includes(source), `${source} belongs to the macOS executable`);
+  }
+  // None of the plain C++ stand-ins of the Windows build leaks into the macOS helper.
+  for (const source of [
+    "platform_host_win.cpp",
+    "uvc_mediafoundation.cpp",
+    "synthetic_source.cpp",
+    "frame_holder_portable.cpp",
+    "audio_capture_wasapi.cpp",
+    "mp4_recorder_stub.cpp",
+  ]) {
+    assert.ok(!mac[1].includes(source), `${source} must stay out of the macOS executable`);
   }
 });

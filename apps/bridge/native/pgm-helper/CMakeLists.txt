@@ -111,7 +111,7 @@ endif()
 
 if(PGM_HELPER_BUILD_TESTS)
   foreach(pgm_test IN ITEMS video_signal_tracker_test pgm_rpc_dispatch_test recording_signal_gate_test pgm_options_test
-      uvc_format_select_test audio_pairing_test snapshot_portable_test)
+      uvc_format_select_test audio_pairing_test snapshot_portable_test portable_sources_test)
     add_executable(${pgm_test} tests/${pgm_test}.cpp)
     target_link_libraries(${pgm_test} PRIVATE pgm_core)
     if(WIN32)
@@ -121,4 +121,12 @@ if(PGM_HELPER_BUILD_TESTS)
   endforeach()
   # stb_image decodes the snapshot again.
   target_include_directories(snapshot_portable_test PRIVATE ../meeting-helper/third_party/stb)
+  # The plain C++ backends of the Windows helper, compiled into a test on every
+  # platform (on macOS the helper itself uses the .mm counterparts).
+  target_sources(portable_sources_test PRIVATE
+    src/capture/synthetic_source.cpp
+    src/capture/frame_holder_portable.cpp
+    src/recorder/mp4_recorder_stub.cpp
+  )
+  set_tests_properties(portable_sources_test PROPERTIES TIMEOUT 60)
 endif()

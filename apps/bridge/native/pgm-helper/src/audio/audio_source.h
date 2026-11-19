@@ -33,10 +33,12 @@ class AudioSource {
 
 /**
  * Opens the audio device that belongs to a UVC video device (same model name,
- * e.g. "ATEM Mini", "RØDECaster Video") and delivers 48 kHz stereo float.
- * Returns nullptr when no matching audio device exists (video-only preview).
- * Implemented once per platform (macOS: audio_capture_avfoundation.mm).
+ * e.g. "ATEM Mini", "RØDECaster Video"; on Windows first the same physical
+ * device, found through the video device's backend id) and delivers 48 kHz
+ * stereo float. Returns nullptr when no matching audio device exists
+ * (video-only preview). Implemented once per platform (macOS:
+ * audio_capture_avfoundation.mm, Windows: audio_capture_wasapi.cpp).
  */
-std::unique_ptr<AudioSource> createPairedAudioSource(const std::string &videoDisplayName);
+std::unique_ptr<AudioSource> createPairedAudioSource(const std::string &videoDisplayName, const std::string &videoDeviceId);
 
 }  // namespace broadify::pgm
