@@ -8,11 +8,16 @@ name: PGM Windows Native
 #
 # Jobs:
 #   core     pure modules only (pgm_core, live_stream_core, helper_common):
-#            no WebRTC, no encoder, no network dependency.
+#            no WebRTC, no encoder, no network dependency. Configured without
+#            any switch, i.e. what a Windows release compiles today.
+#   encoder  Media Foundation H.264 encoder (LIVE_STREAM_WITH_MF=ON, still no
+#            WebRTC/OpenSSL): compiles mf_encoder.cpp and runs it against an
+#            in-test asynchronous MFT and, through the test seam only, against
+#            Microsoft's software encoder MFT. The hosted runner has no GPU,
+#            so the hardware smoke test reports "skipped" here.
 # Later units of the chain add their own jobs next to it (same checkout +
-# MSVC + Media Foundation steps): encoder (Media Foundation H.264 encoder),
-# full (pgm-helper.exe incl. WebRTC/OpenSSL), meeting (meeting-helper program
-# stream).
+# MSVC + Media Foundation steps): full (pgm-helper.exe incl. WebRTC/OpenSSL),
+# meeting (meeting-helper program stream).
 
 on:
   workflow_dispatch:
@@ -120,3 +125,55 @@ jobs:
         run: >
           ctest --test-dir "$env:LIVE_STREAM_DIR/build" --build-config Release
           --timeout 120 --output-on-failure
+
+  encoder:
+    name: encoder (Media Foundation H.264, MSVC)
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: 2022
+
+      - name: Assert Media Foundation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mfplat = Join-Path $env:SystemRoot 'System32\mfplat.dll'
+          if (-not (Test-Path $mfplat)) {
+            Write-Host "mfplat.dll missing - trying Install-WindowsFeature Server-Media-Foundation"
+            try {
+              Install-WindowsFeature Server-Media-Foundation | Format-List
+            } catch {
+              Write-Host "Install-WindowsFeature failed: $_"
+            }
+          }
+          if (-not (Test-Path $mfplat)) {
+            throw "Media Foundation is not available on this runner ($mfplat missing; the feature may need a restart)."
+          }
+          Write-Host "Media Foundation present: $((Get-Item $mfplat).VersionInfo.FileVersion)"
+          $h264 = Join-Path $env:SystemRoot 'System32\mfh264enc.dll'
+          Write-Host "Microsoft H.264 encoder MFT (test seam only): $(if (Test-Path $h264) { 'present' } else { 'missing - the seam test will skip' })"
+
+      # The encoder needs neither WebRTC nor OpenSSL: still no network dependency.
+      - name: Configure live-stream with the Media Foundation encoder
+        run: >
+          cmake -S $env:LIVE_STREAM_DIR -B "$env:LIVE_STREAM_DIR/build-mf"
+          -DLIVE_STREAM_WITH_WEBRTC=OFF
+          -DLIVE_STREAM_WITH_MF=ON
+          -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+
+      - name: Build live-stream with the Media Foundation encoder
+        run: cmake --build "$env:LIVE_STREAM_DIR/build-mf" --config Release
+
+      # Verbose on purpose: the log shows which tests skipped (no hardware
+      # encoder MFT on hosted runners) and the settings each encoder accepted.
+      - name: Test live-stream with the Media Foundation encoder
+        run: >
+          ctest --test-dir "$env:LIVE_STREAM_DIR/build-mf" --build-config Release
+          --timeout 120 --output-on-failure --verbose
