@@ -145,6 +145,20 @@ lebenden Helper neu anlegen. POSIX-Regionen werden beim Writer-`close()`
 bewusst NICHT unlinkt (Leser bleiben attached; Recycling ausschließlich über
 den forceRecreate-Clear).
 
+### Meeting-Grafik-Ebenen im Hochformat (ADR-0007)
+Der Meeting-Compositor legt jede Grafik-Ebene per Cover auf die Leinwand. Bei
+einer Hochformat-Engine (z. B. 1080×1920) rendern die beiden Meeting-Renderer
+deshalb in Programmgröße: der Pre-Warm nach `meeting_engine_start` nimmt die
+Leinwandgröße (Querformat unverändert 1920×1080@30), und
+`meeting_graphics_configure_outputs` ersetzt eine Anfrage in der falschen
+Ausrichtung durch die Engine-Geometrie. Die Basis-Box der Templates bleibt
+1920×1080 (`electron-renderer-dom-runtime.ts`); im Hochformat platziert die
+Web-App sie per Layout. Die Bridge-eigenen Inhalts-Ebenen
+(`meeting-content-layers.ts`) bekommen die Bühnengröße als Parameter. Der
+Studio-Renderer ist davon nicht berührt. Das Offscreen-Fenster ist dann
+1080×1920 (mit Supersampling 2160×3840) – unter Windows kann der
+Arbeitsbereich das klemmen (`ensureWindowContentSize`), siehe ADR-0007.
+
 ## Output‑Adapter
 - `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`
 - `apps/bridge/src/services/graphics/output-adapters/decklink-key-fill-output-adapter.ts`

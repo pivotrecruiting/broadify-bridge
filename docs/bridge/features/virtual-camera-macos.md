@@ -10,6 +10,7 @@ Endnutzer- und Support-Dokumentation für die macOS-Virtual-Camera. Entwickler-D
 - **Niemals** `BroadifyVCam.app` direkt aus einem DMG, dem Downloads-Ordner oder per „Paketinhalt zeigen" aus der Bridge-App starten. macOS führt quarantänierte Apps App-Transloziert aus einem zufälligen, schreibgeschützten Pfad aus — die Aktivierung der Kamera-Erweiterung schlägt dann immer fehl.
 - Nach der Aktivierung muss die Erweiterung einmalig freigegeben werden: **Systemeinstellungen → Allgemein → Anmeldeobjekte & Erweiterungen → Kamera-Erweiterungen → broadify Virtual Camera**. Bei einem Extension-Upgrade kann macOS diese Freigabe erneut verlangen.
 - Die Kamera meldet Meeting-Apps fest `1920x1080` BGRA bei 30 fps, passend zur Programmgeometrie. Es gibt keine Formatliste mit alternativen Auflösungen.
+- Läuft das Meeting-Programm im Hochformat (z. B. 1080×1920, ADR-0007), bleibt die Kamera bei `1920x1080`: der Meeting-Helper setzt das Hochkant-Bild mittig mit schwarzen Balken links und rechts ein. Die Erweiterung selbst ist unverändert.
 
 ## Fehlercodes (Bridge-Status `meeting_output_configure` → `data.code`)
 
