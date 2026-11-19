@@ -27,6 +27,17 @@ int firstNalType(const std::vector<uint8_t> &annexB);
 /** True if any NAL in the Annex B buffer is an IDR slice (type 5). */
 bool containsIdr(const std::vector<uint8_t> &annexB);
 
+/** True if any NAL in the Annex B buffer has the given type (1 slice, 5 IDR, 7 SPS, 8 PPS, ...). */
+bool containsNalType(const std::vector<uint8_t> &annexB, int nalType);
+
+/**
+ * Splits an Annex B parameter-set blob (start code + SPS + start code + PPS,
+ * as Media Foundation hands out in MF_MT_MPEG_SEQUENCE_HEADER) into the bare
+ * NAL units. The first SPS and the first PPS win; other NALs are skipped.
+ * False, with `out` cleared, unless both are present.
+ */
+bool splitAnnexBParameterSets(const uint8_t *data, size_t size, H264ParameterSets &out);
+
 /** profile_idc of the first SPS (type 7) in an Annex B buffer (66 Baseline, 77 Main, 100 High), or -1 without one. */
 int spsProfileIdc(const std::vector<uint8_t> &annexB);
 
