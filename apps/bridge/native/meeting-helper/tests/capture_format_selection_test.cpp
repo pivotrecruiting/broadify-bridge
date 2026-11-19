@@ -101,6 +101,25 @@ int main() {
                      .c_str());
   }
 
+  // Portrait engine (1080x1920 canvas): the helper requests the landscape
+  // equivalent (captureRequestSize -> 1920x1080), which lands on the same
+  // 1080p mode as a landscape engine. The un-transposed canvas size would
+  // penalise every mode below 1920 rows and drag the camera to 4K.
+  {
+    const CaptureFormatSelection transposed =
+        selectCaptureFormat(camLinkFormats(), {1920, 1080, 30.0});
+    ok &= expect(transposed.candidateIndex == 2 && transposed.rangeIndex == 1,
+                 ("portrait engine request picks 1920x1080: " +
+                  describe(transposed))
+                     .c_str());
+    const CaptureFormatSelection naive =
+        selectCaptureFormat(camLinkFormats(), {1080, 1920, 30.0});
+    ok &= expect(naive.candidateIndex == 3,
+                 ("un-transposed portrait target would pick 3840x2160: " +
+                  describe(naive))
+                     .c_str());
+  }
+
   // Exact 30.0 device: match kind exact, rate exactly the target.
   {
     const std::vector<CaptureFormatCandidate> formats{

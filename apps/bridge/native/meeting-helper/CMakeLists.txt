@@ -515,6 +515,7 @@ if(MEETING_HELPER_BUILD_TESTS)
   endif()
   set(CONTROL_SERVER_TEST_SOURCES
     tests/control_server_test.cpp
+    src/common/options.cpp
     src/control/control_server.cpp
     src/live/program_stream_stub.cpp
     src/capture/camera_source.cpp
@@ -614,7 +615,8 @@ if(MEETING_HELPER_BUILD_TESTS)
       elseif(helper_test STREQUAL "control_server_test" OR helper_test STREQUAL "program_stream_rpc_test")
         # Both link control_server.cpp + vcam_controller.cpp: needs the same Win32
         # media/COM libraries as the helper binary (MFStartup, CLSIDs, ...).
-        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp advapi32)
+        # shell32: CommandLineToArgvW in common/options.cpp (captureRequestSize).
+        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi shell32 d3d11 d3dcompiler dbghelp advapi32)
       elseif(helper_test STREQUAL "d3d_adapter_select_test")
         target_link_libraries(${helper_test} PRIVATE dxgi)
       elseif(helper_test STREQUAL "options_test")
