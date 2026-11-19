@@ -1,0 +1,9 @@
+{
+  "$comment": "Windows only: static OpenSSL for libdatachannel (ADR-0009). Installed by scripts/prepare-windows-pgm-deps.ps1 with triplet x64-windows-static-md into deps/vcpkg_installed; the baseline pins the OpenSSL version (3.6.5 at vcpkg 2026.10.16).",
+  "name": "broadify-live-stream",
+  "version-string": "0",
+  "builtin-baseline": "9eec002df1cd109f8f104cd966a763daf9751489",
+  "dependencies": [
+    "openssl"
+  ]
+}

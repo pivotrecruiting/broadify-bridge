@@ -94,3 +94,6 @@ apps/bridge/native/pgm-helper/pgm-helper
 apps/bridge/native/pgm-helper/pgm-helper.exe
 apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app/
 apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app
+
+# Windows live program deps (static OpenSSL via scripts/prepare-windows-pgm-deps.ps1)
+apps/bridge/native/live-stream/deps/
