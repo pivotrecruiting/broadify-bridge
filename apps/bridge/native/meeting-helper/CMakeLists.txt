@@ -456,6 +456,11 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/options_test.cpp
     src/common/options.cpp
   )
+  # Portrait program support: the keyed presenter and the camera PiP keep
+  # their 16:9 geometry (numeric parity) and get a defined 9:16 geometry.
+  add_executable(program_geometry_test
+    tests/program_geometry_test.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -594,6 +599,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     media_page_cache_test
     background_image_cache_test
     options_test
+    program_geometry_test
     tier_handover_test
     matting_backend_test
     matting_common_test
