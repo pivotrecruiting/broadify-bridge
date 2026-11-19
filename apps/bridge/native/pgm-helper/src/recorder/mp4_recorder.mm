@@ -91,6 +91,10 @@ bool Mp4Recorder::start(const std::string &filePath, bool withAudio, std::string
   }
 }
 
+void Mp4Recorder::appendVideo(const EncodedAccessUnit &unit) { appendVideo(unit.sample, unit.keyframe); }
+
+void Mp4Recorder::appendAudio(const AudioChunk &chunk) { appendAudio(chunk.sample); }
+
 void Mp4Recorder::appendVideo(CMSampleBufferRef sample, bool keyframe) {
   @autoreleasepool {
     std::lock_guard<std::mutex> lock(impl_->mutex);

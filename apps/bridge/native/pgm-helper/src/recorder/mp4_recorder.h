@@ -1,5 +1,9 @@
 #pragma once
 
+#include "audio/audio_source.h"
+#include "common/live_types.h"
+#include "live_stream/video_encoder.h"
+
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -38,6 +42,11 @@ class Mp4Recorder {
   bool stop(std::string &error);
   bool isActive() const;
   RecordingStatus status() const;
+
+  /** One access unit of the recording encoder; called on the encoder's thread. The unit stays owned by the caller. */
+  void appendVideo(const EncodedAccessUnit &unit);
+  /** One captured PCM chunk; called on the audio capture thread. */
+  void appendAudio(const AudioChunk &chunk);
 
 #if defined(__APPLE__)
   void appendVideo(CMSampleBufferRef encodedSample, bool keyframe);

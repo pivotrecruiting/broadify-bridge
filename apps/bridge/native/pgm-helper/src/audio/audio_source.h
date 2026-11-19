@@ -31,13 +31,12 @@ class AudioSource {
   virtual void stop() = 0;
 };
 
-#if defined(__APPLE__)
 /**
  * Opens the audio device that belongs to a UVC video device (same model name,
  * e.g. "ATEM Mini", "RØDECaster Video") and delivers 48 kHz stereo float.
  * Returns nullptr when no matching audio device exists (video-only preview).
+ * Implemented once per platform (macOS: audio_capture_avfoundation.mm).
  */
 std::unique_ptr<AudioSource> createPairedAudioSource(const std::string &videoDisplayName);
-#endif
 
 }  // namespace broadify::pgm

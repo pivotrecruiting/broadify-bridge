@@ -66,6 +66,7 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
     src/platform/platform_host_mac.mm
     src/capture/uvc_avfoundation.mm
     src/capture/synthetic_source.mm
+    src/capture/frame_holder_mac.mm
     src/audio/audio_capture_avfoundation.mm
     src/audio/opus_encoder.cpp
     src/capture/snapshot.mm
@@ -74,7 +75,7 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
   )
   set_source_files_properties(
     src/platform/platform_host_mac.mm src/capture/uvc_avfoundation.mm src/capture/synthetic_source.mm
-    src/audio/audio_capture_avfoundation.mm src/macos/macos_app.mm src/capture/snapshot.mm src/recorder/mp4_recorder.mm
+    src/capture/frame_holder_mac.mm src/audio/audio_capture_avfoundation.mm src/macos/macos_app.mm src/capture/snapshot.mm src/recorder/mp4_recorder.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   target_include_directories(pgm-helper PRIVATE src)
   target_link_libraries(pgm-helper PRIVATE pgm_core live_stream opus

@@ -27,6 +27,18 @@ struct EncodedAccessUnit {
 #endif
 };
 
+/** Releases the unit's retained platform sample, if it carries one; the receiver calls it once it is done with the unit. */
+inline void releaseEncodedSample(EncodedAccessUnit &unit) {
+#if defined(__APPLE__)
+  if (unit.sample != nullptr) {
+    CFRelease(unit.sample);
+    unit.sample = nullptr;
+  }
+#else
+  (void)unit;
+#endif
+}
+
 struct EncoderInfo {
   std::string backend;  // "videotoolbox" | "mediafoundation"
   bool hardware = false;

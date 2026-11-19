@@ -2,6 +2,7 @@
 
 #include "audio/audio_source.h"
 #include "audio/opus_encoder.h"
+#include "capture/frame_holder.h"
 #include "capture/video_source.h"
 #include "control/pgm_rpc.h"
 #include "live_stream/video_encoder.h"
@@ -27,8 +28,8 @@ struct PgmEngineConfig {
  * Owns capture → signal tracker → hardware encoder → WebRTC publisher (+ audio)
  * and, while recording, a second hardware encoder (H.264 High archive target,
  * ADR-0006) → MP4 passthrough recorder. Implements the RPC surface. Threads:
- * capture callbacks (AVFoundation queue / synthetic thread), encoder output
- * (VideoToolbox, one thread per session), a 500 ms housekeeping thread
+ * capture callbacks (capture backend queue / synthetic thread), encoder output
+ * (one thread per encoder session), a 500 ms housekeeping thread
  * (no-signal, dead viewers, perf events). State changes emit helper events so
  * the bridge can publish `pgm_status` without polling.
  */
@@ -83,9 +84,7 @@ class PgmEngine final : public PgmEngineApi {
   std::unique_ptr<OpusAudioEncoder> opus_;
   std::unique_ptr<WebRtcPublisher> publisher_;
   Mp4Recorder recorder_;
-#if defined(__APPLE__)
-  CVPixelBufferRef latestFrame_ = nullptr;  // retained; snapshots
-#endif
+  std::shared_ptr<const RetainedFrame> latestFrame_;  // snapshots
   VideoSignalTracker tracker_;
   EncodeTarget target_;
   EncodeTarget recordingTarget_;
