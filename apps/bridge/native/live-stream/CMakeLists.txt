@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 
 # Shared live-stream library of the native helpers: hardware H.264 encoder
-# abstraction (VideoToolbox on macOS), Annex B helpers, bitrate ladder and the
+# abstraction (VideoToolbox on macOS, Media Foundation on Windows behind
+# LIVE_STREAM_WITH_MF), Annex B helpers, pixel modules, bitrate ladder and the
 # libdatachannel WebRTC publisher (one PeerConnection per viewer). Used by the
 # PGM helper (switcher program) and the meeting helper (composited camera
 # program). ADR-0001/ADR-0004 in docs/bridge/architecture/adr.
@@ -30,6 +31,21 @@ if(NOT DEFINED LIVE_STREAM_WITH_WEBRTC)
     set(LIVE_STREAM_WITH_WEBRTC ON)
   else()
     set(LIVE_STREAM_WITH_WEBRTC OFF)
+  endif()
+endif()
+
+# Media Foundation hardware H.264 encoder (Windows, ADR-0009). Opt-in: without
+# it a Windows build contains none of its targets, so `dist:win` (which builds
+# every target of the meeting-helper build directory) stays as it is. Turned on
+# by -DLIVE_STREAM_WITH_MF=ON, LIVE_STREAM_WITH_MF=1 or the build switch
+# BROADIFY_PGM_WINDOWS=1 in the environment; needs neither WebRTC nor OpenSSL.
+if(NOT DEFINED LIVE_STREAM_WITH_MF)
+  if(DEFINED ENV{LIVE_STREAM_WITH_MF})
+    set(LIVE_STREAM_WITH_MF "$ENV{LIVE_STREAM_WITH_MF}")
+  elseif("$ENV{BROADIFY_PGM_WINDOWS}" STREQUAL "1")
+    set(LIVE_STREAM_WITH_MF ON)
+  else()
+    set(LIVE_STREAM_WITH_MF OFF)
   endif()
 endif()
 
@@ -100,6 +116,35 @@ if(LIVE_STREAM_WITH_WEBRTC AND APPLE)
     target_link_libraries(webrtc_loopback_test PRIVATE live_stream)
     add_test(NAME webrtc_loopback_test COMMAND webrtc_loopback_test)
     set_tests_properties(webrtc_loopback_test PROPERTIES TIMEOUT 60)
+  endif()
+endif()
+
+if(LIVE_STREAM_WITH_MF AND WIN32)
+  # The encoder alone; the WebRTC publisher joins it in `live_stream` once that builds on Windows.
+  add_library(live_stream_mf STATIC
+    src/mf_encoder.cpp
+  )
+  target_include_directories(live_stream_mf PUBLIC include)
+  target_link_libraries(live_stream_mf PUBLIC live_stream_core mf mfplat mfuuid ole32)
+
+  if(LIVE_STREAM_BUILD_TESTS)
+    # In-test asynchronous MFT: event loop, credits, mailbox, forced keyframe, stream change, drain, shutdown.
+    add_executable(mf_encoder_fake_mft_test tests/mf_encoder_fake_mft_test.cpp)
+    target_include_directories(mf_encoder_fake_mft_test PRIVATE src)
+    target_link_libraries(mf_encoder_fake_mft_test PRIVATE live_stream_mf)
+    add_test(NAME mf_encoder_fake_mft_test COMMAND mf_encoder_fake_mft_test)
+    set_tests_properties(mf_encoder_fake_mft_test PROPERTIES TIMEOUT 120)
+    # Microsoft's software H.264 MFT behind the test seam: only ever part of this test binary.
+    add_executable(mf_encoder_software_seam_test tests/mf_encoder_software_seam_test.cpp)
+    target_include_directories(mf_encoder_software_seam_test PRIVATE src)
+    target_link_libraries(mf_encoder_software_seam_test PRIVATE live_stream_mf)
+    add_test(NAME mf_encoder_software_seam_test COMMAND mf_encoder_software_seam_test)
+    set_tests_properties(mf_encoder_software_seam_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    # Real hardware MFT through the production factory; skips on machines without one.
+    add_executable(mf_encoder_smoke_test tests/mf_encoder_smoke_test.cpp)
+    target_link_libraries(mf_encoder_smoke_test PRIVATE live_stream_mf)
+    add_test(NAME mf_encoder_smoke_test COMMAND mf_encoder_smoke_test)
+    set_tests_properties(mf_encoder_smoke_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
   endif()
 endif()
 

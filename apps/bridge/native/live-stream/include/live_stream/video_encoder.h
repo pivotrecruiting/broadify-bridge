@@ -32,6 +32,7 @@ struct EncoderInfo {
   bool hardware = false;
   std::string name;      // encoder product name where the platform reports one (Windows: MFT friendly name)
   std::string vendorId;  // hardware vendor id where the platform reports one (Windows: MFT_ENUM_HARDWARE_VENDOR_ID_Attribute)
+  std::string settings;  // JSON object with the encoder settings that took effect (Windows: one entry per ICodecAPI setting); empty elsewhere
 };
 
 /**
