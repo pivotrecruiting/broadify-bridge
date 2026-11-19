@@ -17,14 +17,16 @@ name: PGM Windows Native
 #            so the hardware smoke test reports "skipped" here.
 #   full     the WebRTC part (LIVE_STREAM_WITH_WEBRTC=ON): static OpenSSL from
 #            the vcpkg manifest, libdatachannel, publisher.cpp on top of the
-#            encoder, and the in-process WebRTC loopback test. The only job
-#            with network dependencies; both are cached.
-#   helper   compile only: the portable pgm-helper sources (main.cpp,
-#            pgm_engine.cpp) and the Windows platform host as an object
-#            library (PGM_HELPER_WINDOWS_COMPILE_CHECK=ON). No executable yet,
-#            no network dependency.
-# Later units of the chain extend `full` with pgm-helper.exe and add
-# meeting (meeting-helper program stream).
+#            encoder, and the in-process WebRTC loopback test. Then the helper
+#            itself the way the build switch builds it (BROADIFY_PGM_WINDOWS=1
+#            through scripts/build-pgm-helper.sh): pgm-helper.exe, ctest,
+#            `--probe`, and a run with the synthetic source that must end in
+#            `encoder_unavailable` on this GPU-less runner - the doctrine test:
+#            no silent software fallback. The exe's imports go through the
+#            release dependency gate and it is uploaded unsigned for the
+#            device session. The only job with network dependencies; all
+#            three (OpenSSL, libdatachannel, opus) are cached.
+# A later unit of the chain adds meeting (meeting-helper program stream).
 
 on:
   workflow_dispatch:
@@ -36,7 +38,13 @@ on:
       - apps/bridge/native/pgm-helper/**
       - apps/bridge/native/helper-common/**
       - apps/bridge/native/meeting-helper/src/live/**
+      - apps/bridge/native/meeting-helper/third_party/stb/**
       - scripts/prepare-windows-pgm-deps.ps1
+      - scripts/build-pgm-helper.sh
+      - scripts/prepare-windows-vc-runtime.ps1
+      - scripts/verify-windows-native-dependencies.cjs
+      - scripts/lib/windows-native-dependency-policy.cjs
+      - scripts/lib/windows-vc-runtime.cjs
       - .github/workflows/pgm-windows-native.yml
 
 permissions:
@@ -186,39 +194,10 @@ jobs:
           ctest --test-dir "$env:LIVE_STREAM_DIR/build-mf" --build-config Release
           --timeout 120 --output-on-failure --verbose
 
-  helper:
-    name: helper (portable pgm-helper sources, compile only, MSVC)
-    runs-on: windows-2022
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-          vsversion: 2022
-
-      # The engine only needs the headers of the publisher and the encoder, so
-      # neither WebRTC nor OpenSSL is configured here.
-      - name: Configure pgm-helper (portable sources)
-        run: >
-          cmake -S $env:PGM_HELPER_DIR -B "$env:PGM_HELPER_DIR/build-portable"
-          -DPGM_HELPER_WINDOWS_COMPILE_CHECK=ON
-          -DLIVE_STREAM_WITH_WEBRTC=OFF
-          -DFETCHCONTENT_FULLY_DISCONNECTED=ON
-
-      - name: Compile pgm-helper (portable sources + Windows platform host)
-        run: >
-          cmake --build "$env:PGM_HELPER_DIR/build-portable" --config Release
-          --target pgm_helper_portable_objects
-
   full:
-    name: full (WebRTC + static OpenSSL, MSVC)
+    name: full (WebRTC + static OpenSSL + pgm-helper.exe, MSVC)
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -336,3 +315,220 @@ jobs:
           ctest --test-dir "$env:LIVE_STREAM_DIR/build-full" --build-config Release
           --timeout 120 --output-on-failure --verbose -R "^webrtc_loopback_test$"
           --repeat until-pass:2 --no-tests=error
+
+      # ---- pgm-helper.exe: what BROADIFY_PGM_WINDOWS=1 builds ----------------
+
+      # Without the switch the wrapper must skip exactly as it does in a
+      # release today: no build directory, no executable.
+      - name: Build wrapper skips without the switch
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset BROADIFY_PGM_WINDOWS
+          output="$(bash scripts/build-pgm-helper.sh)"
+          echo "$output"
+          [[ "$output" == Skipping\ PGM\ helper\ build\ on\ * ]]
+          [[ ! -e "$PGM_HELPER_DIR/pgm-helper.exe" ]]
+          [[ ! -e "$PGM_HELPER_DIR/build" ]]
+
+      # opus like libdatachannel: pinned tag read from the CMake file, sources
+      # cached, build through the documented offline path.
+      - name: Resolve opus tag
+        id: opus
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmake = Get-Content -Raw "$env:PGM_HELPER_DIR/CMakeLists.txt"
+          $match = [regex]::Match($cmake, 'opus\.git\s+GIT_TAG\s+(\S+)')
+          if (-not $match.Success) { throw "opus GIT_TAG not found in pgm-helper/CMakeLists.txt" }
+          $tag = $match.Groups[1].Value
+          Write-Host "opus $tag"
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $src = (Join-Path $env:RUNNER_TEMP 'opus-src').Replace('\', '/')
+          "OPUS_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Cache opus sources
+        id: opus-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/opus-src
+          key: pgm-win-opus-${{ steps.opus.outputs.tag }}
+
+      - name: Fetch opus sources
+        if: steps.opus-cache.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path $env:OPUS_SRC) { Remove-Item -Recurse -Force $env:OPUS_SRC }
+          git clone --depth 1 --branch "${{ steps.opus.outputs.tag }}" https://github.com/xiph/opus.git $env:OPUS_SRC
+          if ($LASTEXITCODE -ne 0) { throw "git clone opus failed with exit code $LASTEXITCODE" }
+
+      # Through the wrapper, i.e. the path a build with the switch takes:
+      # scripts/build-pgm-helper.sh -> pgm-helper/build.ps1 (helper + tests).
+      - name: Build pgm-helper.exe (BROADIFY_PGM_WINDOWS=1)
+        shell: bash
+        env:
+          BROADIFY_PGM_WINDOWS: "1"
+        run: |
+          set -euo pipefail
+          export PGM_HELPER_CMAKE_EXTRA_ARGS="-DFETCHCONTENT_SOURCE_DIR_LIBDATACHANNEL=$LIBDATACHANNEL_SRC -DFETCHCONTENT_SOURCE_DIR_OPUS=$OPUS_SRC -DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+          bash scripts/build-pgm-helper.sh
+          test -f "$PGM_HELPER_DIR/pgm-helper.exe"
+
+      - name: Test pgm-helper (all but the loopback test)
+        run: >
+          ctest --test-dir "$env:PGM_HELPER_DIR/build" --build-config Release
+          --timeout 120 --output-on-failure -E "^webrtc_loopback_test$"
+
+      - name: Test pgm-helper WebRTC loopback
+        run: >
+          ctest --test-dir "$env:PGM_HELPER_DIR/build" --build-config Release
+          --timeout 120 --output-on-failure -R "^webrtc_loopback_test$"
+          --repeat until-pass:2 --no-tests=error
+
+      # The runner has no camera: the probe must still answer with one JSON
+      # line, an empty input list and exit code 0.
+      - name: pgm-helper.exe --probe
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:PGM_HELPER_DIR 'pgm-helper.exe'
+          $output = @(& $exe --probe)
+          $code = $LASTEXITCODE
+          $output | Write-Host
+          if ($code -ne 0) { throw "--probe exited with $code" }
+          $line = $output | Where-Object { $_ -match '^\{"type":"probe"' } | Select-Object -First 1
+          if (-not $line) { throw "no probe line on stdout" }
+          $probe = $line | ConvertFrom-Json
+          if ($null -eq $probe.inputs -or $null -eq $probe.inputs.camera_permission) { throw "probe line has no inputs.camera_permission" }
+          if ($probe.encoder -ne 'mediafoundation') { throw "unexpected encoder field: $($probe.encoder)" }
+          Write-Host "inputs: $(@($probe.inputs.inputs).Count), camera_permission: $($probe.inputs.camera_permission)"
+
+      # Doctrine test (ADR-0002/0009): on a machine without a hardware H.264
+      # encoder the helper reports encoder_unavailable and encodes nothing. It
+      # stays controllable: status, snapshot (portable JPEG path), the
+      # recorder stub's recording_unsupported and a clean shutdown are checked
+      # over the control pipe, the way the bridge talks to it.
+      - name: Synthetic source ends in encoder_unavailable (no software fallback)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:PGM_HELPER_DIR 'pgm-helper.exe'
+          $pipeName = "broadify-pgm-ci-$PID"
+          $stdout = Join-Path $env:RUNNER_TEMP 'pgm-synthetic.stdout.log'
+          $stderr = Join-Path $env:RUNNER_TEMP 'pgm-synthetic.stderr.log'
+          $helper = Start-Process -FilePath $exe -PassThru -NoNewWindow `
+            -ArgumentList @('--run', '--control-socket', "\\.\pipe\$pipeName", '--synthetic-source', '1280x720@30') `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          # Keeps the process handle open so ExitCode is readable after the exit.
+          $null = $helper.Handle
+
+          function Read-Events {
+            if (-not (Test-Path $stdout)) { return @() }
+            $stream = [System.IO.File]::Open($stdout, 'Open', 'Read', 'ReadWrite')
+            try {
+              $text = [System.IO.StreamReader]::new($stream).ReadToEnd()
+            } finally {
+              $stream.Dispose()
+            }
+            # A line the helper is still writing does not parse yet; the next poll sees it whole.
+            return @($text -split "`r?`n" | Where-Object { $_ -match '^\{.*\}$' } | ForEach-Object {
+              try { $_ | ConvertFrom-Json } catch { }
+            })
+          }
+          function Invoke-Rpc([string]$method, [string]$params = '{}') {
+            $client = [System.IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [System.IO.Pipes.PipeDirection]::InOut)
+            try {
+              $client.Connect(10000)
+              $request = [System.Text.Encoding]::UTF8.GetBytes("{`"id`":`"ci`",`"method`":`"$method`",`"params`":$params}`n")
+              $client.Write($request, 0, $request.Length)
+              $client.Flush()
+              $line = [System.IO.StreamReader]::new($client, [System.Text.Encoding]::UTF8).ReadLine()
+            } finally {
+              $client.Dispose()
+            }
+            if (-not $line) { throw "no answer to $method" }
+            Write-Host "$method -> $(if ($line.Length -gt 400) { $line.Substring(0, 400) + '...' } else { $line })"
+            return $line | ConvertFrom-Json
+          }
+
+          try {
+            $deadline = (Get-Date).AddSeconds(60)
+            $errorEvent = $null
+            while (-not $errorEvent -and (Get-Date) -lt $deadline) {
+              if ($helper.HasExited) { throw "pgm-helper.exe exited early with $($helper.ExitCode)" }
+              Start-Sleep -Milliseconds 500
+              $errorEvent = Read-Events | Where-Object { $_.type -eq 'pgm_error' } | Select-Object -First 1
+            }
+            $events = Read-Events
+            $events | ForEach-Object { Write-Host ($_ | ConvertTo-Json -Compress -Depth 8) }
+            if (-not $errorEvent) { throw "no pgm_error event within 60 s" }
+            if ($errorEvent.code -ne 'encoder_unavailable') { throw "expected encoder_unavailable, got $($errorEvent.code)" }
+            if ($events | Where-Object { $_.type -eq 'pgm_encoder_configured' }) { throw "an encoder was configured on a runner without a hardware encoder" }
+            if (-not ($events | Where-Object { $_.type -eq 'pgm_signal' -and $_.signal.width -eq 1280 -and $_.signal.height -eq 720 })) {
+              throw "the synthetic source delivered no 1280x720 signal"
+            }
+
+            $status = Invoke-Rpc 'pgm.status'
+            if (-not $status.ok) { throw "pgm.status failed" }
+            if ($status.result.state -ne 'error' -or $status.result.last_error.code -ne 'encoder_unavailable' -or $null -ne $status.result.encoder) {
+              throw "status does not report encoder_unavailable without an encoder"
+            }
+            $snapshot = Invoke-Rpc 'pgm.snapshot' '{"quality":0.8}'
+            if (-not $snapshot.ok -or $snapshot.result.width -ne 1280 -or $snapshot.result.height -ne 720 -or
+                -not $snapshot.result.jpeg_base64.StartsWith('/9j/')) {
+              throw "pgm.snapshot did not return a 1280x720 JPEG"
+            }
+            $recording = Invoke-Rpc 'pgm.recording.start' '{"file_path":"C:/unused/pgm.mp4"}'
+            if ($recording.ok -or $recording.error.code -ne 'recording_unsupported') { throw "pgm.recording.start must answer recording_unsupported" }
+            $shutdown = Invoke-Rpc 'control.shutdown'
+            if (-not $shutdown.ok) { throw "control.shutdown failed" }
+            if (-not $helper.WaitForExit(20000)) { throw "pgm-helper.exe did not exit within 20 s after control.shutdown" }
+            if ($helper.ExitCode -ne 0) { throw "pgm-helper.exe exited with $($helper.ExitCode)" }
+            $last = Read-Events | Select-Object -Last 1
+            if ($last.type -ne 'shutdown' -or $last.reason -ne 'control_shutdown') { throw "last event is not the control_shutdown shutdown event" }
+          } finally {
+            if (-not $helper.HasExited) { Stop-Process -Id $helper.Id -Force }
+            if (Test-Path $stderr) { Get-Content $stderr | Write-Host }
+          }
+
+      # ADR-0009, point 5 and the release gate: only inbox Windows DLLs and
+      # the VC runtime that ships next to every helper, no OpenSSL DLL. The
+      # exe is staged the way the package lays it out (resources/native/pgm-helper).
+      - name: Verify pgm-helper.exe imports (release dependency gate)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resources = Join-Path $env:RUNNER_TEMP 'pgm-stage\resources'
+          $helperDir = Join-Path $resources 'native\pgm-helper'
+          # Stages the VC runtime first: the script empties its destination.
+          ./scripts/prepare-windows-vc-runtime.ps1 -Destination $helperDir
+          Copy-Item -Force (Join-Path $env:PGM_HELPER_DIR 'pgm-helper.exe') $helperDir
+          $env:PGM_STAGE_RESOURCES = $resources
+          # The gate's own function, pointed at the staged folder instead of the packaged helper list.
+          $check = Join-Path $env:RUNNER_TEMP 'verify-pgm-helper-imports.cjs'
+          @'
+          const path = require("node:path");
+          const { verifyNativeDependencies } = require(path.join(process.cwd(), "scripts", "verify-windows-native-dependencies.cjs"));
+          verifyNativeDependencies({ resourcesDir: process.env.PGM_STAGE_RESOURCES, helperDirs: ["native/pgm-helper"] }).then(
+            (result) => {
+              for (const problem of result.problems) console.error(`[Deps] ${problem.file} -> ${problem.missing}`);
+              console.log(`[Deps] inspected ${result.inspected} PE file(s), ${result.problems.length} unresolved import(s)`);
+              process.exit(result.ok && result.inspected > 0 ? 0 : 1);
+            },
+            (error) => {
+              console.error(error);
+              process.exit(1);
+            },
+          );
+          '@ | Set-Content -Path $check -Encoding utf8
+          node $check
+          if ($LASTEXITCODE -ne 0) { throw "pgm-helper.exe has imports outside Windows and the packaged VC runtime" }
+          $imports = & dumpbin /NOLOGO /DEPENDENTS (Join-Path $helperDir 'pgm-helper.exe')
+          $imports | Write-Host
+          $bad = @($imports | Where-Object { $_ -match '(?i)\b(libssl|libcrypto|ssleay|libeay|datachannel|opus)[^\s]*\.dll' })
+          if ($bad.Count -gt 0) { throw "unexpected DLL imports: $($bad -join ', ')" }
+
+      # Unsigned, for the device session only (docs: runbook). Never a release artifact.
+      - name: Upload pgm-helper.exe (unsigned)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgm-helper-windows-x64-unsigned-${{ github.sha }}
+          path: apps/bridge/native/pgm-helper/pgm-helper.exe
+          if-no-files-found: error
+          retention-days: 14
