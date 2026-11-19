@@ -7,40 +7,34 @@
 #include "helper_common/helper_event_log.h"
 #include "helper_common/json_utils.h"
 #include "helper_common/rpc_transport.h"
-#include "macos/macos_app.h"
 #include "pgm_engine.h"
+#include "platform/platform_host.h"
 
 #include <atomic>
-#include <csignal>
-#include <cstdio>
 #include <future>
 #include <iostream>
 #include <thread>
-#include <unistd.h>
 
 namespace {
 
 std::atomic<bool> g_running{true};
 
-void signalHandler(int) { g_running.store(false); }
-
 }  // namespace
 
+// Portable entry point: everything the operating system has to provide sits
+// behind platform/platform_host.h (signals, run loop, parent watchdog).
 int main(int argc, char **argv) {
   using namespace broadify::pgm;
-  std::signal(SIGINT, signalHandler);
-  std::signal(SIGTERM, signalHandler);
-  // The bridge closing its RPC socket mid-write must not kill the helper.
-  std::signal(SIGPIPE, SIG_IGN);
+  installSignalHandlers(g_running);
 
-  PgmOptions options = parsePgmOptions(argc, argv);
+  PgmOptions options = parsePgmOptions(processArgumentsUtf8(argc, argv));
   broadify::helper::setHelperEventLogPath(options.eventLogPath);
-  setvbuf(stdout, nullptr, _IOLBF, 0);
+  configureStdoutForEvents();
 
   if (options.probe) {
-    initializeMacosApplication();
+    initializePlatform();
     PgmEngine engine(PgmEngineConfig{});
-    std::cout << "{\"type\":\"probe\",\"inputs\":" << engine.inputsListJson() << ",\"encoder\":\"videotoolbox\"}" << std::endl;
+    std::cout << "{\"type\":\"probe\",\"inputs\":" << engine.inputsListJson() << ",\"encoder\":" << probeEncoderJson() << "}" << std::endl;
     return 0;
   }
   if (!options.run) {
@@ -51,22 +45,10 @@ int main(int argc, char **argv) {
     std::cerr << "pgm-helper requires --control-socket or PGM_CONTROL_SOCKET" << std::endl;
     return 2;
   }
-  initializeMacosApplication();
+  initializePlatform();
 
-  // Orphan watchdog: the helper app is launched through launchd (`open`), so
-  // getppid() never points at the bridge; poll the PID the bridge passed.
-  if (options.parentPid > 0) {
-    const int bridgePid = options.parentPid;
-    std::thread([bridgePid]() {
-      while (g_running.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        if (kill(bridgePid, 0) != 0) {
-          broadify::helper::noteHelperExitReason("parent_gone");
-          g_running.store(false);
-        }
-      }
-    }).detach();
-  }
+  // Orphan watchdog on the PID the bridge passed.
+  startParentWatchdog(options.parentPid, g_running);
 
   PgmEngineConfig config;
   config.syntheticSource = options.syntheticSource;
@@ -86,7 +68,7 @@ int main(int argc, char **argv) {
   broadify::helper::emitHelperEvent("{\"type\":\"ready\",\"control_socket\":\"" + broadify::helper::jsonEscape(options.controlSocket) +
                                     "\",\"helper\":\"pgm\"}");
 
-  runMacosApplicationLoop(g_running);
+  runPlatformLoop(g_running);
 
   engine.stop();
   // The server blocks in accept(); poke it so it sees g_running == false (else the process lingers as an orphan).

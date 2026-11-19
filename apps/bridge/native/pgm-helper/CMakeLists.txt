@@ -61,8 +61,9 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
   FetchContent_MakeAvailable(opus)
 
   add_executable(pgm-helper MACOSX_BUNDLE
-    src/main.mm
+    src/main.cpp
     src/pgm_engine.cpp
+    src/platform/platform_host_mac.mm
     src/capture/uvc_avfoundation.mm
     src/capture/synthetic_source.mm
     src/audio/audio_capture_avfoundation.mm
@@ -72,7 +73,7 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
     src/macos/macos_app.mm
   )
   set_source_files_properties(
-    src/main.mm src/capture/uvc_avfoundation.mm src/capture/synthetic_source.mm
+    src/platform/platform_host_mac.mm src/capture/uvc_avfoundation.mm src/capture/synthetic_source.mm
     src/audio/audio_capture_avfoundation.mm src/macos/macos_app.mm src/capture/snapshot.mm src/recorder/mp4_recorder.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   target_include_directories(pgm-helper PRIVATE src)
@@ -88,7 +89,7 @@ if(PGM_HELPER_BUILD_BINARY AND APPLE)
 endif()
 
 if(PGM_HELPER_BUILD_TESTS)
-  foreach(pgm_test IN ITEMS video_signal_tracker_test pgm_rpc_dispatch_test recording_signal_gate_test)
+  foreach(pgm_test IN ITEMS video_signal_tracker_test pgm_rpc_dispatch_test recording_signal_gate_test pgm_options_test)
     add_executable(${pgm_test} tests/${pgm_test}.cpp)
     target_link_libraries(${pgm_test} PRIVATE pgm_core)
     if(WIN32)

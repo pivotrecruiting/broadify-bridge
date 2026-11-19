@@ -5,13 +5,13 @@
 
 namespace broadify::pgm {
 
-PgmOptions parsePgmOptions(int argc, char **argv) {
+PgmOptions parsePgmOptions(const std::vector<std::string> &args) {
   PgmOptions options;
-  for (int i = 1; i < argc; ++i) {
-    const std::string arg = argv[i];
+  for (size_t i = 1; i < args.size(); ++i) {
+    const std::string &arg = args[i];
     auto next = [&](std::string &out) {
-      if (i + 1 < argc) {
-        out = argv[++i];
+      if (i + 1 < args.size()) {
+        out = args[++i];
       }
     };
     if (arg == "--run") {
@@ -38,6 +38,14 @@ PgmOptions parsePgmOptions(int argc, char **argv) {
     }
   }
   return options;
+}
+
+PgmOptions parsePgmOptions(int argc, char **argv) {
+  std::vector<std::string> args;
+  for (int i = 0; i < argc; ++i) {
+    args.emplace_back(argv[i] != nullptr ? argv[i] : "");
+  }
+  return parsePgmOptions(args);
 }
 
 bool parseSyntheticSpec(const std::string &spec, uint32_t &width, uint32_t &height, double &fps) {
