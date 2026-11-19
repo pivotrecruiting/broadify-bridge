@@ -12,3 +12,4 @@ bekommt die alte den Status „abgelöst durch ADR-NNNN“.
 | [0004](0004-libdatachannel-fuer-pgm-webrtc.md) | libdatachannel als WebRTC-Stack des PGM-Helpers | akzeptiert |
 | [0005](0005-live-stream-bibliothek-fuer-pgm-und-meeting.md) | Gemeinsame `live_stream`-Bibliothek für PGM- und Meeting-Helper | akzeptiert |
 | [0006](0006-pgm-aufnahme-eigener-encoder.md) | PGM-Aufnahme mit eigenem H.264-High-Hardware-Encoder | akzeptiert |
+| [0008](0008-session-event-log-nur-auf-opt-in.md) | Session-Event-Log nur auf Opt-in | akzeptiert |

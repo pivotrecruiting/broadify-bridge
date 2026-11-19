@@ -5,6 +5,26 @@ nutzt, um Grafik- und Kamerafenster exakt statt per Bildheuristik zu kennen. Ver
 (Spiegel von `broadify-postpro/postpro/contracts/models.py`, `session_event_log`). Architektur: ADR 0008 im
 Repo `broadify-postpro`.
 
+## Standardmäßig aus (2026-11-19)
+
+Bridge-ADR-0008 (`docs/bridge/architecture/adr/0008-session-event-log-nur-auf-opt-in.md`), Betriebsdoku:
+`docs/bridge/features/session-event-log.md`.
+
+- Einziger Schalter: `isSessionLogEnabled()` in `session-log-service.ts`, wahr nur mit PostPro-URL
+  (`--postpro-api-url` / `POSTPRO_API_URL`). Ohne URL: kein Recorder, kein Ordner, kein Timer;
+  `getSessionEventRecorder()` liefert `null`, `recordSwitcherEvent()` tut nichts.
+- `EngineAdapterService` abonniert `onSwitcherEvent` nur bei eingeschaltetem Feature
+  (`deps.isSessionLogEnabled`, in Tests austauschbar).
+- ATEM-Zeitabfrage, Zustandskopie und die vMix-Verbindung auf 8099 laufen nur, solange es Abonnenten gibt
+  (Start beim ersten, Stopp beim letzten).
+- `GraphicsManager.recordSessionGraphic` und `MeetingHelperManager.recordSessionEvents` kehren ohne Feature früh zurück.
+- `session-log-retention.ts` (`pruneSessionLogs`): 30 Tage ohne Upload, 7 Tage nach dem Marker, höchstens 200
+  Sitzungsdateien, nie die offene Sitzung; beim Start, nach Sitzungsende und vor dem periodischen Upload-Scan.
+- `initializeSessionLog()` (Aufruf in `server.ts`) legt den Recorder bei eingeschaltetem Feature sofort an, damit
+  Aufbewahrung und Upload-Scan nicht auf das erste Ereignis warten. Logzeile `[SessionLog] enabled` ohne URL.
+- Mit URL, aber ohne Bridge-ID: lokale Aufzeichnung, kein Upload, ein Hinweis im Log.
+- Tests: `session-log-inert.test.ts`, `session-log-retention.test.ts`.
+
 ## Stand (2026-10-10)
 
 - `session-log-types.ts`: zod-Schema für Ereignisse und Sitzungskopf.
@@ -38,7 +58,7 @@ Repo `broadify-postpro`.
   Web-App, signiert mit dem Enrollment-Schlüssel der Bridge (`bridge-assertion.ts`, Format wie die Worker-Assertion,
   `iss: broadify-bridge`): `POST /api/postpro/bridge/sessions/upload-url` → `PUT` Signed URL →
   `POST …/sessions/complete`. Marker `<session>.uploaded.json` verhindert Doppel-Uploads, Startscan holt Reste nach.
-  Aktiv nur mit `--postpro-api-url` bzw. `POSTPRO_API_URL` (Web-App-Basis-URL); sonst bleiben die Logs lokal.
+  Braucht zusätzlich zur URL eine Bridge-ID; ohne URL gibt es seit 2026-11-19 gar keine Logs mehr (siehe oben).
 
 - **Meeting**: aus dem veröffentlichten Helper-Status werden `recording_started/stopped` (Meeting-Recorder) und
   `program_changed` je `program_revision` (Kamera vs. Medienebene/Seite) abgeleitet (`meeting-session-events.ts`).
