@@ -68,7 +68,7 @@ Aufnahme (ADR-0006).
 - Damit ist das TLS-Backend auf beiden Plattformen dasselbe. ADR-0004 nennt MbedTLS; der Code nutzt seit der
   Umsetzung OpenSSL (`live-stream/CMakeLists.txt`: `USE_MBEDTLS OFF`, Homebrew `openssl@3` statisch). Dieses ADR löst
   ADR-0004 in genau diesem Punkt ab; alles Übrige dort gilt weiter.
-- OpenSSL 3 steht unter Apache-2.0; `NOTICES.md` wird mit dem Packaging-Schritt ergänzt.
+- OpenSSL 3 steht unter Apache-2.0, libdatachannel unter MPL-2.0; beide stehen in `NOTICES.md`.
 
 ### 6. Audio: WASAPI im Shared Mode, Paarung über Container-ID
 - Der Ton des Mischers kommt über WASAPI-Capture im Shared Mode (ereignisgetrieben, Mix-Format des Geräts,

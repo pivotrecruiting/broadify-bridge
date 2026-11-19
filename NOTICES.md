@@ -112,6 +112,46 @@ separate model binary is redistributed with this application.
 
 ---
 
+## OpenSSL
+
+The live program preview (PGM Helper and Meeting Helper) links OpenSSL 3
+statically for the DTLS/SRTP transport of its WebRTC stream. On macOS the
+library comes from Homebrew `openssl@3`; the Windows build prepared behind
+`BROADIFY_PGM_WINDOWS=1` takes it from vcpkg
+(`apps/bridge/native/live-stream/vcpkg.json`).
+
+**Copyright:** Copyright (c) 1998-2026 The OpenSSL Project Authors.
+Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson. All rights reserved.
+
+**License:** Apache License 2.0
+
+**License Text:** https://www.apache.org/licenses/LICENSE-2.0
+
+**Source Code:** https://github.com/openssl/openssl
+
+---
+
+## libdatachannel
+
+The live program preview uses libdatachannel (statically linked, unmodified,
+release v0.22.6) as its WebRTC implementation.
+
+**Copyright:** Copyright (c) Paul-Louis Ageneau and libdatachannel contributors
+
+**License:** Mozilla Public License 2.0
+
+**License Text:** https://www.mozilla.org/en-US/MPL/2.0/
+
+**Source Code:** https://github.com/paullouisageneau/libdatachannel
+
+libdatachannel is built together with the following bundled components:
+libjuice (Mozilla Public License 2.0, https://github.com/paullouisageneau/libjuice),
+usrsctp (BSD 3-Clause, https://github.com/sctplab/usrsctp),
+libSRTP (BSD 3-Clause, Copyright (c) Cisco Systems, Inc., https://github.com/cisco/libsrtp)
+and plog (MIT, https://github.com/SergiusTheBest/plog).
+
+---
+
 ## Other Dependencies
 
 All npm dependencies are listed in `package.json` and `apps/bridge/package.json`. Most dependencies use permissive licenses (MIT, Apache-2.0, BSD-2-Clause, ISC).

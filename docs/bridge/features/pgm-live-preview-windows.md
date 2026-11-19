@@ -43,6 +43,7 @@ Regeln, die unter Windows genauso gelten:
 | `BROADIFY_PGM_WINDOWS=1` | Build (Umgebung beim Windows-Build) | Windows-Targets (Encoder, WebRTC mit vcpkg-OpenSSL, `pgm-helper.exe`, Meeting-`ProgramStream`) werden gebaut und `pgm-helper.exe` in die Packaging-/Signierlisten aufgenommen | aus |
 | `BRIDGE_PGM_WINDOWS=1` | Laufzeit (Umgebung der Bridge) | Bridge meldet unter Windows `capabilities.live_program.supported = true` und startet den Helper | aus |
 | `LIVE_STREAM_WITH_MF=ON` | Build (CMake-Option oder Umgebung, nur `live-stream`) | Baut allein den Media-Foundation-Encoder und seine Tests, ohne WebRTC/OpenSSL. Wird von `BROADIFY_PGM_WINDOWS=1` mit eingeschaltet | aus |
+| `LIVE_STREAM_WITH_WEBRTC=ON` | Build (CMake-Option, nur `live-stream`) | Baut unter Windows den WebRTC-Teil (`live_stream`: `publisher.cpp` auf dem Encoder, libdatachannel, statisches OpenSSL) und `webrtc_loopback_test`. Schaltet `LIVE_STREAM_WITH_MF` mit ein. Wird von `BROADIFY_PGM_WINDOWS=1` mit eingeschaltet; auf macOS ist es immer an | aus (Windows) |
 | `BRIDGE_PGM_ENCODER_VENDOR=nvidia\|intel\|amd` | Laufzeit (Umgebung des Helpers) | Zieht die Hardware-MFTs dieses Herstellers in der Reihenfolge nach vorn (Gerätetest auf Hybrid-Laptops). Die übrigen bleiben Ausweichkandidaten; welcher Encoder läuft, steht in `EncoderInfo.name` | nicht gesetzt |
 
 - Ohne Build-Schalter bleibt das Windows-Release bytegleich. Neue Windows-Targets sind opt-in, weil
@@ -61,7 +62,8 @@ für die Bridge, vcpkg (`VCPKG_ROOT` gesetzt), Netz für FetchContent (libdatach
 ```powershell
 # x64 Native Tools Prompt bzw. nach vcvars64.bat
 $env:BROADIFY_PGM_WINDOWS = "1"
-& "$env:VCPKG_ROOT\vcpkg.exe" install openssl:x64-windows-static-md
+# Statisches OpenSSL aus dem vcpkg-Manifest (einmalig, einige Minuten; danach überspringt das Skript)
+.\scripts\prepare-windows-pgm-deps.ps1
 
 # PGM-Helper (Skript kommt mit D7; baut pgm-helper.exe und die Tests)
 .\apps\bridge\native\pgm-helper\build.ps1
@@ -74,8 +76,11 @@ npm run test:meeting-helper-native
 
 CI: Workflow `pgm-windows-native.yml` (D1; `windows-2022`, Push auf `feature/pgm-win-*` und manuell) kompiliert und
 fährt ctest: Job `core` ohne jeden Schalter (das, was ein Windows-Release heute kompiliert), Job `encoder` mit
-`LIVE_STREAM_WITH_MF=ON`. Der Encoder-Smoke-Test überspringt dort mangels Hardware-MFT. Grün im CI heißt: es kompiliert und die
-Media-Foundation-Verdrahtung hält gegen den Software-MFT. Es heißt nicht: auf Hardware geprüft.
+`LIVE_STREAM_WITH_MF=ON`, Job `full` mit `LIVE_STREAM_WITH_WEBRTC=ON` (vcpkg-OpenSSL und libdatachannel, beide im
+Cache; `webrtc_loopback_test` mit einer Wiederholung; `dumpbin` prüft, dass keine OpenSSL-DLL importiert wird). Der
+Encoder-Smoke-Test überspringt dort mangels Hardware-MFT. Grün im CI heißt: es kompiliert, die
+Media-Foundation-Verdrahtung hält gegen den Software-MFT und der Publisher verbindet sich über Loopback. Es heißt
+nicht: auf Hardware geprüft.
 
 Start aus einem Dev-Build:
 
@@ -84,6 +89,31 @@ $env:BRIDGE_PGM_WINDOWS = "1"
 $env:BRIDGE_LOG_PERF = "1"
 $env:BRIDGE_PGM_HELPER_PATH = "<repo>\apps\bridge\native\pgm-helper\pgm-helper.exe"
 ```
+
+## WebRTC-Build (D5)
+
+Unter Windows ist `live_stream` der Publisher (`src/publisher.cpp`, derselbe Quelltext wie auf macOS) auf dem
+Media-Foundation-Encoder (`live_stream_mf`), dazu libdatachannel v0.22.6 statisch. Der FetchContent-Block ist für
+beide Plattformen derselbe; nur die Herkunft von OpenSSL unterscheidet sich.
+
+- **OpenSSL**: `apps/bridge/native/live-stream/vcpkg.json` (Manifest, `builtin-baseline` = vcpkg 2026.10.16, damit
+  OpenSSL 3.6.5 wie derzeit unter Homebrew). `scripts/prepare-windows-pgm-deps.ps1` installiert mit Triplet
+  `x64-windows-static-md` nach `apps/bridge/native/live-stream/deps/vcpkg_installed/` (gitignoriert) und prüft, dass
+  keine OpenSSL-DLL entsteht. vcpkg sucht das Skript in `-VcpkgRoot`, `VCPKG_ROOT`, `VCPKG_INSTALLATION_ROOT`,
+  `C:\vcpkg`. Ein Stempel mit dem Hash des Manifests lässt wiederholte Läufe sofort enden.
+- **CMake** nutzt keine vcpkg-Toolchain-Datei, nur `OPENSSL_ROOT_DIR` auf diesen Baum (übersteuerbar mit
+  `-DOPENSSL_ROOT_DIR=…` oder `LIVE_STREAM_OPENSSL_ROOT`). Fehlt der Baum, bricht die Konfiguration mit dem Hinweis
+  auf das Skript ab.
+- **Gelinkt** werden `mf mfplat mfuuid mfreadwrite ole32 ws2_32 crypt32 bcrypt iphlpapi`; es kommt keine weitere DLL
+  hinzu.
+- **Version anheben**: `builtin-baseline` auf einen neueren vcpkg-Commit setzen und den CI-Job `full` laufen lassen.
+  Sicherheitsupdates von OpenSSL kommen unter Windows nur auf diesem Weg in den Helper (statisch gelinkt), auf
+  macOS über `brew upgrade openssl@3` auf dem Build-Rechner.
+- Ohne Schalter konfiguriert ein Windows-Build nichts davon: kein FetchContent, kein OpenSSL, kein neues Target
+  (`scripts/pgm-windows-webrtc-contract.test.cjs`).
+
+Offen bis zur Sitzung am Gerät: Firewall-Abfrage beim ersten ICE-Start und Kandidatenwahl auf Rechnern mit mehreren
+Netzwerkkarten (Runbook, Abschnitt 7). Der Loopback-Test im CI sagt dazu nichts.
 
 ## Encoder (D4)
 
@@ -140,6 +170,7 @@ Tests:
 | `mf_encoder_fake_mft_test` | Windows mit `LIVE_STREAM_WITH_MF` | Encoder gegen einen asynchronen MFT im Test: Reihenfolge der Einrichtung, Ereignisschleife, Postfach, erzwungener Keyframe, Formatwechsel, Drain, Ausweichen auf den nächsten Kandidaten, Abbau |
 | `mf_encoder_software_seam_test` | wie oben | Microsofts Software-H.264-MFT, in den Test-MFT eingewickelt und nur über die Test-Naht (`src/mf_encoder_internal.h`) erreichbar: echte H.264-Daten durch die Media-Foundation-Verdrahtung. Überspringt (77), wenn der MFT fehlt |
 | `mf_encoder_smoke_test` | wie oben | echter Hardware-MFT über `createHardwareEncoder()`, 60 NV12-Bilder 720p30. Überspringt (77) ohne Hardware-MFT, also auf dem CI-Runner |
+| `webrtc_loopback_test` | macOS; Windows mit `LIVE_STREAM_WITH_WEBRTC` | Publisher gegen einen libdatachannel-„Browser“ im selben Prozess: Answer, ICE über Loopback, RTP für eine synthetische IDR-Einheit |
 
 Offen bis zur Sitzung am Gerät (im CI nicht prüfbar):
 - Einheit von `CODECAPI_AVEncCommonBufferSize`: gesetzt wird die Spitzenrate über 1 s in Bit (verbreitete Praxis);
