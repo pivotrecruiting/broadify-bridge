@@ -77,7 +77,6 @@ struct ProgramStream::Impl {
   void teardownEncoderLocked() {
     encoder.reset();
     encoderConfigured = false;
-    pool.reset();
   }
 
   bool ensureEncoderLocked(uint32_t width, uint32_t height) {
@@ -101,12 +100,6 @@ struct ProgramStream::Impl {
       lastErrorCode = code;
       lastErrorMessage = error;
       encoder.reset();
-      return false;
-    }
-    if (!pool.configure(wanted.width, wanted.height)) {
-      lastErrorCode = "encoder_unavailable";
-      lastErrorMessage = "CVPixelBufferPool for the program stream could not be created.";
-      teardownEncoderLocked();
       return false;
     }
     target = wanted;
@@ -133,13 +126,31 @@ struct ProgramStream::Impl {
     }
   }
 
+  // Pool at the size of the program frame, not of the encode target: the copy
+  // below writes frame-size rows and VideoToolbox scales to the session size.
+  // Independent of the encoder: a profile change keeps it, a frame size change
+  // recreates it even when the encode target stays the same.
+  bool ensurePoolLocked(uint32_t width, uint32_t height) {
+    if (pool.ensure(width, height)) {
+      return true;
+    }
+    teardownEncoderLocked();  // a later frame reconfigures and clears the error once the pool exists
+    lastErrorCode = "encoder_unavailable";
+    lastErrorMessage = "CVPixelBufferPool for the program stream could not be created.";
+    return false;
+  }
+
   // Runs under the PreviewFrameStore lock: one RGBA→BGRA pass straight into the pooled buffer.
   void encodeFrame(const PreviewFrame &frame) {
+    if (frame.width == 0 || frame.height == 0) {
+      droppedFrames.fetch_add(1);
+      return;
+    }
     live::VideoEncoder *activeEncoder = nullptr;
     CVPixelBufferRef pixelBuffer = nullptr;
     {
       std::lock_guard<std::mutex> lock(mutex);
-      if (!ensureEncoderLocked(frame.width, frame.height)) {
+      if (!ensurePoolLocked(frame.width, frame.height) || !ensureEncoderLocked(frame.width, frame.height)) {
         droppedFrames.fetch_add(1);
         return;
       }
@@ -150,7 +161,11 @@ struct ProgramStream::Impl {
       }
       activeEncoder = encoder.get();
     }
-    copyRgbaFrameToPixelBuffer(frame.rgba.data(), frame.rgba.size(), frame.width, frame.height, pixelBuffer);
+    if (!copyRgbaFrameToPixelBuffer(frame.rgba.data(), frame.rgba.size(), frame.width, frame.height, pixelBuffer)) {
+      droppedFrames.fetch_add(1);  // buffer and frame geometry disagree: drop, never write past the buffer
+      CVPixelBufferRelease(pixelBuffer);
+      return;
+    }
     live::CapturedFrame captured;
     captured.pixelBuffer = pixelBuffer;
     captured.width = frame.width;
@@ -231,6 +246,7 @@ void ProgramStream::stop() {
     impl_->encoder->flush();
   }
   impl_->teardownEncoderLocked();
+  impl_->pool.reset();
   impl_->publisher.reset();
 }
 

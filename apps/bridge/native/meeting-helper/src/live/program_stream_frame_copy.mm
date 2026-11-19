@@ -14,8 +14,14 @@ constexpr int kPoolMinBuffers = 3;
 
 ProgramFramePool::~ProgramFramePool() { reset(); }
 
-bool ProgramFramePool::configure(uint32_t width, uint32_t height) {
+bool ProgramFramePool::ensure(uint32_t width, uint32_t height) {
+  if (pool_ != nullptr && width == width_ && height == height_) {
+    return true;
+  }
   reset();
+  if (width == 0 || height == 0) {
+    return false;
+  }
   NSDictionary *attrs = @{
     (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
     (__bridge NSString *)kCVPixelBufferWidthKey : @(width),
@@ -28,6 +34,8 @@ bool ProgramFramePool::configure(uint32_t width, uint32_t height) {
     pool_ = nullptr;
     return false;
   }
+  width_ = width;
+  height_ = height;
   return true;
 }
 
@@ -45,23 +53,34 @@ void ProgramFramePool::reset() {
     CVPixelBufferPoolRelease(pool_);
     pool_ = nullptr;
   }
+  width_ = 0;
+  height_ = 0;
 }
 
 bool copyRgbaFrameToPixelBuffer(const uint8_t *rgba, size_t rgbaSize, uint32_t width, uint32_t height,
                                 CVPixelBufferRef pixelBuffer) {
   const size_t srcStride = static_cast<size_t>(width) * 4;
   const size_t rows = static_cast<size_t>(height);
-  if (rgbaSize < srcStride * rows) {
+  if (rgba == nullptr || pixelBuffer == nullptr || rgbaSize < srcStride * rows) {
     return false;
   }
-  CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+  if (CVPixelBufferGetPixelFormatType(pixelBuffer) != kCVPixelFormatType_32BGRA ||
+      CVPixelBufferGetWidth(pixelBuffer) != width || CVPixelBufferGetHeight(pixelBuffer) != height) {
+    return false;
+  }
+  if (CVPixelBufferLockBaseAddress(pixelBuffer, 0) != kCVReturnSuccess) {
+    return false;
+  }
   uint8_t *dst = static_cast<uint8_t *>(CVPixelBufferGetBaseAddress(pixelBuffer));
   const size_t dstStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
-  for (size_t row = 0; row < rows; ++row) {
-    swizzleRgbaToBgra(rgba + row * srcStride, dst + row * dstStride, width);
+  const bool fits = dst != nullptr && dstStride >= srcStride;
+  if (fits) {
+    for (size_t row = 0; row < rows; ++row) {
+      swizzleRgbaToBgra(rgba + row * srcStride, dst + row * dstStride, width);
+    }
   }
   CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-  return true;
+  return fits;
 }
 
 }  // namespace broadify::meeting
