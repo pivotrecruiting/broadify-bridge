@@ -35,17 +35,17 @@ static void fail(const std::string &m) {
 // CLSID_CMSH264EncoderMFT (wmcodecdsp.h), spelled out so the test needs neither that header nor its uuid library.
 static const GUID kMicrosoftH264EncoderMft = {0x6ca50344, 0x051a, 0x4ded, {0x97, 0x79, 0xa4, 0x33, 0x05, 0x16, 0x5e, 0x35}};
 
-int main() {
-  if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) fail("CoInitializeEx");
-  if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_FULL))) fail("MFStartup");
-
+// Everything that holds a COM reference lives in here, so the last reference to
+// the software MFT is released before main() calls MFShutdown and
+// CoUninitialize. CoUninitialize unloads the codec DLL; a ComPtr released
+// after it calls into unmapped code (seen as an access violation at exit on
+// the first Windows CI run).
+static int run() {
   ComPtr<IMFTransform> software;
   const HRESULT created = CoCreateInstance(kMicrosoftH264EncoderMft, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&software));
   if (FAILED(created) || !software) {
     std::cout << "mf_encoder_software_seam_test skipped: Microsoft H.264 encoder MFT not available (hr=0x" << std::hex
               << static_cast<uint32_t>(created) << ")" << std::endl;
-    MFShutdown();
-    CoUninitialize();
     return 77;
   }
 
@@ -154,8 +154,15 @@ int main() {
   if (canForce && forcedFrameSeen && !forcedFrameIsKeyframe) fail("forced keyframe must land on the frame it was requested for");
   if (canForce && keyframes < 2) fail("expected the opening and the forced keyframe, got " + std::to_string(keyframes));
 
-  MFShutdown();
-  CoUninitialize();
   std::cout << "mf_encoder_software_seam_test passed (" << units.size() << " access units, " << keyframes << " keyframes)" << std::endl;
   return 0;
+}
+
+int main() {
+  if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) fail("CoInitializeEx");
+  if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_FULL))) fail("MFStartup");
+  const int result = run();
+  MFShutdown();
+  CoUninitialize();
+  return result;
 }
