@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace broadify::live {
 
@@ -23,6 +24,12 @@ std::string encodeProfileName(EncodeProfile profile) {
 
 EncodeTarget selectEncodeTarget(uint32_t srcWidth, uint32_t srcHeight, uint32_t fpsNum, uint32_t fpsDen,
                                 EncodeProfile profile) {
+  if (srcHeight > srcWidth) {
+    // Portrait: the ladder is defined on the short edge, so compute the transposed landscape target and swap it back.
+    EncodeTarget portrait = selectEncodeTarget(srcHeight, srcWidth, fpsNum, fpsDen, profile);
+    std::swap(portrait.width, portrait.height);
+    return portrait;
+  }
   EncodeTarget target;
   if (fpsDen == 0) {
     fpsDen = 1;
@@ -77,6 +84,12 @@ EncodeTarget selectEncodeTarget(uint32_t srcWidth, uint32_t srcHeight, uint32_t 
 }
 
 EncodeTarget selectRecordingTarget(uint32_t srcWidth, uint32_t srcHeight, uint32_t fpsNum, uint32_t fpsDen) {
+  if (srcHeight > srcWidth) {
+    // Portrait: same transposition as the preview ladder (short edge capped at 1080).
+    EncodeTarget portrait = selectRecordingTarget(srcHeight, srcWidth, fpsNum, fpsDen);
+    std::swap(portrait.width, portrait.height);
+    return portrait;
+  }
   EncodeTarget target;
   if (fpsDen == 0) {
     fpsDen = 1;

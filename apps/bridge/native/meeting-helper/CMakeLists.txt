@@ -202,8 +202,8 @@ add_subdirectory(../helper-common helper-common)
 add_subdirectory(../live-stream live-stream)
 
 if(APPLE)
-  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.mm)
-  set_source_files_properties(src/live/program_stream.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.mm src/live/program_stream_frame_copy.mm)
+  set_source_files_properties(src/live/program_stream.mm src/live/program_stream_frame_copy.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   add_executable(meeting-helper MACOSX_BUNDLE ${MEETING_HELPER_SOURCES})
   target_link_libraries(meeting-helper PRIVATE live_stream)
 else()
@@ -672,5 +672,20 @@ if(MEETING_HELPER_BUILD_TESTS)
       "-framework Foundation"
     )
     add_test(NAME meeting_recorder_writer_test COMMAND meeting_recorder_writer_test)
+    # Regression for the program-stream pixel buffer overflow: drives the
+    # production pool + RGBA->BGRA copy without WebRTC (run it under
+    # -fsanitize=address to see the pre-fix write past the buffer).
+    add_executable(program_stream_scale_test
+      tests/program_stream_scale_test.mm
+      src/live/program_stream_frame_copy.mm
+      src/util/pixel_swizzle.cpp
+    )
+    set_source_files_properties(tests/program_stream_scale_test.mm PROPERTIES
+      COMPILE_FLAGS "-fobjc-arc"
+    )
+    target_include_directories(program_stream_scale_test PRIVATE src)
+    target_link_libraries(program_stream_scale_test PRIVATE live_stream)
+    add_test(NAME program_stream_scale_test COMMAND program_stream_scale_test)
+    set_tests_properties(program_stream_scale_test PROPERTIES TIMEOUT 60)
   endif()
 endif()
