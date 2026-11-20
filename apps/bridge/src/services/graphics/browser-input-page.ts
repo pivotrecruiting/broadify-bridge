@@ -277,8 +277,11 @@ ${applyLayoutRuntimeScript}
           host.style.top = "0";
           root.appendChild(host);
         }
-        host.style.width = "1920px";
-        host.style.height = "1080px";
+        // Same layer box as the offscreen renderer: the canvas sent with the
+        // layer, else the 1920x1080 baseline.
+        const canvas = resolveLayerCanvas(payload.canvas, 1920, 1080);
+        host.style.width = canvas.width + "px";
+        host.style.height = canvas.height + "px";
         host.style.transformOrigin = "top left";
         host.style.zIndex = String(payload.zIndex ?? 0);
 
@@ -294,8 +297,8 @@ ${applyLayoutRuntimeScript}
 
         const container = document.createElement("div");
         container.id = "graphic-root";
-        container.style.width = "1920px";
-        container.style.height = "1080px";
+        container.style.width = canvas.width + "px";
+        container.style.height = canvas.height + "px";
         shadow.appendChild(container);
 
         const template = String(payload.html || "");

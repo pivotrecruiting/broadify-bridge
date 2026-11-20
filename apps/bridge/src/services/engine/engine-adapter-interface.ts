@@ -1,4 +1,5 @@
 import type { EngineStatusT, MacroT, EngineStateT } from "../engine-types.js";
+import type { SwitcherEventT } from "../session-log/session-log-types.js";
 
 /**
  * Engine transport.
@@ -112,4 +113,14 @@ export interface EngineAdapter {
    * @returns Unsubscribe function
    */
   onStateChange(callback: (state: EngineStateT) => void): () => void;
+
+  /**
+   * Optional: subscribe to switcher events (program/preview cuts, keyer and
+   * overlay on/off air, recording and streaming start/stop) for the
+   * post-production SessionEventLog. Read-only and additive; adapters that do
+   * not implement it simply produce no session events. Never affects macro
+   * control.
+   * @returns Unsubscribe function
+   */
+  onSwitcherEvent?(callback: (event: SwitcherEventT) => void): () => void;
 }

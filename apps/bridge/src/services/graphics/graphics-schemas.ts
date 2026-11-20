@@ -22,6 +22,7 @@ export {
 
 export {
   GraphicsLayoutSchema,
+  GraphicsLayerCanvasSchema,
   GraphicsAssetSchema,
   GraphicsBundleSchema,
   GraphicsBackgroundModeSchema,
@@ -33,6 +34,7 @@ export {
   GraphicsRemoveSchema,
   GraphicsRemovePresetSchema,
   type GraphicsLayoutT,
+  type GraphicsLayerCanvasT,
   type GraphicsAssetT,
   type GraphicsBundleT,
   type GraphicsBackgroundModeT,

@@ -29,6 +29,8 @@ import {
   publishMeetingStatusEvent,
 } from "./meeting-event-publisher.js";
 import { meetingContentSourceState } from "./meeting-content-source-state.js";
+import type { MeetingProgramFormatT } from "@broadify/protocol";
+import { resolveMeetingProgramFormat } from "./meeting-capabilities.js";
 import type { MeetingStatusT } from "./meeting-status-types.js";
 import { decideStatusPublish } from "./status-publish-policy.js";
 import {
@@ -36,6 +38,8 @@ import {
   type CallDetectorEventT,
 } from "../intelligence/call-detector.js";
 import { graphicsUsageRecorder } from "../intelligence/usage-event-recorder.js";
+import { diffMeetingSummary, summarizeMeetingStatus, type MeetingSessionSummaryT } from "../session-log/meeting-session-events.js";
+import { isSessionLogEnabled, recordSwitcherEvent } from "../session-log/session-log-service.js";
 import { ciSessionCoordinator } from "../intelligence/ci-session-coordinator.js";
 
 const HELPER_PATH_ENV = "BRIDGE_MEETING_HELPER_PATH";
@@ -61,6 +65,14 @@ const CAMERA_STATUS_EVENT_TYPES = new Set<string>([
   "camera_reopen_failure",
   "camera_capture_error",
   "camera_open_failure",
+]);
+// One-shot camera diagnostics (macOS capture-format selection, Nov 2026):
+// mirrored into the bridge log like meeting_recorder lines so a field log
+// shows which device format/frame rate the helper configured, but no status
+// publish - they are not state transitions.
+const CAMERA_DIAGNOSTIC_EVENT_TYPES = new Set<string>([
+  "camera_format_selected",
+  "camera_format_apply_failed",
 ]);
 const SCREEN_CAPTURE_STATUS_EVENT_TYPES = new Set<string>([
   "screen_capture_started",
@@ -170,6 +182,20 @@ export type MeetingHelperManagerStatusT = {
   virtualCamera: VcamHelperStatusT;
   helper: MeetingHelperIdentityT;
   lastError: string | null;
+  /**
+   * Geometry the running engine was started with (start options with the
+   * defaults filled in); null while the engine is not running.
+   */
+  program_format: MeetingProgramFormatT | null;
+};
+
+/**
+ * A start that is in flight: the geometry it was issued with, and a promise
+ * that settles with the manager status once it has finished.
+ */
+export type MeetingHelperPendingStartT = {
+  format: MeetingProgramFormatT;
+  settled: Promise<MeetingHelperManagerStatusT>;
 };
 
 type EntitlementStatusT = "not_checked" | "present" | "missing" | "invalid";
@@ -745,6 +771,7 @@ export class MeetingHelperManager {
   private consecutiveControlFailures = 0;
   private pendingPublishReasons = new Set<string>();
   private publishCoalesceTimer: NodeJS.Timeout | null = null;
+  private lastSessionSummary: MeetingSessionSummaryT | null = null;
   private forcedPublishChain: Promise<void> = Promise.resolve();
   private cameraPermissionStatus: string | null = null;
   private lastRunningSince: number | null = null;
@@ -862,26 +889,71 @@ export class MeetingHelperManager {
       virtualCamera: getVcamHelperStatus({ framebusName: this.getFramebusName() }),
       helper: this.helperIdentity ?? inspectMeetingHelperIdentity(resolveMeetingHelperPath()),
       lastError: this.lastError,
+      program_format: this.getProgramFormat(),
     };
+  }
+
+  /**
+   * Geometry of the running engine, or null while it is not running. Derived
+   * from the options of the start that produced the current helper process -
+   * the same options a crash-recovery restart replays.
+   */
+  getProgramFormat(): MeetingProgramFormatT | null {
+    if (this.state !== "running") {
+      return null;
+    }
+    return resolveMeetingProgramFormat(this.lastStartOptions);
   }
 
   isRunning(): boolean {
     return this.state === "running" && this.client !== null;
   }
 
+  /**
+   * The start that a `start()` issued right now would join instead of spawning
+   * the helper with its own options: a user start or a crash-recovery restart
+   * that is still in flight. Null when there is none, and null while the
+   * engine runs (`start()` is a no-op then).
+   *
+   * Read-only: unlike `start()` this joins nothing and leaves the restart
+   * timer and the attempt counter alone, so a caller can wait for the start in
+   * flight without changing what happens to it.
+   */
+  getPendingStart(): MeetingHelperPendingStartT | null {
+    if (this.state === "running" || !this.startPromise) {
+      return null;
+    }
+    return {
+      format: resolveMeetingProgramFormat(this.lastStartOptions),
+      settled: this.startPromise,
+    };
+  }
+
+  /**
+   * Starts the helper, or joins the start that is already in flight; a no-op
+   * while the engine runs.
+   *
+   * Must stay free of awaits: the checks and the claim of the start
+   * (`startPromise`) are one synchronous step. `meeting_engine_start` decides
+   * on `isRunning()` and `getPendingStart()` in the same tick and relies on
+   * getting exactly the start it decided on.
+   */
   async start(
     options: MeetingHelperStartOptionsT = {},
   ): Promise<MeetingHelperManagerStatusT> {
     // A user-initiated start supersedes any crash-recovery in flight.
     this.clearRestartTimer();
     this.restartAttempts = 0;
-    this.lastStartOptions = options;
     if (this.state === "running") {
       return this.getStatus();
     }
     if (this.startPromise) {
       return this.startPromise;
     }
+    // Only a start that actually spawns the helper may replace the options:
+    // they are what `program_format` reports and what a crash-recovery
+    // restart replays, so a no-op start must not change them.
+    this.lastStartOptions = options;
     this.startPromise = this.startInternal(options).finally(() => {
       this.startPromise = null;
     });
@@ -950,6 +1022,7 @@ export class MeetingHelperManager {
         call: this.buildCallStatus(),
         content_source: meetingContentSourceState.snapshot(),
         camera_permission_status: this.cameraPermissionStatus,
+        program_format: manager.program_format,
       };
     }
     try {
@@ -998,6 +1071,7 @@ export class MeetingHelperManager {
         call: this.buildCallStatus(),
         content_source: meetingContentSourceState.snapshot(),
         camera_permission_status: permission ?? null,
+        program_format: manager.program_format,
       };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1018,6 +1092,7 @@ export class MeetingHelperManager {
         call: this.buildCallStatus(),
         content_source: meetingContentSourceState.snapshot(),
         camera_permission_status: this.cameraPermissionStatus,
+        program_format: manager.program_format,
       };
     }
   }
@@ -1164,9 +1239,7 @@ export class MeetingHelperManager {
       const controlSocketPath = resolveControlSocketPath();
       this.port = port;
 
-      const width = options.width ?? 1920;
-      const height = options.height ?? 1080;
-      const fps = options.fps ?? 30;
+      const { width, height, fps } = resolveMeetingProgramFormat(options);
       const args = [
         "--run",
         "--parent-pid",
@@ -1374,6 +1447,9 @@ export class MeetingHelperManager {
         logger.info(`[MeetingHelper] ${line}`);
       }
       if (parsed.type === "meeting_recorder") {
+        logger.info(`[MeetingHelper] ${line}`);
+      }
+      if (CAMERA_DIAGNOSTIC_EVENT_TYPES.has(parsed.type ?? "")) {
         logger.info(`[MeetingHelper] ${line}`);
       }
       if (parsed.type === "ready") {
@@ -1590,6 +1666,7 @@ export class MeetingHelperManager {
 
   private async publishStatus(reason: string, force: boolean): Promise<void> {
     const status = await this.getFullStatus();
+    this.recordSessionEvents(status as unknown as Record<string, unknown>);
     // Single writer for the deck's REC mirror: derived from the same snapshot
     // every other consumer sees, so the key can no longer diverge from the
     // real recorder state (idempotent - only re-renders on change).
@@ -1636,6 +1713,23 @@ export class MeetingHelperManager {
     this.lastPublishedProjection = decision.projection;
     this.lastPublishedAt = Date.now();
     publishMeetingStatusEvent(reason, status);
+  }
+
+  /** Post-production SessionEventLog: meeting recorder and program changes (observability only). */
+  private recordSessionEvents(status: Record<string, unknown>): void {
+    // Off by default (ADR-0008): no status summary, no diff.
+    if (!isSessionLogEnabled()) {
+      return;
+    }
+    try {
+      const next = summarizeMeetingStatus(status);
+      for (const event of diffMeetingSummary(this.lastSessionSummary, next)) {
+        recordSwitcherEvent({ ...event, at_ms: Date.now() });
+      }
+      this.lastSessionSummary = next;
+    } catch {
+      // never affects status publishing
+    }
   }
 
   private handleProcessExit(code: number | null): void {

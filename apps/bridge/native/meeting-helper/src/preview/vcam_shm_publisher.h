@@ -56,6 +56,9 @@ class VcamShmPublisher {
 
   VcamShmRingWin *ring_ = nullptr;
   std::array<BufferedFrame, 3> buffers_;
+  // Publisher-thread scratch for the pillarboxed 1920x1080 copy of a portrait
+  // program frame (see run()); untouched for landscape programs.
+  std::vector<uint8_t> fitScratch_;
   int pendingIndex_ = -1;
   int busyIndex_ = -1;
   int writingIndex_ = -1;

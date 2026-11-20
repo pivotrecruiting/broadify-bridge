@@ -10,12 +10,18 @@
 export const MEETING_CONTENT_VIDEO_LAYER_ID = "meeting-content-video";
 export const MEETING_BROWSER_SOURCE_LAYER_ID = "meeting-browser-source";
 
-const STAGE_WIDTH = 1920;
-const STAGE_HEIGHT = 1080;
+/** Size of the meeting graphics plane the layer is placed on, in pixels. */
+export type MeetingContentStageSizeT = { width: number; height: number };
+
+/** Landscape stage; a portrait program passes its own plane size instead. */
+export const DEFAULT_MEETING_CONTENT_STAGE_SIZE: MeetingContentStageSizeT = {
+  width: 1920,
+  height: 1080,
+};
 
 export type MeetingContentGeometryT = {
   mode: "pip" | "fullscreen";
-  /** Fractions of the 1920x1080 stage (0..1). Ignored for fullscreen. */
+  /** Fractions of the stage (0..1). Ignored for fullscreen. */
   x: number;
   y: number;
   width: number;
@@ -36,14 +42,17 @@ const escapeHtmlAttribute = (value: string): string =>
 
 const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
 
-const containerStyle = (geometry: MeetingContentGeometryT): string => {
+const containerStyle = (
+  geometry: MeetingContentGeometryT,
+  stage: MeetingContentStageSizeT,
+): string => {
   if (geometry.mode === "fullscreen") {
-    return `position:absolute;left:0;top:0;width:${STAGE_WIDTH}px;height:${STAGE_HEIGHT}px;`;
+    return `position:absolute;left:0;top:0;width:${stage.width}px;height:${stage.height}px;`;
   }
-  const left = Math.round(clamp01(geometry.x) * STAGE_WIDTH);
-  const top = Math.round(clamp01(geometry.y) * STAGE_HEIGHT);
-  const width = Math.max(1, Math.round(clamp01(geometry.width) * STAGE_WIDTH));
-  const height = Math.max(1, Math.round(clamp01(geometry.height) * STAGE_HEIGHT));
+  const left = Math.round(clamp01(geometry.x) * stage.width);
+  const top = Math.round(clamp01(geometry.y) * stage.height);
+  const width = Math.max(1, Math.round(clamp01(geometry.width) * stage.width));
+  const height = Math.max(1, Math.round(clamp01(geometry.height) * stage.height));
   const safeDeg = (value: number | undefined): number =>
     Number.isFinite(value) ? (value as number) : 0;
   const rotation = safeDeg(geometry.rotation);
@@ -62,14 +71,16 @@ const containerStyle = (geometry: MeetingContentGeometryT): string => {
  * Builds the HTML for the internal video content layer.
  *
  * @param videoUrl Local bridge URL of the video asset (already validated).
- * @param geometry Placement on the 1920x1080 stage.
+ * @param geometry Placement on the stage.
  * @param options Playback options.
+ * @param stage Stage size in plane pixels (default 1920x1080).
  * @returns Layer HTML.
  */
 export function buildVideoLayerHtml(
   videoUrl: string,
   geometry: MeetingContentGeometryT,
   options: { muted: boolean; loop: boolean },
+  stage: MeetingContentStageSizeT = DEFAULT_MEETING_CONTENT_STAGE_SIZE,
 ): string {
   const attributes = [
     `src="${escapeHtmlAttribute(videoUrl)}"`,
@@ -81,7 +92,7 @@ export function buildVideoLayerHtml(
     .filter((attribute): attribute is string => attribute !== null)
     .join(" ");
   return (
-    `<div style="${containerStyle(geometry)}">` +
+    `<div style="${containerStyle(geometry, stage)}">` +
     `<video ${attributes} style="width:100%;height:100%;object-fit:contain;"></video>` +
     `</div>`
   );
@@ -91,15 +102,17 @@ export function buildVideoLayerHtml(
  * Builds the HTML for the internal browser source layer.
  *
  * @param url External HTTPS URL (validated via validateBrowserSourceUrl).
- * @param geometry Placement on the 1920x1080 stage.
+ * @param geometry Placement on the stage.
+ * @param stage Stage size in plane pixels (default 1920x1080).
  * @returns Layer HTML.
  */
 export function buildBrowserSourceLayerHtml(
   url: string,
   geometry: MeetingContentGeometryT,
+  stage: MeetingContentStageSizeT = DEFAULT_MEETING_CONTENT_STAGE_SIZE,
 ): string {
   return (
-    `<div style="${containerStyle(geometry)}">` +
+    `<div style="${containerStyle(geometry, stage)}">` +
     `<iframe src="${escapeHtmlAttribute(url)}" allow="autoplay"` +
     ` style="width:100%;height:100%;border:0;background:transparent;"></iframe>` +
     `</div>`

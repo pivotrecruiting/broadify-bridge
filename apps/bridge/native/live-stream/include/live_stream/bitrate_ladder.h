@@ -5,7 +5,10 @@
 
 namespace broadify::live {
 
-/** Encoding profile: lan = source-native up to 1080p, remote = 720p30 for TURN paths, auto = lan. */
+/**
+ * Encoding profile: lan = source-native up to 1080p, remote = 720p30 for TURN paths, auto = lan.
+ * The caps apply to the short edge, so a portrait source keeps its orientation (1080x1920, 720x1280).
+ */
 enum class EncodeProfile { Auto, Lan, Remote };
 
 /** H.264 profile the encoder session is created with. */
@@ -36,6 +39,12 @@ std::string encodeProfileName(EncodeProfile profile);
  * the ladder from the design (1080p60 8/12 Mbps, 1080p30/50 5-6 Mbps,
  * 720p 2.5-4 Mbps, remote 720p30 2.5 Mbps). Sources above 1080p are capped to
  * 1080p (the encoder scales); anything is clamped to a sane minimum.
+ *
+ * Landscape and square sources cap the height. A portrait source (height >
+ * width) is computed with transposed dimensions and the result swapped back,
+ * so the cap lands on its short edge and the bitrate rung matches the
+ * landscape twin: 1080x1920 -> 1080x1920 (lan) / 720x1280 (remote),
+ * 2160x3840 -> 1080x1920.
  */
 EncodeTarget selectEncodeTarget(uint32_t srcWidth, uint32_t srcHeight, uint32_t fpsNum, uint32_t fpsDen,
                                 EncodeProfile profile);
@@ -43,7 +52,8 @@ EncodeTarget selectEncodeTarget(uint32_t srcWidth, uint32_t srcHeight, uint32_t 
 /**
  * Picks the archive target for the program recording (ADR-0006). Pure:
  * geometry like the LAN ladder (source-native, capped at 1080 lines, source
- * frame rate) independent of the viewer profile, bitrate from the shared
+ * frame rate; portrait transposed like selectEncodeTarget, 1080x1920 stays
+ * 1080x1920) independent of the viewer profile, bitrate from the shared
  * recorder policy (0.35 bit/px, 2-40 Mbit/s; maxBitrateKbps = 1.5x average
  * without a hard data-rate limit), 2 s GOP, H.264 High, quality over speed.
  */

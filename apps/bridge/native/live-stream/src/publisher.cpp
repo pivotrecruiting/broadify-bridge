@@ -6,6 +6,7 @@
 #include <rtc/rtc.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <random>
@@ -83,11 +84,13 @@ struct WebRtcPublisher::Viewer {
   std::shared_ptr<rtc::Track> audio;
   std::shared_ptr<rtc::RtpPacketizationConfig> videoConfig;
   std::shared_ptr<rtc::RtpPacketizationConfig> audioConfig;
-  std::string state = "connecting";
   uint64_t createdNs = 0;
   bool hasAudio = false;
-  bool videoOpen = false;
-  bool audioOpen = false;
+  // Written by libdatachannel's callbacks on its own threads while the send
+  // path, the stats and the reaper read them: atomic, not guarded by mutex_.
+  std::atomic<rtc::PeerConnection::State> state{rtc::PeerConnection::State::Connecting};
+  std::atomic<bool> videoOpen{false};
+  std::atomic<bool> audioOpen{false};
 };
 
 WebRtcPublisher::WebRtcPublisher(std::function<void()> onKeyframeRequest, std::string eventType)
@@ -162,7 +165,7 @@ std::string WebRtcPublisher::addViewer(const ViewerOfferRequest &request, bool a
       viewer->video->setMediaHandler(packetizer);
       viewer->video->onOpen([weak]() {
         if (auto v = weak.lock()) {
-          v->videoOpen = true;
+          v->videoOpen.store(true);
         }
       });
       haveVideo = true;
@@ -182,7 +185,7 @@ std::string WebRtcPublisher::addViewer(const ViewerOfferRequest &request, bool a
       viewer->audio->setMediaHandler(packetizer);
       viewer->audio->onOpen([weak]() {
         if (auto v = weak.lock()) {
-          v->audioOpen = true;
+          v->audioOpen.store(true);
         }
       });
       viewer->hasAudio = true;
@@ -206,7 +209,7 @@ std::string WebRtcPublisher::addViewer(const ViewerOfferRequest &request, bool a
   const std::string eventType = eventType_;
   viewer->pc->onStateChange([weak, viewerId, eventType](rtc::PeerConnection::State state) {
     if (auto v = weak.lock()) {
-      v->state = stateName(state);
+      v->state.store(state);
     }
     emitHelperEvent("{\"type\":\"" + eventType + "\",\"viewer_id\":\"" + jsonEscape(viewerId) + "\",\"state\":\"" + stateName(state) + "\"}");
   });
@@ -270,7 +273,7 @@ void WebRtcPublisher::sendVideo(const EncodedAccessUnit &unit) {
   }
   const double seconds = static_cast<double>(unit.captureNs) / 1e9;
   for (auto &viewer : snapshot) {
-    if (!viewer->video || !viewer->videoOpen || !viewer->video->isOpen()) {
+    if (!viewer->video || !viewer->videoOpen.load() || !viewer->video->isOpen()) {
       continue;
     }
     viewer->videoConfig->timestamp = viewer->videoConfig->secondsToTimestamp(seconds);
@@ -290,7 +293,7 @@ void WebRtcPublisher::sendAudio(const EncodedAudioPacket &packet) {
   }
   const double seconds = static_cast<double>(packet.captureNs) / 1e9;
   for (auto &viewer : snapshot) {
-    if (!viewer->audio || !viewer->audioOpen || !viewer->audio->isOpen()) {
+    if (!viewer->audio || !viewer->audioOpen.load() || !viewer->audio->isOpen()) {
       continue;
     }
     viewer->audioConfig->timestamp = viewer->audioConfig->secondsToTimestamp(seconds);
@@ -312,7 +315,7 @@ std::vector<ViewerStats> WebRtcPublisher::stats() const {
   for (const auto &viewer : viewers_) {
     ViewerStats s;
     s.viewerId = viewer->id;
-    s.state = viewer->state;
+    s.state = stateName(viewer->state.load());
     s.createdNs = viewer->createdNs;
     s.audio = viewer->hasAudio;
     rtc::Candidate local;
@@ -350,9 +353,10 @@ size_t WebRtcPublisher::reapDead() {
     std::lock_guard<std::mutex> lock(mutex_);
     const uint64_t now = steadyNs();
     auto it = std::remove_if(viewers_.begin(), viewers_.end(), [&](const std::shared_ptr<Viewer> &v) {
-      const bool failed = v->state == "failed" || v->state == "closed";
-      const bool neverConnected = v->state == "connecting" && now - v->createdNs > 15'000'000'000ULL;
-      const bool stale = v->state == "disconnected" && now - v->createdNs > 10'000'000'000ULL;
+      const rtc::PeerConnection::State state = v->state.load();
+      const bool failed = state == rtc::PeerConnection::State::Failed || state == rtc::PeerConnection::State::Closed;
+      const bool neverConnected = state == rtc::PeerConnection::State::Connecting && now - v->createdNs > 15'000'000'000ULL;
+      const bool stale = state == rtc::PeerConnection::State::Disconnected && now - v->createdNs > 10'000'000'000ULL;
       if (failed || neverConnected || stale) {
         dead.push_back(v);
         return true;

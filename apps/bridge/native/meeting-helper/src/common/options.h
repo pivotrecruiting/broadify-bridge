@@ -30,6 +30,17 @@ struct Options {
   uint16_t vcamFramePort = 18787;
 };
 
+// Size requested from the capture backends (camera modes, screen capture
+// bounds) for a program canvas. Capture devices only offer landscape modes,
+// so a portrait canvas (1080x1920) still asks for the landscape equivalent
+// (1920x1080) and the compositor cover-fits the result; a landscape canvas is
+// returned unchanged.
+struct CaptureRequestSize {
+  uint32_t width = 0;
+  uint32_t height = 0;
+};
+CaptureRequestSize captureRequestSize(const Options &options);
+
 // The process arguments as UTF-8. On Windows `main(argc, argv)` is ANSI, so
 // the wide command line (GetCommandLineW + CommandLineToArgvW) is decoded
 // instead; a user name with an umlaut in --models-dir / --event-log then

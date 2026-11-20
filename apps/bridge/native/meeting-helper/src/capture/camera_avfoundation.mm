@@ -2,6 +2,7 @@
 
 #if defined(__APPLE__)
 
+#include "capture/capture_format_selection.h"
 #include "macos/macos_app.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
@@ -21,6 +22,8 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <string>
+#include <vector>
 
 namespace broadify::meeting {
 class AvFoundationCameraSource;
@@ -156,54 +159,244 @@ bool ensureMicrophoneAuthorization() {
   return granted == YES;
 }
 
-void configureCaptureFormat(AVCaptureDevice *device, uint32_t targetWidth, uint32_t targetHeight, uint32_t targetFps) {
-  if (device == nil || targetWidth == 0u || targetHeight == 0u || targetFps == 0u) {
-    return;
+std::string fourccToString(FourCharCode code) {
+  std::string text;
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    const char ch = static_cast<char>((code >> shift) & 0xffu);
+    text.push_back(std::isprint(static_cast<unsigned char>(ch)) ? ch : '?');
   }
+  return text;
+}
 
-  AVCaptureDeviceFormat *bestFormat = nil;
-  double bestScore = std::numeric_limits<double>::max();
-  for (AVCaptureDeviceFormat *format in device.formats) {
-    const CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
-    if (dimensions.width <= 0 || dimensions.height <= 0) {
-      continue;
-    }
-    bool supportsFps = false;
+// Candidate list for the pure selector, parallel to device.formats.
+std::vector<CaptureFormatCandidate> captureFormatCandidates(
+    NSArray<AVCaptureDeviceFormat *> *formats) {
+  std::vector<CaptureFormatCandidate> candidates;
+  candidates.reserve([formats count]);
+  for (AVCaptureDeviceFormat *format in formats) {
+    CaptureFormatCandidate candidate;
+    const CMVideoDimensions dimensions =
+        CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+    candidate.width = dimensions.width > 0 ? static_cast<uint32_t>(dimensions.width) : 0u;
+    candidate.height = dimensions.height > 0 ? static_cast<uint32_t>(dimensions.height) : 0u;
+    candidate.pixelFormat =
+        fourccToString(CMFormatDescriptionGetMediaSubType(format.formatDescription));
     for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
-      if (range.minFrameRate <= static_cast<double>(targetFps) &&
-          range.maxFrameRate >= static_cast<double>(targetFps)) {
-        supportsFps = true;
-        break;
-      }
+      candidate.frameRateRanges.push_back({range.minFrameRate, range.maxFrameRate});
     }
-    if (!supportsFps) {
-      continue;
-    }
-
-    const double widthDelta = std::abs(static_cast<double>(dimensions.width) - targetWidth);
-    const double heightDelta = std::abs(static_cast<double>(dimensions.height) - targetHeight);
-    const bool belowTarget = dimensions.width < static_cast<int32_t>(targetWidth) ||
-        dimensions.height < static_cast<int32_t>(targetHeight);
-    const double score = widthDelta + heightDelta + (belowTarget ? 1000000.0 : 0.0);
-    if (score < bestScore) {
-      bestScore = score;
-      bestFormat = format;
-    }
+    candidates.push_back(std::move(candidate));
   }
+  return candidates;
+}
 
-  if (bestFormat == nil) {
+// What applyCaptureFormat chose and whether the device took it; feeds the
+// camera_format_selected event.
+struct AppliedCaptureFormat {
+  CaptureFormatSelection selection;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  std::string pixelFormat;
+  AVCaptureDeviceFormat *format = nil;
+  CMTime frameDuration = kCMTimeInvalid;
+  bool applied = false;
+  // True when the read-back after startRunning showed the session had reset
+  // the format and it was applied a second time.
+  bool reapplied = false;
+  std::string failure;
+};
+
+// Dimensions and rate the device currently reports as active.
+struct ActiveCaptureFormat {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  double fps = 0.0;
+  std::string pixelFormat;
+};
+
+ActiveCaptureFormat readActiveCaptureFormat(AVCaptureDevice *device) {
+  ActiveCaptureFormat active;
+  if (device == nil || device.activeFormat == nil) {
+    return active;
+  }
+  const CMVideoDimensions dimensions =
+      CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription);
+  active.width = dimensions.width > 0 ? static_cast<uint32_t>(dimensions.width) : 0u;
+  active.height = dimensions.height > 0 ? static_cast<uint32_t>(dimensions.height) : 0u;
+  active.pixelFormat = fourccToString(
+      CMFormatDescriptionGetMediaSubType(device.activeFormat.formatDescription));
+  const CMTime duration = device.activeVideoMinFrameDuration;
+  if (CMTIME_IS_VALID(duration) && duration.value > 0) {
+    const double seconds = CMTimeGetSeconds(duration);
+    active.fps = seconds > 0.0 ? 1.0 / seconds : 0.0;
+  }
+  return active;
+}
+
+// Locks the device and sets the format + frame duration. AVFoundation throws
+// for a duration outside the format's ranges, so the call is guarded and a
+// camera_format_apply_failed event replaces a crash.
+bool applyFormatToDevice(AVCaptureDevice *device, AVCaptureDeviceFormat *format,
+                         CMTime frameDuration, std::string &failure) {
+  bool locked = false;
+  @try {
+    NSError *error = nil;
+    if (![device lockForConfiguration:&error]) {
+      failure = std::string("lock_failed: ") +
+                (error != nil ? [[error localizedDescription] UTF8String] ?: "" : "");
+      return false;
+    }
+    locked = true;
+    device.activeFormat = format;
+    device.activeVideoMinFrameDuration = frameDuration;
+    device.activeVideoMaxFrameDuration = frameDuration;
+    [device unlockForConfiguration];
+    return true;
+  } @catch (NSException *exception) {
+    const char *reason = exception.reason != nil ? [exception.reason UTF8String] : nullptr;
+    failure = std::string("exception: ") + (reason != nullptr ? reason : "");
+    if (locked) {
+      [device unlockForConfiguration];
+    }
+    return false;
+  }
+}
+
+void emitCameraFormatApplyFailedEvent(int cameraIndex, const AppliedCaptureFormat &applied) {
+  std::ostringstream event;
+  event.precision(10);
+  event << "{\"type\":\"camera_format_apply_failed\",\"camera_index\":" << cameraIndex
+        << ",\"width\":" << applied.width << ",\"height\":" << applied.height
+        << ",\"fps\":" << applied.selection.fps << ",\"reason\":\""
+        << jsonEscape(applied.failure) << "\"}";
+  emitHelperEvent(event.str());
+}
+
+// Frame duration for the chosen rate taken from the RANGE's own CMTime
+// values: a 30.00003-30.00003 range rejects CMTimeMake(1, 30) (outside the
+// range -> AVFoundation throws), so an endpoint rate uses the endpoint's
+// duration and only a rate strictly inside a continuous range (always the
+// integer request) is synthesized.
+CMTime frameDurationForRate(AVFrameRateRange *range, double fps) {
+  if (std::fabs(fps - range.maxFrameRate) <= 1e-9) {
+    return range.minFrameDuration;
+  }
+  if (std::fabs(fps - range.minFrameRate) <= 1e-9) {
+    return range.maxFrameDuration;
+  }
+  return CMTimeMake(1, static_cast<int32_t>(std::llround(fps)));
+}
+
+// Configures the device's active format and frame duration. Runs AFTER the
+// device input is attached to the session and after the session preset was
+// applied, so the preset (which may pick a format of its own) never wins over
+// the explicit choice. AVCaptureSessionPresetInputPriority is iOS-only: on
+// macOS the preset and the device's active format coexist, and the read-back
+// after startRunning (verifyAppliedCaptureFormat) is the proof that the
+// choice stuck. A selector "none" leaves the preset path untouched.
+AppliedCaptureFormat applyCaptureFormat(AVCaptureDevice *device, int cameraIndex,
+                                        uint32_t targetWidth,
+                                        uint32_t targetHeight,
+                                        uint32_t targetFps) {
+  AppliedCaptureFormat result;
+  if (device == nil) {
+    result.failure = "no_device";
+    return result;
+  }
+  NSArray<AVCaptureDeviceFormat *> *formats = device.formats;
+  const std::vector<CaptureFormatCandidate> candidates =
+      captureFormatCandidates(formats);
+  result.selection = selectCaptureFormat(
+      candidates, {targetWidth, targetHeight, static_cast<double>(targetFps)});
+  if (result.selection.match == CaptureFormatMatch::None ||
+      result.selection.candidateIndex < 0 ||
+      static_cast<NSUInteger>(result.selection.candidateIndex) >= [formats count]) {
+    return result;
+  }
+  const CaptureFormatCandidate &chosen =
+      candidates[static_cast<size_t>(result.selection.candidateIndex)];
+  result.width = chosen.width;
+  result.height = chosen.height;
+  result.pixelFormat = chosen.pixelFormat;
+  result.format = formats[static_cast<NSUInteger>(result.selection.candidateIndex)];
+  NSArray<AVFrameRateRange *> *ranges = result.format.videoSupportedFrameRateRanges;
+  if (result.selection.rangeIndex < 0 ||
+      static_cast<NSUInteger>(result.selection.rangeIndex) >= [ranges count]) {
+    result.failure = "range_index_out_of_bounds";
+    emitCameraFormatApplyFailedEvent(cameraIndex, result);
+    return result;
+  }
+  AVFrameRateRange *range =
+      ranges[static_cast<NSUInteger>(result.selection.rangeIndex)];
+  result.frameDuration = frameDurationForRate(range, result.selection.fps);
+  result.applied = applyFormatToDevice(device, result.format, result.frameDuration,
+                                       result.failure);
+  if (!result.applied) {
+    emitCameraFormatApplyFailedEvent(cameraIndex, result);
+  }
+  return result;
+}
+
+// After startRunning: if the session reset the device format (macOS presets
+// may reconfigure the device when the session starts), apply it once more.
+// The device stays configurable while running.
+void verifyAppliedCaptureFormat(AVCaptureDevice *device, int cameraIndex,
+                                AppliedCaptureFormat &applied) {
+  if (!applied.applied || device == nil || applied.format == nil) {
     return;
   }
-
-  NSError *error = nil;
-  if (![device lockForConfiguration:&error]) {
+  const ActiveCaptureFormat active = readActiveCaptureFormat(device);
+  const bool matches = active.width == applied.width &&
+                       active.height == applied.height &&
+                       std::fabs(active.fps - applied.selection.fps) <= 0.05;
+  if (matches) {
     return;
   }
-  device.activeFormat = bestFormat;
-  const CMTime frameDuration = CMTimeMake(1, static_cast<int32_t>(targetFps));
-  device.activeVideoMinFrameDuration = frameDuration;
-  device.activeVideoMaxFrameDuration = frameDuration;
-  [device unlockForConfiguration];
+  applied.reapplied = true;
+  applied.applied = applyFormatToDevice(device, applied.format,
+                                        applied.frameDuration, applied.failure);
+  if (!applied.applied) {
+    emitCameraFormatApplyFailedEvent(cameraIndex, applied);
+  }
+}
+
+// One line per camera open: what was requested, what the selector chose and
+// what the device reports back as active once the session runs. Parity with
+// the Windows camera_native_media_type_selected event.
+void emitCameraFormatSelectedEvent(int cameraIndex, AVCaptureDevice *device,
+                                   AVCaptureSession *session,
+                                   const AppliedCaptureFormat &applied,
+                                   uint32_t requestedWidth,
+                                   uint32_t requestedHeight,
+                                   uint32_t requestedFps) {
+  const ActiveCaptureFormat active = readActiveCaptureFormat(device);
+  const bool chosen = applied.selection.match != CaptureFormatMatch::None;
+  std::ostringstream event;
+  event.precision(10);
+  event << "{\"type\":\"camera_format_selected\",\"camera_index\":" << cameraIndex
+        << ",\"width\":" << (chosen ? applied.width : active.width)
+        << ",\"height\":" << (chosen ? applied.height : active.height)
+        << ",\"fps\":" << (chosen ? applied.selection.fps : active.fps)
+        << ",\"pixel_format\":\"" << jsonEscape(chosen ? applied.pixelFormat : active.pixelFormat)
+        << "\",\"requested_width\":" << requestedWidth
+        << ",\"requested_height\":" << requestedHeight
+        << ",\"requested_fps\":" << requestedFps
+        << ",\"match\":\"" << captureFormatMatchName(applied.selection.match)
+        << "\",\"applied\":" << (applied.applied ? "true" : "false")
+        << ",\"reapplied\":" << (applied.reapplied ? "true" : "false")
+        << ",\"applied_width\":" << active.width
+        << ",\"applied_height\":" << active.height
+        << ",\"applied_fps\":" << active.fps
+        << ",\"applied_pixel_format\":\"" << jsonEscape(active.pixelFormat) << "\""
+        << ",\"session_preset\":\""
+        << jsonEscape(session != nil && session.sessionPreset != nil
+                          ? [session.sessionPreset UTF8String] ?: ""
+                          : "")
+        << "\"";
+  if (!applied.failure.empty()) {
+    event << ",\"reason\":\"" << jsonEscape(applied.failure) << "\"";
+  }
+  event << "}";
+  emitHelperEvent(event.str());
 }
 
 }  // namespace
@@ -327,7 +520,17 @@ class AvFoundationCameraSource final : public CameraSource {
       }
 
       for (auto &entry : opened) {
-        [entry.second->session startRunning];
+        CameraStream &stream = *entry.second;
+        [stream.session startRunning];
+        // The read-back after startRunning is the evidence that the chosen
+        // format/rate stuck (applied_* fields); a reset is applied once more.
+        verifyAppliedCaptureFormat(stream.device, stream.cameraIndex,
+                                   stream.appliedFormat);
+        emitCameraFormatSelectedEvent(stream.cameraIndex, stream.device,
+                                      stream.session, stream.appliedFormat,
+                                      stream.requestedWidth,
+                                      stream.requestedHeight,
+                                      stream.requestedFps);
       }
       return true;
     }
@@ -637,8 +840,14 @@ class AvFoundationCameraSource final : public CameraSource {
   // dispatch queue (a shared queue throttled the measured fps from 30 to 21).
   struct CameraStream {
     int cameraIndex = -1;
+    AVCaptureDevice *device = nil;
     AVCaptureSession *session = nil;
     AVCaptureDeviceInput *input = nil;
+    // Capture format chosen at open; verified and reported after startRunning.
+    AppliedCaptureFormat appliedFormat;
+    uint32_t requestedWidth = 0;
+    uint32_t requestedHeight = 0;
+    uint32_t requestedFps = 0;
     AVCaptureVideoDataOutput *output = nil;
     BroadifyCameraFrameDelegate *delegate = nil;
     dispatch_queue_t queue = nil;
@@ -663,7 +872,6 @@ class AvFoundationCameraSource final : public CameraSource {
       setError("Requested camera device was not found.");
       return nullptr;
     }
-    configureCaptureFormat(device, width, height, fps);
 
     NSError *inputError = nil;
     AVCaptureDeviceInput *input =
@@ -688,6 +896,12 @@ class AvFoundationCameraSource final : public CameraSource {
     if ([session canSetSessionPreset:requestedPreset]) {
       session.sessionPreset = requestedPreset;
     }
+    // Device format + frame rate: after addInput and after the preset (see
+    // applyCaptureFormat). The former order (configure before addInput, preset
+    // afterwards) let the preset reset the frame duration, and the exact fps
+    // match never accepted the Cam Link's 30.00003 so nothing was configured.
+    const AppliedCaptureFormat appliedFormat =
+        applyCaptureFormat(device, cameraIndex, width, height, fps);
 
     AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
     output.alwaysDiscardsLateVideoFrames = YES;
@@ -703,8 +917,13 @@ class AvFoundationCameraSource final : public CameraSource {
 
     auto stream = std::make_shared<CameraStream>();
     stream->cameraIndex = cameraIndex;
+    stream->device = device;
     stream->session = session;
     stream->input = input;
+    stream->appliedFormat = appliedFormat;
+    stream->requestedWidth = width;
+    stream->requestedHeight = height;
+    stream->requestedFps = fps;
     stream->output = output;
     stream->queue = dispatch_queue_create(
         [[NSString stringWithFormat:@"com.broadify.meeting.camera.%d",

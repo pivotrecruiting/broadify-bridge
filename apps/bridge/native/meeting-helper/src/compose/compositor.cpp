@@ -1,6 +1,7 @@
 #include "compose/compositor.h"
 #include "compose/background_image_cache.h"
 #include "compose/media_page_cache.h"
+#include "compose/program_geometry.h"
 #if defined(__APPLE__)
 #include "compose/metal_compositor.h"
 #elif defined(_WIN32)
@@ -1041,8 +1042,15 @@ void drawKeyedPresenterLayer(std::vector<uint8_t> &frame,
 
   const double sourceCenterX = static_cast<double>(cameraFrame->width) * 0.5;
   const double sourceCenterY = static_cast<double>(cameraFrame->height) * 0.5;
-  const double sourceToCanvasX = static_cast<double>(canvasWidth) / static_cast<double>(cameraFrame->width);
-  const double sourceToCanvasY = static_cast<double>(canvasHeight) / static_cast<double>(cameraFrame->height);
+  // Uniform height-fit scale: the presenter keeps its proportions and its full
+  // height when camera and canvas aspect differ. A wider camera (landscape on
+  // a portrait canvas) is cropped left/right, a narrower one (4:3 on 16:9)
+  // leaves the background beside it. With equal aspects both axes had this
+  // same factor before.
+  const double sourceToCanvas =
+      keyedPresenterHeightFitScale(height, cameraFrame->height);
+  const double sourceToCanvasX = sourceToCanvas;
+  const double sourceToCanvasY = sourceToCanvas;
 
   const double targetCenterX = static_cast<double>(canvasWidth) * 0.5 + offsetX;
   const double targetBottomY = static_cast<double>(canvasHeight) - 0.5;
@@ -1377,8 +1385,14 @@ bool tryRenderProgramFrameGpu(const Options &options,
         }
         const double sourceCenterX = static_cast<double>(cameraFrame->width) * 0.5;
         const double sourceCenterY = static_cast<double>(cameraFrame->height) * 0.5;
-        const double kx = (static_cast<double>(plan.width) / cameraFrame->width) * scale;
-        const double ky = (static_cast<double>(plan.height) / cameraFrame->height) * scale;
+        // Uniform height-fit scale (see keyedPresenterHeightFitScale):
+        // identical to the former per-axis factors when camera and canvas
+        // aspect match. Outside the scaled camera rectangle the shader's
+        // source-bounds check leaves the background untouched.
+        const double kx =
+            keyedPresenterHeightFitScale(plan.height, cameraFrame->height) *
+            scale;
+        const double ky = kx;
         const double targetCenterX = static_cast<double>(plan.width) * 0.5 + offsetX;
         const double targetBottomY = static_cast<double>(plan.height) - 0.5;
         const double targetCenterY =
@@ -1469,18 +1483,18 @@ void drawCameraPipInset(std::vector<uint8_t> &output, uint32_t width,
   if (pip.rgba.empty() || pip.width == 0u || pip.height == 0u) {
     return;
   }
-  // ~28% of program width, keeping the PiP camera's aspect ratio.
-  const uint32_t insetW = std::max<uint32_t>(1u, (width * 28u) / 100u);
-  const uint32_t insetH = std::max<uint32_t>(
-      1u, static_cast<uint32_t>((static_cast<uint64_t>(insetW) * pip.height) /
-                                pip.width));
-  const uint32_t margin = std::max<uint32_t>(8u, width / 80u);
-  const uint32_t border = std::max<uint32_t>(2u, width / 480u);
-  if (insetW + margin >= width || insetH + margin >= height) {
+  // ~28% of the long program edge (capped for portrait canvases), keeping the
+  // PiP camera's aspect ratio; see cameraPipInsetGeometry.
+  const CameraPipInsetGeometry inset =
+      cameraPipInsetGeometry(width, height, pip.width, pip.height);
+  if (!inset.visible) {
     return;
   }
-  const uint32_t x0 = width - insetW - margin;
-  const uint32_t y0 = height - insetH - margin;
+  const uint32_t insetW = inset.width;
+  const uint32_t insetH = inset.height;
+  const uint32_t border = inset.border;
+  const uint32_t x0 = inset.x;
+  const uint32_t y0 = inset.y;
 
   // Border frame behind the inset.
   for (uint32_t y = y0 - border; y < y0 + insetH + border; ++y) {

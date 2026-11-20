@@ -885,6 +885,7 @@ RecordingStatus MeetingRecorder::status() const {
   status.active = impl_->active;
   status.filePath = impl_->filePath;
   status.videoFrames = impl_->videoFrames;
+  status.droppedFrames = impl_->droppedFrames;
   status.elapsedSeconds = impl_->active ? secondsSince(impl_->startedAt) : 0.0;
   status.lastError = impl_->lastError;
   status.audioSamplesWritten = impl_->audioRebase.written();

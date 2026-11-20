@@ -128,6 +128,12 @@ Helpers (`buildRawFrameStreamHeader`, Unit-Test
 ignoriert die Zusatz-Header. Auf Windows ist die Geometrie im Normalfall aus
 der SHM-Control-Mapping bekannt; der TCP-Handshake ist nur noch Fallback.
 
+Bei einem Hochformat-Programm (ADR-0007) bleiben Header und SHM-Ring bei
+1920x1080: der Helper setzt das Hochkant-Bild vor dem Versand mittig mit
+schwarzen Balken ein (`util/frame_fit`). Die Bridge meldet
+`capabilities.meeting.program_portrait` unter Windows vorerst als `false`; der
+Pfad ist dort noch nicht am Geraet geprueft.
+
 Weicht die Groesse eines Frames trotzdem vom
 ausgehandelten Media Type ab, zeigt `MediaStream::RequestSample` **kein**
 graues Splash-Bild mehr, sondern skaliert den Frame per Nearest-Neighbour

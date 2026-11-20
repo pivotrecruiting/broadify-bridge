@@ -1,12 +1,12 @@
 #include "live/program_stream.h"
 
+#include "live/program_stream_frame_copy.h"
 #include "live_stream/bitrate_ladder.h"
 #include "live_stream/monotonic_clock.h"
 #include "live_stream/publisher.h"
 #include "live_stream/video_encoder.h"
 #include "preview/preview_frame_store.h"
 #include "state/meeting_state.h"
-#include "util/pixel_swizzle.h"
 #include "helper_common/helper_event_log.h"
 #include "helper_common/json_utils.h"
 
@@ -30,7 +30,7 @@ namespace {
 constexpr auto kIdlePoll = std::chrono::milliseconds(100);
 constexpr auto kFrameWait = std::chrono::milliseconds(200);
 constexpr auto kHousekeeping = std::chrono::seconds(1);
-constexpr int kPoolMinBuffers = 3;
+constexpr auto kEmptyStoreWait = std::chrono::milliseconds(20);
 
 }  // namespace
 
@@ -42,14 +42,14 @@ struct ProgramStream::Impl {
   MeetingState &state;
   ProgramStreamConfig config;
 
-  std::unique_ptr<live::WebRtcPublisher> publisher;
+  std::shared_ptr<live::WebRtcPublisher> publisher;
   std::unique_ptr<live::VideoEncoder> encoder;
   live::EncodeTarget target;
   bool encoderConfigured = false;
   std::string profile = "auto";
   std::string lastErrorCode;
   std::string lastErrorMessage;
-  CVPixelBufferPoolRef pool = nullptr;
+  ProgramFramePool pool;
 
   std::thread worker;
   std::atomic<bool> running{false};
@@ -78,10 +78,6 @@ struct ProgramStream::Impl {
   void teardownEncoderLocked() {
     encoder.reset();
     encoderConfigured = false;
-    if (pool != nullptr) {
-      CVPixelBufferPoolRelease(pool);
-      pool = nullptr;
-    }
   }
 
   bool ensureEncoderLocked(uint32_t width, uint32_t height) {
@@ -98,27 +94,14 @@ struct ProgramStream::Impl {
       lastErrorMessage = "No hardware H.264 encoder on this machine.";
       return false;
     }
-    encoder->onAccessUnit = [this](live::EncodedAccessUnit &&unit) { onAccessUnit(std::move(unit)); };
+    // The encoder's thread gets its own reference to the publisher: it never reads `publisher`, which stop() resets.
+    encoder->onAccessUnit = [this, sink = publisher](live::EncodedAccessUnit &&unit) { onAccessUnit(sink.get(), std::move(unit)); };
     std::string code;
     std::string error;
     if (!encoder->configure(wanted, code, error)) {
       lastErrorCode = code;
       lastErrorMessage = error;
       encoder.reset();
-      return false;
-    }
-    NSDictionary *attrs = @{
-      (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
-      (__bridge NSString *)kCVPixelBufferWidthKey : @(wanted.width),
-      (__bridge NSString *)kCVPixelBufferHeightKey : @(wanted.height),
-      (__bridge NSString *)kCVPixelBufferIOSurfacePropertiesKey : @{},
-    };
-    NSDictionary *poolAttrs = @{(__bridge NSString *)kCVPixelBufferPoolMinimumBufferCountKey : @(kPoolMinBuffers)};
-    if (CVPixelBufferPoolCreate(kCFAllocatorDefault, (__bridge CFDictionaryRef)poolAttrs, (__bridge CFDictionaryRef)attrs, &pool) !=
-        kCVReturnSuccess) {
-      lastErrorCode = "encoder_unavailable";
-      lastErrorMessage = "CVPixelBufferPool for the program stream could not be created.";
-      teardownEncoderLocked();
       return false;
     }
     target = wanted;
@@ -133,11 +116,11 @@ struct ProgramStream::Impl {
     return true;
   }
 
-  void onAccessUnit(live::EncodedAccessUnit &&unit) {
+  void onAccessUnit(live::WebRtcPublisher *sink, live::EncodedAccessUnit &&unit) {
     encodedFrames.fetch_add(1);
     encodedBytes.fetch_add(unit.annexB.size());
-    if (publisher) {
-      publisher->sendVideo(unit);
+    if (sink != nullptr) {
+      sink->sendVideo(unit);
     }
     if (unit.sample != nullptr) {
       CFRelease(unit.sample);  // no passthrough recorder here; the meeting recorder has its own writer
@@ -145,33 +128,46 @@ struct ProgramStream::Impl {
     }
   }
 
+  // Pool at the size of the program frame, not of the encode target: the copy
+  // below writes frame-size rows and VideoToolbox scales to the session size.
+  // Independent of the encoder: a profile change keeps it, a frame size change
+  // recreates it even when the encode target stays the same.
+  bool ensurePoolLocked(uint32_t width, uint32_t height) {
+    if (pool.ensure(width, height)) {
+      return true;
+    }
+    teardownEncoderLocked();  // a later frame reconfigures and clears the error once the pool exists
+    lastErrorCode = "encoder_unavailable";
+    lastErrorMessage = "CVPixelBufferPool for the program stream could not be created.";
+    return false;
+  }
+
   // Runs under the PreviewFrameStore lock: one RGBA→BGRA pass straight into the pooled buffer.
   void encodeFrame(const PreviewFrame &frame) {
+    if (frame.width == 0 || frame.height == 0) {
+      droppedFrames.fetch_add(1);
+      return;
+    }
     live::VideoEncoder *activeEncoder = nullptr;
     CVPixelBufferRef pixelBuffer = nullptr;
     {
       std::lock_guard<std::mutex> lock(mutex);
-      if (!ensureEncoderLocked(frame.width, frame.height)) {
+      if (!ensurePoolLocked(frame.width, frame.height) || !ensureEncoderLocked(frame.width, frame.height)) {
         droppedFrames.fetch_add(1);
         return;
       }
-      if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer) != kCVReturnSuccess || pixelBuffer == nullptr) {
+      pixelBuffer = pool.createBuffer();
+      if (pixelBuffer == nullptr) {
         droppedFrames.fetch_add(1);  // every pooled buffer still sits in the encoder: drop, never block
         return;
       }
       activeEncoder = encoder.get();
     }
-    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-    uint8_t *dst = static_cast<uint8_t *>(CVPixelBufferGetBaseAddress(pixelBuffer));
-    const size_t dstStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
-    const size_t srcStride = static_cast<size_t>(frame.width) * 4;
-    const size_t rows = static_cast<size_t>(frame.height);
-    if (frame.rgba.size() >= srcStride * rows) {
-      for (size_t row = 0; row < rows; ++row) {
-        swizzleRgbaToBgra(frame.rgba.data() + row * srcStride, dst + row * dstStride, frame.width);
-      }
+    if (!copyRgbaFrameToPixelBuffer(frame.rgba.data(), frame.rgba.size(), frame.width, frame.height, pixelBuffer)) {
+      droppedFrames.fetch_add(1);  // buffer and frame geometry disagree: drop, never write past the buffer
+      CVPixelBufferRelease(pixelBuffer);
+      return;
     }
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
     live::CapturedFrame captured;
     captured.pixelBuffer = pixelBuffer;
     captured.width = frame.width;
@@ -207,10 +203,17 @@ struct ProgramStream::Impl {
       if (!frames.waitForNewFrame(lastSequence, now + kFrameWait)) {
         continue;
       }
-      frames.visitLatestIfNew(lastSequence, [&](const PreviewFrame &frame) {
+      const bool visited = frames.visitLatestIfNew(lastSequence, [&](const PreviewFrame &frame) {
         lastSequence = frame.sequence;
         encodeFrame(frame);
       });
+      if (!visited) {
+        // A new sequence without a frame: the store was cleared (camera stop, virtual camera stop).
+        // There is nothing to take until the next publish and waitForNewFrame() would return at
+        // once again, so wait here instead of spinning.
+        std::unique_lock<std::mutex> lock(wakeMutex);
+        wake.wait_for(lock, kEmptyStoreWait, [this]() { return !running.load(); });
+      }
     }
     setConsumer(false);
   }
@@ -229,7 +232,7 @@ void ProgramStream::start() {
     return;
   }
   impl_->publisher =
-      std::make_unique<live::WebRtcPublisher>([this]() { impl_->keyframeWanted.store(true); }, "meeting_viewer_state");
+      std::make_shared<live::WebRtcPublisher>([this]() { impl_->keyframeWanted.store(true); }, "meeting_viewer_state");
   impl_->worker = std::thread([this]() { impl_->run(); });
 }
 
@@ -252,6 +255,7 @@ void ProgramStream::stop() {
     impl_->encoder->flush();
   }
   impl_->teardownEncoderLocked();
+  impl_->pool.reset();
   impl_->publisher.reset();
 }
 

@@ -6,6 +6,7 @@ const mockAtemDisconnect = jest.fn();
 const mockAtemDestroy = jest.fn().mockResolvedValue(undefined);
 const mockMacroRun = jest.fn().mockResolvedValue(undefined);
 const mockMacroStop = jest.fn().mockResolvedValue(undefined);
+const mockRequestTime = jest.fn().mockResolvedValue(undefined);
 
 type MockAtemBehavior = "connect" | "error" | "reject" | "timeout";
 let mockAtemBehavior: MockAtemBehavior = "connect";
@@ -53,6 +54,7 @@ jest.mock("atem-connection", () => {
         destroy: mockAtemDestroy,
         macroRun: mockMacroRun,
         macroStop: mockMacroStop,
+        requestTime: mockRequestTime,
         state,
         emit: emitter.emit.bind(emitter),
         on: emitter.on.bind(emitter),
@@ -566,6 +568,97 @@ describe("AtemAdapter", () => {
         { id: 0, name: "Macro 1", status: "idle" },
         { id: 1, name: "Macro 2", status: "idle" },
       ]);
+    });
+  });
+});
+
+describe("AtemAdapter switcher events (session log)", () => {
+  type MockConnectionT = {
+    state: ReturnType<typeof createMockState> & {
+      video?: unknown;
+      recording?: unknown;
+      inputs?: unknown;
+    };
+    emit: (event: string, payload?: unknown) => void;
+  };
+
+  it("emits diffed program/keyer/recording events on stateChanged and stops after unsubscribe", async () => {
+    mockAtemBehavior = "connect";
+    const adapter = new AtemAdapter();
+    await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+    const connection = (adapter as unknown as { atemConnection: MockConnectionT }).atemConnection;
+    connection.state.video = { mixEffects: [{ programInput: 1, previewInput: 2, upstreamKeyers: [{ onAir: false }] }], downstreamKeyers: [{ onAir: false }] };
+    connection.state.inputs = { 1: { longName: "Cam 1" }, 2: { longName: "Cam 2" } };
+    connection.emit("stateChanged");      // no listeners yet: not tracked, the first diff reports the full state
+
+    const received: Array<{ type: string; input_id?: string | null; keyer?: string | null; at_ms?: number }> = [];
+    const unsubscribe = adapter.onSwitcherEvent((event) => received.push(event));
+
+    connection.state.video = { mixEffects: [{ programInput: 2, previewInput: 1, upstreamKeyers: [{ onAir: true }] }], downstreamKeyers: [{ onAir: false }] };
+    connection.state.recording = { status: { state: 1 }, duration: { hours: 0, minutes: 0, seconds: 5, frames: 0 } };
+    connection.emit("stateChanged");
+    expect(received.map((e) => e.type)).toEqual(["program_changed", "preview_changed", "keyer_on_air", "recording_started"]);
+    expect(received[0]).toMatchObject({ input_id: "2", input_name: "Cam 2", me: 0 });
+    expect(received[2]).toMatchObject({ keyer: "usk1" });
+    expect(typeof received[0].at_ms).toBe("number");
+
+    connection.emit("stateChanged");      // unchanged -> nothing
+    expect(received).toHaveLength(4);
+
+    unsubscribe();
+    connection.state.video = { mixEffects: [{ programInput: 3, previewInput: 1, upstreamKeyers: [{ onAir: true }] }], downstreamKeyers: [{ onAir: false }] };
+    connection.emit("stateChanged");
+    expect(received).toHaveLength(4);
+    await adapter.disconnect();
+  });
+
+  describe("timecode polling follows the listeners", () => {
+    beforeEach(() => {
+      mockAtemBehavior = "connect";
+      mockRequestTime.mockClear();
+      jest.useFakeTimers({ doNotFake: ["setImmediate", "nextTick"] });
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it("polls once a second when subscribed before connect (engine service order)", async () => {
+      const adapter = new AtemAdapter();
+      const unsubscribe = adapter.onSwitcherEvent(() => undefined);
+      expect(mockRequestTime).not.toHaveBeenCalled(); // not connected yet
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      expect(mockRequestTime).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(3000);
+      expect(mockRequestTime).toHaveBeenCalledTimes(4);
+
+      unsubscribe();
+      jest.advanceTimersByTime(5000);
+      expect(mockRequestTime).toHaveBeenCalledTimes(4);
+      await adapter.disconnect();
+    });
+
+    it("starts with the first subscription on a connected switcher and stops with the last unsubscribe", async () => {
+      const adapter = new AtemAdapter();
+      await adapter.connect({ type: "atem", ip: "10.0.0.1", port: 9910 });
+      jest.advanceTimersByTime(3000);
+      expect(mockRequestTime).not.toHaveBeenCalled();
+
+      const first = adapter.onSwitcherEvent(() => undefined);
+      const second = adapter.onSwitcherEvent(() => undefined);
+      expect(mockRequestTime).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(2000);
+      expect(mockRequestTime).toHaveBeenCalledTimes(3);
+
+      first();
+      jest.advanceTimersByTime(1000);
+      expect(mockRequestTime).toHaveBeenCalledTimes(4); // one listener left
+
+      second();
+      jest.advanceTimersByTime(5000);
+      expect(mockRequestTime).toHaveBeenCalledTimes(4);
+      expect((adapter as unknown as { lastSwitcherState: unknown }).lastSwitcherState).toBeUndefined();
+      await adapter.disconnect();
     });
   });
 });

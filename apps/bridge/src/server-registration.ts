@@ -1,4 +1,5 @@
 import { getLiveProgramCapabilities } from "./services/pgm/pgm-command-handler.js";
+import { getMeetingCapabilities } from "./services/meeting/meeting-capabilities.js";
 import { pgmHelperManager } from "./services/pgm/pgm-helper-manager.js";
 import { isAllowedOrigin } from "./routes/origin-allowlist.js";
 
@@ -86,7 +87,10 @@ export async function registerServerRoutes(
         status: liveProgram.input ? "configured" : "not-configured",
         message: liveProgram.input ? "Live program source selected" : "No live program source selected",
         live_program: liveProgram,
-        capabilities: { live_program: getLiveProgramCapabilities() },
+        capabilities: {
+          live_program: getLiveProgramCapabilities(),
+          meeting: getMeetingCapabilities(),
+        },
       };
     },
   });

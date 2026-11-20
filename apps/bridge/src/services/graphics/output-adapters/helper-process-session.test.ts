@@ -51,11 +51,19 @@ const createSession = (overrides: Partial<ConstructorParameters<typeof HelperPro
     stopStrategy: { gracefulMs: 25, forceMs: 25 },
     logger: {
       debug: jest.fn(),
+      info: jest.fn(),
       warn: jest.fn(),
       error: jest.fn(),
     },
     ...overrides,
   });
+
+const createLogger = () => ({
+  debug: jest.fn(),
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+});
 
 describe("HelperProcessSession", () => {
   beforeEach(() => {
@@ -89,6 +97,182 @@ describe("HelperProcessSession", () => {
 
     await expect(started).rejects.toThrow("second");
     await expect(started).rejects.toThrow("third");
+  });
+
+  describe("stderr", () => {
+    it("logs every stderr line at warn by default and keeps the ring buffer", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      const logger = createLogger();
+      const session = createSession({ logger, stderrRingSize: 5 });
+
+      const started = session.start();
+      child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      await started;
+      child.stderr.emit("data", Buffer.from("one\r\ntwo\n"));
+
+      expect(logger.warn).toHaveBeenCalledWith("[TestHelper] one");
+      expect(logger.warn).toHaveBeenCalledWith("[TestHelper] two");
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it("logs at error when stderrLogLevel is error", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      const logger = createLogger();
+      const session = createSession({ logger, stderrLogLevel: "error" });
+
+      const started = session.start();
+      child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      await started;
+      child.stderr.emit("data", Buffer.from("boom\n"));
+
+      expect(logger.error).toHaveBeenCalledWith("[TestHelper] boom");
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it("joins a line split across chunks before logging it", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      const logger = createLogger();
+      const session = createSession({ logger });
+
+      const started = session.start();
+      child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      await started;
+      child.stderr.emit(
+        "data",
+        Buffer.from("Playback stats: completed=815 late=0 dropped="),
+      );
+      expect(logger.warn).not.toHaveBeenCalled();
+
+      child.stderr.emit("data", Buffer.from("0\nnext"));
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "[TestHelper] Playback stats: completed=815 late=0 dropped=0",
+      );
+
+      child.stderr.emit("data", Buffer.from(" line\n"));
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+      expect(logger.warn).toHaveBeenLastCalledWith("[TestHelper] next line");
+    });
+
+    it("flushes a trailing partial line on exit and includes it in the exited event", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      const logger = createLogger();
+      const session = createSession({ logger });
+      const lifecycle = jest.fn();
+      session.onLifecycle(lifecycle);
+
+      const started = session.start();
+      child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      await started;
+      child.stderr.emit("data", Buffer.from("device lost"));
+      expect(logger.warn).not.toHaveBeenCalled();
+
+      child.exitCode = 2;
+      child.emit("exit", 2, null);
+
+      expect(logger.warn).toHaveBeenCalledWith("[TestHelper] device lost");
+      expect(lifecycle).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "exited", lastStderr: ["device lost"] }),
+      );
+    });
+
+    it("flushes a trailing partial line when the stderr pipe ends", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      const logger = createLogger();
+      const session = createSession({ logger });
+
+      const started = session.start();
+      child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      await started;
+      child.stderr.emit("data", Buffer.from("tail without newline"));
+      child.stderr.emit("end");
+
+      expect(logger.warn).toHaveBeenCalledWith("[TestHelper] tail without newline");
+    });
+
+    it("includes a partial line in the failure context when the helper exits before ready", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      const session = createSession();
+
+      const started = session.start();
+      child.stderr.emit("data", Buffer.from("FrameBus open failed: ENOENT"));
+      child.exitCode = 1;
+      child.emit("exit", 1, null);
+
+      await expect(started).rejects.toThrow("FrameBus open failed: ENOENT");
+    });
+
+    it("routes lines through stderrLineLevel when provided", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      const logger = createLogger();
+      const session = createSession({
+        logger,
+        stderrLogLevel: "error",
+        stderrLineLevel: (line) => {
+          if (line.startsWith("stats")) return "debug";
+          if (line.startsWith("note")) return "info";
+          if (line.startsWith("fatal")) return "error";
+          return "warn";
+        },
+      });
+
+      const started = session.start();
+      child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      await started;
+      child.stderr.emit(
+        "data",
+        Buffer.from("stats 1\nnote 2\nfatal 3\nsomething else\n"),
+      );
+
+      expect(logger.debug).toHaveBeenCalledWith("[TestHelper] stats 1");
+      expect(logger.info).toHaveBeenCalledWith("[TestHelper] note 2");
+      expect(logger.error).toHaveBeenCalledWith("[TestHelper] fatal 3");
+      expect(logger.warn).toHaveBeenCalledWith("[TestHelper] something else");
+      expect(logger.error).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps classified lines in the ring buffer regardless of level", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      const session = createSession({
+        stderrRingSize: 5,
+        stderrLineLevel: () => "debug",
+      });
+      const lifecycle = jest.fn();
+      session.onLifecycle(lifecycle);
+
+      const started = session.start();
+      child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      await started;
+      child.stderr.emit("data", Buffer.from("quiet 1\nquiet 2\n"));
+      child.exitCode = 3;
+      child.emit("exit", 3, null);
+
+      expect(lifecycle).toHaveBeenCalledWith(
+        expect.objectContaining({ lastStderr: ["quiet 1", "quiet 2"] }),
+      );
+    });
+
+    it("drops debug-classified lines when the logger has no debug method", async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+      const session = createSession({ logger, stderrLineLevel: () => "debug" });
+
+      const started = session.start();
+      child.stdout.emit("data", Buffer.from('{"type":"ready"}\n'));
+      await started;
+      expect(() => child.stderr.emit("data", Buffer.from("stats\n"))).not.toThrow();
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
   });
 
   it("rejects after readyTimeoutMs and kills the child", async () => {
@@ -191,7 +375,7 @@ describe("HelperProcessSession", () => {
   it("ignores unknown message types", async () => {
     const child = createMockChild();
     mockSpawn.mockReturnValue(child);
-    const logger = { debug: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const logger = createLogger();
     const session = createSession({ logger });
 
     const started = session.start();
@@ -206,7 +390,7 @@ describe("HelperProcessSession", () => {
   it("tolerates an EPIPE error on stdin after start without throwing", async () => {
     const child = createMockChild();
     mockSpawn.mockReturnValue(child);
-    const logger = { debug: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const logger = createLogger();
     const session = createSession({ logger });
 
     const started = session.start();

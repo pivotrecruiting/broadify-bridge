@@ -2,6 +2,7 @@
 
 #include "util/path_utf8.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <limits>
 
@@ -54,6 +55,11 @@ void setProcessEnv(const std::string &key, const std::string &value) {
 }
 
 }  // namespace
+
+CaptureRequestSize captureRequestSize(const Options &options) {
+  return CaptureRequestSize{std::max(options.width, options.height),
+                            std::min(options.width, options.height)};
+}
 
 std::vector<std::string> processArgumentsUtf8(int argc, char **argv) {
   std::vector<std::string> args;

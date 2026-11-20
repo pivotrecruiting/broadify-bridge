@@ -75,7 +75,8 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
       "microphoneEntitlementStatus": "present", // string, required, camelCase, seit Bestand
       "tccIdentity": "com.broadify.meeting-helper" // string|null, required, camelCase, seit Bestand
     },
-    "lastError": null // string|null, required, camelCase, seit Bestand
+    "lastError": null, // string|null, required, camelCase, seit Bestand
+    "program_format": { "width": 1920, "height": 1080, "fps": 30 } // object|null, optional fuer aeltere Clients, seit Hochformat (ADR-0007)
   },
   "engine": { // object|null, required, seit Bestand
     "bridge_running": true, // boolean, required, seit Bestand
@@ -280,9 +281,50 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
       "updated_at": 1712345678000 // number, required, volatil, Unix ms, seit Stage 2
     }
   },
-  "camera_permission_status": "authorized" // string|null, required in Stage 2, optional fuer aeltere Clients
+  "camera_permission_status": "authorized", // string|null, required in Stage 2, optional fuer aeltere Clients
+  "program_format": { // object|null, optional fuer aeltere Clients, seit Hochformat (ADR-0007)
+    "width": 1080, // number, required wenn vorhanden
+    "height": 1920, // number, required wenn vorhanden
+    "fps": 30 // number, required wenn vorhanden
+  }
 }
 ```
+
+#### `program_format` und Hochformat (ADR-0007)
+
+- `program_format` ist die Geometrie der **laufenden** Engine: die Optionen des
+  `meeting_engine_start`, der den aktuellen Helper-Prozess erzeugt hat, mit den
+  Defaults `1920x1080@30` aufgefuellt. `null`, solange die Engine nicht laeuft.
+  Derselbe Wert steht in `manager.program_format`, damit auch das Ergebnis von
+  `meeting_engine_start` (Manager-Status) ihn traegt.
+- `height > width` ist ein Hochformat-Programm. Ob die Bridge das kann, sagt
+  `get_status.capabilities.meeting.program_portrait` (macOS `true`, Windows
+  vorerst `false`; fehlt auf aelteren Bridges).
+- `meeting_engine_start` mit Hochformat ohne diese Capability:
+  `errorCode: "meeting_program_portrait_unsupported"`.
+- `meeting_engine_start` bei laufender Engine: gleiche Breite/Hoehe bleibt
+  idempotent (Erfolg, Manager-Status); abweichende Breite/Hoehe liefert
+  `errorCode: "meeting_engine_restart_required"` mit dem Manager-Status in
+  `data`. Die Bridge startet nie selbst neu; die Web-App sendet
+  `meeting_engine_stop` und danach `meeting_engine_start`. Laeuft eine Aufnahme,
+  nennt `error` das - der Stop wuerde sie beenden.
+- `meeting_engine_start` waehrend ein Start mit anderer Breite/Hoehe noch laeuft
+  (zweiter Client, Crash-Restart): die Antwort wartet auf diesen Start. Laeuft
+  die Engine danach, kommt `meeting_engine_restart_required` mit deren
+  Manager-Status; scheitert er, kommt sein Fehler ohne `errorCode`.
+- Eine Ablehnung (`meeting_program_portrait_unsupported`,
+  `meeting_engine_restart_required`) aendert nichts: Engine, Aufnahme,
+  Grafik-FrameBus, Renderer und Grafik-Ebenen bleiben, wie sie sind.
+- `meeting_graphics_configure_outputs` folgt der Engine-Geometrie, wenn die
+  Ausrichtung der Anfrage von der laufenden Engine abweicht; `data.width` /
+  `data.height` nennen die tatsaechlich konfigurierte Groesse.
+- `content_source.*`-Bruchteile beziehen sich im Hochformat auf die
+  Hochformat-Buehne (Groesse der Grafik-Ebenen), im Querformat wie bisher auf
+  `1920x1080`.
+- `get_status.capabilities.meeting.layer_canvas` (`true` auf allen Plattformen,
+  fehlt auf aelteren Bridges): `graphics_send` wertet `canvas { width, height }`
+  aus, die Groesse der Ebenen-Box vor der Layout-Transformation. Ohne `canvas`
+  bleibt die Box `1920x1080`. Details: `graphics-commands.md`, ADR-0007.
 
 #### `fallback_active` / `fallback_reason` / `model_hash_ok` auf macOS (B-11)
 
@@ -334,14 +376,16 @@ bleibt die Form gleich, aber Engine-nahe Objekte koennen leer sein:
       "microphoneEntitlementStatus": "not_checked", // string, required, camelCase, seit Bestand
       "tccIdentity": null // string|null, required, camelCase, seit Bestand
     },
-    "lastError": null // string|null, required, camelCase, seit Bestand
+    "lastError": null, // string|null, required, camelCase, seit Bestand
+    "program_format": null // object|null, null solange manager.state nicht "running" ist, seit Hochformat (ADR-0007)
   },
   "engine": null, // object|null, required, null wenn Helper nicht erreichbar
   "engineError": "connect ENOENT", // string, optional, camelCase, nur bei Statusfehler
   "recording": null, // object|null, required
   "call": { "active": false, "call_id": null }, // object, required
   "content_source": { "video": null, "browser": null }, // object, required in Stage 2
-  "camera_permission_status": null // string|null, required in Stage 2
+  "camera_permission_status": null, // string|null, required in Stage 2
+  "program_format": null // object|null, wie manager.program_format, seit Hochformat (ADR-0007)
 }
 ```
 

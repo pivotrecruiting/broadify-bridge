@@ -1,3 +1,4 @@
+const fs = require("node:fs");
 const baseConfig = require("./electron-builder.json");
 const {
   resolveWindowsSigningPolicy,
@@ -33,6 +34,8 @@ const BRIDGE_NODE_MODULES_DEV_EXCLUDES = [
 ];
 const PRESENTATION_RUNTIME_PATH =
   "apps/bridge/vendor/presentation-runtime/macos-arm64";
+const WIN_PRESENTATION_RUNTIME_PATH =
+  "apps/bridge/vendor/presentation-runtime/win-x64";
 
 const argValues = process.argv.flatMap((arg, index, args) => {
   const values = [arg];
@@ -204,6 +207,22 @@ if (config.win) {
   // scripts/verify-windows-native-dependencies.cjs. The DLLs carry Microsoft's
   // signature and are deliberately NOT in scripts/sign-windows-native-resources.cjs.
   config.win.extraResources.push(...getWindowsVcRuntimeResourceEntries());
+
+  // Bundled LibreOffice for Windows PPTX->PDF conversion. Only packaged when the
+  // runtime was provisioned (scripts/prepare-windows-presentation-runtime.ps1
+  // downloads it from the pinned mirror); otherwise the build still succeeds and
+  // PPTX falls back to a system-installed LibreOffice.
+  if (
+    fs.existsSync(
+      `${WIN_PRESENTATION_RUNTIME_PATH}/program/soffice.exe`,
+    )
+  ) {
+    config.win.extraResources.push({
+      from: WIN_PRESENTATION_RUNTIME_PATH,
+      to: "presentation-runtime/win-x64",
+      filter: ["**/*"],
+    });
+  }
 
   // electron-builder 25 signs extension-matched DLLs concurrently and does not
   // apply that transformer to individually copied extraResources. Sign only the
