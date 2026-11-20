@@ -212,6 +212,19 @@ export const signRelayBridgeAuthChallenge = async (
 };
 
 /**
+ * Signing material for bridge-signed web-app requests (post-production
+ * session-log uploads). Same key as the relay enrollment.
+ */
+export const getRelayBridgeSigningIdentity = async (): Promise<{
+  bridgeId: string;
+  keyId: string;
+  privateKeyPem: string;
+}> => {
+  const identity = await loadOrCreateIdentity();
+  return { bridgeId: identity.bridgeId, keyId: identity.keyId, privateKeyPem: identity.privateKeyPem };
+};
+
+/**
  * Parses and validates the stored public key locally (sanity check).
  */
 export const validateRelayBridgeEnrollmentPublicKey = async (): Promise<void> => {

@@ -1,4 +1,4 @@
-import { parseConfig } from "./config.js";
+import { normalizePostproApiUrl, parseConfig } from "./config.js";
 
 describe("parseConfig", () => {
   const originalEnv: Record<string, string | undefined> = {};
@@ -12,6 +12,8 @@ describe("parseConfig", () => {
     originalEnv.PAIRING_CODE = process.env.PAIRING_CODE;
     originalEnv.PAIRING_EXPIRES_AT = process.env.PAIRING_EXPIRES_AT;
     originalEnv.BRIDGE_USER_DATA_DIR = process.env.BRIDGE_USER_DATA_DIR;
+    originalEnv.POSTPRO_API_URL = process.env.POSTPRO_API_URL;
+    delete process.env.POSTPRO_API_URL;
     delete process.env.BRIDGE_ID;
     delete process.env.RELAY_URL;
   });
@@ -124,5 +126,73 @@ describe("parseConfig", () => {
       String(ts),
     ]);
     expect(config.pairingExpiresAt).toBe(ts);
+  });
+});
+
+describe("post-production URL (session log opt-in)", () => {
+  const originalUrl = process.env.POSTPRO_API_URL;
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    delete process.env.POSTPRO_API_URL;
+    warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+    if (originalUrl === undefined) {
+      delete process.env.POSTPRO_API_URL;
+    } else {
+      process.env.POSTPRO_API_URL = originalUrl;
+    }
+  });
+
+  it("is unset by default", () => {
+    expect(parseConfig([]).postproApiUrl).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("keeps a valid http(s) URL, trimmed", () => {
+    expect(normalizePostproApiUrl("https://app.example")).toBe("https://app.example");
+    expect(normalizePostproApiUrl("  http://localhost:3000/  ")).toBe("http://localhost:3000/");
+    expect(parseConfig(["--postpro-api-url", "https://app.example"]).postproApiUrl).toBe("https://app.example");
+    process.env.POSTPRO_API_URL = " https://env.example ";
+    expect(parseConfig([]).postproApiUrl).toBe("https://env.example");
+    expect(parseConfig(["--postpro-api-url", "https://cli.example"]).postproApiUrl).toBe("https://cli.example");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("treats empty and whitespace values as unset without a warning", () => {
+    expect(normalizePostproApiUrl(undefined)).toBeUndefined();
+    expect(normalizePostproApiUrl("")).toBeUndefined();
+    expect(normalizePostproApiUrl("   ")).toBeUndefined();
+    process.env.POSTPRO_API_URL = "   ";
+    expect(parseConfig([]).postproApiUrl).toBeUndefined();
+    expect(parseConfig(["--postpro-api-url", " "]).postproApiUrl).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each(["not a url", "app.example", "ftp://app.example", "file:///etc/passwd", "javascript:alert(1)", "https://"])(
+    "drops the malformed value %p with a warning that never contains it",
+    (value) => {
+      expect(normalizePostproApiUrl(value)).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).not.toContain(value);
+    },
+  );
+
+  it("a malformed value no longer stops the bridge from starting", () => {
+    process.env.POSTPRO_API_URL = "user:secret@not-a-url";
+    const fromEnv = parseConfig([]);
+    expect(fromEnv.postproApiUrl).toBeUndefined();
+    expect(fromEnv.port).toBe(8787);
+    delete process.env.POSTPRO_API_URL;
+    expect(parseConfig(["--postpro-api-url", "user:secret@not-a-url"]).postproApiUrl).toBeUndefined();
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("secret");
+  });
+
+  it("falls back to the environment when the CLI value is malformed", () => {
+    process.env.POSTPRO_API_URL = "https://env.example";
+    expect(parseConfig(["--postpro-api-url", "nope"]).postproApiUrl).toBe("https://env.example");
   });
 });

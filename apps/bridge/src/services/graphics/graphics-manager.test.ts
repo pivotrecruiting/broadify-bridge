@@ -1,4 +1,5 @@
 import { getBridgeContext, setBridgeContext } from "../bridge-context.js";
+import { recordSwitcherEvent } from "../session-log/session-log-service.js";
 import { GraphicsError } from "./graphics-errors.js";
 import { GraphicsManager } from "./graphics-manager.js";
 import { GraphicsOutputTransitionError } from "./graphics-output-transition-service.js";
@@ -40,6 +41,12 @@ const mockValidateTemplate = jest.fn(() => ({
 jest.mock("./template-sanitizer.js", () => ({
   sanitizeTemplateCss: (css: string) => mockSanitizeCss(css),
   validateTemplate: (html: string, css: string) => mockValidateTemplate(html, css),
+}));
+
+// SessionEventLog sink spied; the on/off switch (isSessionLogEnabled) stays real.
+jest.mock("../session-log/session-log-service.js", () => ({
+  ...jest.requireActual("../session-log/session-log-service.js"),
+  recordSwitcherEvent: jest.fn(),
 }));
 
 const createRenderer = (): GraphicsRenderer => ({
@@ -1366,6 +1373,96 @@ describe("GraphicsManager with configured outputs", () => {
 
       expect(usageRecorder.recordLayerShown).not.toHaveBeenCalled();
       expect(usageRecorder.recordLayerHidden).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("session event log (ADR-0008)", () => {
+    const showUpdateHide = async (manager: GraphicsManager) => {
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+      await manager.sendLayer({
+        ...createTestPatternPayload(),
+        layerId: "lower-third",
+        category: "lower-thirds",
+        presetId: "preset-lt",
+        values: { name: "Ada Lovelace", round: 2 },
+      });
+      await manager.updateValues({
+        layerId: "lower-third",
+        values: { title: "Guest" },
+      });
+      await manager.removeLayer({ layerId: "lower-third" });
+    };
+
+    it("hands no on-air graphic to the recorder without a post-production URL", async () => {
+      await showUpdateHide(createManagerWithRealTransition());
+
+      expect(recordSwitcherEvent).not.toHaveBeenCalled();
+    });
+
+    it("does not read the on-air text fields without a post-production URL", () => {
+      const reads: PropertyKey[] = [];
+      const values = new Proxy<Record<string, unknown>>(
+        { name: "Ada Lovelace" },
+        {
+          get: (target, key) => {
+            reads.push(key);
+            return Reflect.get(target, key);
+          },
+          ownKeys: (target) => {
+            reads.push("ownKeys");
+            return Reflect.ownKeys(target);
+          },
+        },
+      );
+      const internals = createManagerWithRealTransition() as unknown as {
+        recordSessionGraphic: (
+          type: "graphic_shown",
+          layerId: string,
+          templateId: string | null,
+          values: Record<string, unknown> | null,
+        ) => void;
+      };
+
+      internals.recordSessionGraphic("graphic_shown", "lower-third", "preset-lt", values);
+
+      expect(reads).toEqual([]);
+      expect(recordSwitcherEvent).not.toHaveBeenCalled();
+    });
+
+    it("records shown, updated and hidden with the text fields once a post-production URL is set", async () => {
+      setBridgeContext({
+        ...getBridgeContext(),
+        postproApiUrl: "https://postpro.example",
+      });
+
+      await showUpdateHide(createManagerWithRealTransition());
+
+      expect(
+        (recordSwitcherEvent as jest.Mock).mock.calls.map(([event]) => event),
+      ).toEqual([
+        {
+          type: "graphic_shown",
+          source: "studio",
+          graphic_id: "lower-third",
+          template_id: "preset-lt",
+          fields: { name: "Ada Lovelace", round: "2" },
+        },
+        {
+          type: "graphic_updated",
+          source: "studio",
+          graphic_id: "lower-third",
+          template_id: "preset-lt",
+          fields: { name: "Ada Lovelace", round: "2", title: "Guest" },
+        },
+        {
+          type: "graphic_hidden",
+          source: "studio",
+          graphic_id: "lower-third",
+          template_id: null,
+          fields: null,
+        },
+      ]);
     });
   });
 });

@@ -240,4 +240,45 @@ describe("buildBridgeSpawnEnv", () => {
     });
     expect(env.NODE_EXTRA_CA_CERTS).toBe("/etc/corp-root.pem");
   });
+
+  // Session log opt-in (ADR-0008): the desktop app has no setting for it; the
+  // only way in is POSTPRO_API_URL in the app environment (userData/.env or
+  // the shell), which must reach the bridge child unchanged.
+  it("passes POSTPRO_API_URL from the app environment to the bridge", () => {
+    for (const isDev of [true, false]) {
+      const env = buildBridgeSpawnEnv({
+        processEnv: { POSTPRO_API_URL: "https://app.example" },
+        isDev,
+        relayEnabled: true,
+        appVersion: "0.11.0",
+      });
+      expect(env.POSTPRO_API_URL).toBe("https://app.example");
+    }
+  });
+
+  it("never invents POSTPRO_API_URL: unset stays unset (session log off)", () => {
+    for (const isDev of [true, false]) {
+      const env = buildBridgeSpawnEnv({
+        processEnv: { PATH: "/usr/bin" },
+        isDev,
+        relayEnabled: true,
+        appVersion: "0.11.0",
+        pairingCode: "1234",
+      });
+      expect("POSTPRO_API_URL" in env).toBe(false);
+    }
+  });
+
+  it("does not pass the post-production URL as a CLI argument", () => {
+    const args = buildBridgeProcessArgs({
+      isDev: false,
+      appPath: "/app",
+      resourcesPath: "/resources",
+      config: { host: "127.0.0.1", port: 8787 },
+      bridgeId: "bridge-1",
+      relayUrl: "wss://relay.example",
+      relayEnabled: true,
+    });
+    expect(args).not.toContain("--postpro-api-url");
+  });
 });
