@@ -1,6 +1,11 @@
 import { normalize } from "node:path";
 import { setBridgeContext } from "../bridge-context.js";
 import {
+  diffMeetingSummary,
+  summarizeMeetingStatus,
+} from "../session-log/meeting-session-events.js";
+import { recordSwitcherEvent } from "../session-log/session-log-service.js";
+import {
   HELPER_NOT_REACHABLE_CODE,
   MeetingHelperRequestError,
 } from "./meeting-helper-client.js";
@@ -15,6 +20,22 @@ import {
   resolveMeetingHelperForwardedEnvArgs,
   resolveMeetingModelsDir,
 } from "./meeting-helper-manager.js";
+import type { MeetingStatusT } from "./meeting-status-types.js";
+
+// SessionEventLog sink and status diff spied (real implementations); the
+// on/off switch (isSessionLogEnabled) stays real.
+jest.mock("../session-log/session-log-service.js", () => ({
+  ...jest.requireActual("../session-log/session-log-service.js"),
+  recordSwitcherEvent: jest.fn(),
+}));
+jest.mock("../session-log/meeting-session-events.js", () => {
+  const actual = jest.requireActual("../session-log/meeting-session-events.js");
+  return {
+    ...actual,
+    summarizeMeetingStatus: jest.fn(actual.summarizeMeetingStatus),
+    diffMeetingSummary: jest.fn(actual.diffMeetingSummary),
+  };
+});
 
 describe("meeting-helper-manager", () => {
   const mockPublishBridgeEvent = jest.fn();
@@ -993,6 +1014,75 @@ describe("meeting-helper-manager", () => {
       camera = 1;
       await internals.publishStatus("status_poll", false);
       expect(statusEvents()).toBe(2);
+    });
+  });
+
+  describe("session event log (ADR-0008)", () => {
+    type StatusInternalsT = {
+      publishStatus: (reason: string, force: boolean) => Promise<void>;
+    };
+
+    const statusWithRecording = (
+      manager: MeetingHelperManager,
+      active: boolean,
+    ): MeetingStatusT => ({
+      manager: manager.getStatus(),
+      engine: { program_revision: 3 },
+      recording: { active },
+      call: { active: false, call_id: null },
+      content_source: { video: null, browser: null },
+      camera_permission_status: null,
+    });
+
+    it("neither summarizes nor diffs the status without a post-production URL", async () => {
+      const manager = new MeetingHelperManager();
+      jest
+        .spyOn(manager, "getFullStatus")
+        .mockResolvedValue(statusWithRecording(manager, true));
+
+      await (manager as unknown as StatusInternalsT).publishStatus("status_poll", true);
+
+      expect(summarizeMeetingStatus).not.toHaveBeenCalled();
+      expect(diffMeetingSummary).not.toHaveBeenCalled();
+      expect(recordSwitcherEvent).not.toHaveBeenCalled();
+      // The status itself still goes out.
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ event: "meeting_status" }),
+      );
+    });
+
+    it("records recorder and program changes once a post-production URL is set", async () => {
+      setBridgeContext({
+        userDataDir: "/tmp",
+        logPath: "/tmp/bridge.log",
+        logger: mockLogger,
+        publishBridgeEvent: mockPublishBridgeEvent,
+        postproApiUrl: "https://postpro.example",
+      });
+      const manager = new MeetingHelperManager();
+      const getFullStatus = jest
+        .spyOn(manager, "getFullStatus")
+        .mockResolvedValue(statusWithRecording(manager, true));
+      const internals = manager as unknown as StatusInternalsT;
+
+      await internals.publishStatus("status_poll", true);
+      getFullStatus.mockResolvedValue(statusWithRecording(manager, false));
+      await internals.publishStatus("status_poll", true);
+
+      expect(
+        (recordSwitcherEvent as jest.Mock).mock.calls.map(([event]) => event),
+      ).toEqual([
+        { type: "recording_started", source: "meeting", at_ms: expect.any(Number) },
+        {
+          type: "program_changed",
+          source: "meeting",
+          me: 0,
+          input_id: "3",
+          input_name: "camera",
+          at_ms: expect.any(Number),
+        },
+        { type: "recording_stopped", source: "meeting", at_ms: expect.any(Number) },
+      ]);
     });
   });
 });
