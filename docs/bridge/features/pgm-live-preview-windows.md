@@ -5,8 +5,38 @@ Windows-Hardware geprüft; die CI kompiliert und fährt ctest auf einem GPU-lose
 (`docs/bridge/architecture/adr/0009-live-pgm-windows-media-foundation.md`), Grundlage ADR-0002/0004/0005/0006.
 macOS-Fassung und Verträge: `docs/bridge/features/pgm-live-preview.md`.
 
-Dieses Dokument wächst mit der Umsetzung (Einheiten D1–D10). Wo ein Abschnitt etwas beschreibt, das eine spätere
-Einheit erst liefert, steht die Einheit dabei; Dateinamen dort sind geplant und können sich noch ändern.
+Die Abschnitte folgen den Einheiten der Umsetzung (D0–D10); die Einheit steht jeweils dabei. Was davon wie weit
+geprüft ist, steht gleich unten unter „Stand der Prüfung“. Wie man zu einem Build für die Sitzung am Gerät kommt,
+steht unter „Opt-in-Build für die Sitzung am Gerät“.
+
+## Stand der Prüfung
+
+Vier Stufen. „macOS“ heißt: auf dem Entwicklungsrechner gebaut und getestet (ctest, jest). „Windows-CI“ heißt: im
+Workflow `pgm-windows-native.yml` auf einem `windows-2022`-Runner, der weder GPU noch Kamera noch Audiogerät hat;
+dort ist zu unterscheiden, was auch ausgeführt und was nur kompiliert wird. „Offen“ kann erst die Sitzung am Gerät
+klären (Runbook unten). Grün im CI heißt nie „auf Hardware geprüft“.
+
+| Baustein (Einheit) | Auf macOS geprüft | Windows-CI: ausgeführt | Windows-CI: nur kompiliert | Offen bis zur Sitzung am Gerät |
+|---|---|---|---|---|
+| Typen und Schnittstelle: `CapturedFrame`, `createHardwareEncoder()` (D2) | ctest; der VideoToolbox-Weg ist unverändert (`vt_encoder_smoke_test`) | Job `core` | | |
+| Pixel-Module RGBA/YUY2/UYVY → NV12, NV12-Skalierung (D3) | ctest mit Referenzwerten | Job `core`: dieselben Tests unter MSVC | | Farben und Range im echten Bild (Runbook 3) |
+| Encoder `mf_encoder.cpp` (D4) | nur die reinen Module (`mf_encoder_policy_test`, `frame_to_nv12_test`); die Datei selbst baut nur unter Windows | Job `encoder`: gegen einen asynchronen Test-MFT und, über die Test-Naht, gegen Microsofts Software-MFT | der Weg zum Hardware-MFT: `mf_encoder_smoke_test` überspringt, der Runner hat keinen | jeder Hardware-MFT (NVIDIA, Intel, AMD, Hybrid-Laptop), ICodecAPI je Treiber, zwei Sessions zugleich, Geräteverlust (Runbook 3, 4) |
+| WebRTC-Build: libdatachannel, OpenSSL statisch (D5) | `webrtc_loopback_test` mit demselben `publisher.cpp` | Job `full`: Build, Loopback-Test, kein Import einer OpenSSL-DLL (`dumpbin`) | | Firewall-Abfrage, ICE-Kandidaten, TURN (Runbook 7) |
+| Portabler Helper: `main.cpp`, Plattform-Host (D6) | ctest; einmal von Hand ein Lauf des Helpers mit der synthetischen Quelle | Job `full`: Start, Steuer-Pipe und `control.shutdown` als Teil von `pgm-helper.exe` | | Konsolenfenster, Wächter auf den Elternprozess, verwaiste Prozesse (Runbook 11) |
+| Windows-Quellen des Helpers: UVC, WASAPI, Standbild, Recorder-Stub (D7) | die reinen Module (`uvc_format_select_test`, `audio_pairing_test`, `snapshot_portable_test`, `portable_sources_test`) | Job `full`: `--probe`; der Lauf mit der synthetischen Quelle endet in `encoder_unavailable` (kein Software-Weg); Status, Standbild, `recording_unsupported` | `uvc_mediafoundation.cpp` und `audio_capture_wasapi.cpp`: nie gelaufen | der ganze UVC- und WASAPI-Weg: Aushandlung, Hot-Plug, Paarung, Lippensynchronität, Kamera-Datenschutz (Runbook 5, 6) |
+| **Meeting-Programm (D8): Platzhalter. Diese Zeile trägt die Einheit D8 nach.** | | | | |
+| Bridge-Gate: `BRIDGE_PGM_WINDOWS`, `windowsHide`, Fähigkeit `recording` (D9) | jest mit eingesetzter Plattform und Umgebung | Job `bridge-tests`: die ganze jest-Suite | | Schalter und Helper-Start in der paketierten Bridge (Runbook 1, 11) |
+| Paketierung hinter dem Build-Schalter (D10) | Vertragstest für alle Listen mit und ohne Schalter; die Artefaktprüfung läuft darin mit einem vorgetäuschten Windows-Host. Dazu einmalig der Vorher-nachher-Vergleich aller Listen ohne Schalter (PR der Einheit) | Job `bridge-tests`: die Vertragstests mit und ohne Schalter, `npm run build:pgm-helper` überspringt ohne Schalter, das Smoke-Skript des Helpers in beiden Zuständen. Job `full`: Artefaktliste, Smoke-Skript (`--probe`) und Abhängigkeitsprüfung gegen die gebaute Exe im Paket-Layout | die Installer-Smoke-Tests: von den PowerShell-Skripten wird nur die Syntax geprüft | alles, was erst ein Build mit Schalter durchläuft: `dist:win` als Ganzes, der Schritt in den Release-Workflows, electron-builder mit der Exe, ihre Signatur, NSIS- und MSI-Smoke-Test, Smart App Control (Runbook 10) |
+| Aufnahme unter Windows | | | Stub (`recording_unsupported`) | nicht umgesetzt (ADR-0009, Punkt 7) |
+
+- Ohne den Build-Schalter gilt für ein Windows-Release: dieselben Dateien im Paket, dieselbe Signierliste, dieselben
+  VC-Runtime-Ordner, dieselbe Artefakt- und Abhängigkeitsprüfung. Das hält
+  `scripts/pgm-helper-windows-release-contract.test.cjs` fest; die Einzelheiten stehen unter „Paketierung (D10)“.
+- Der Job `bridge-tests` probt das Tor eines Windows-Release: `dist:win` ruft `npm run build` auf, und das beginnt
+  mit `npm run test` (jest und die Vertragstests). Jeder dieser Tests läuft also im Release-Build unter Windows; einer,
+  der vom Rechner abhängt, bricht das Release. Der Job fährt dasselbe vor dem Merge, mit den Installationsschritten
+  aus `release.yml` und ohne Secrets. Nicht nachgestellt ist der Lauf der Tests innerhalb von `dist:win` selbst, also
+  nach den nativen Builds und mit der Signier-Umgebung.
 
 ## Ziel
 Dasselbe Live-Programm wie auf macOS: Mischer-PGM im Studio (`pgm-helper.exe`: UVC + Ton → H.264/Opus → WebRTC) und
@@ -46,12 +76,18 @@ Regeln, die unter Windows genauso gelten:
 | `LIVE_STREAM_WITH_WEBRTC=ON` | Build (CMake-Option, nur `live-stream`) | Baut unter Windows den WebRTC-Teil (`live_stream`: `publisher.cpp` auf dem Encoder, libdatachannel, statisches OpenSSL) und `webrtc_loopback_test`. Schaltet `LIVE_STREAM_WITH_MF` mit ein. Wird von `BROADIFY_PGM_WINDOWS=1` mit eingeschaltet; auf macOS ist es immer an | aus (Windows) |
 | `BRIDGE_PGM_ENCODER_VENDOR=nvidia\|intel\|amd` | Laufzeit (Umgebung des Helpers) | Zieht die Hardware-MFTs dieses Herstellers in der Reihenfolge nach vorn (Gerätetest auf Hybrid-Laptops). Die übrigen bleiben Ausweichkandidaten; welcher Encoder läuft, steht in `EncoderInfo.name` | nicht gesetzt |
 
-- Ohne Build-Schalter bleibt das Windows-Release bytegleich. Neue Windows-Targets sind opt-in, weil
+- Ohne Build-Schalter packt, signiert und prüft ein Windows-Release dasselbe wie zuvor (siehe „Paketierung (D10)“).
+  Gebaut werden zusätzlich nur die reinen Module von `live_stream_core` und ihre Tests, die auf jeder Plattform
+  laufen. Windows-eigene Targets (Encoder, WebRTC, `pgm-helper.exe`, Meeting-`ProgramStream`) sind opt-in, weil
   `npm run test:meeting-helper-native` in `dist:win` alle Targets des Build-Verzeichnisses baut.
+- Der Build-Schalter gilt nur mit dem Wert `1`; jeder andere Wert zählt als aus (Build-Skript, CMake und
+  Paketlisten prüfen gleich).
 - Ohne Laufzeit-Schalter antwortet auch eine mit Build-Schalter gebaute Bridge wie heute
   (`pgm_unsupported_bridge`, Meeting: `program_stream_unavailable`).
 - Die bestehenden Schalter gelten weiter: `BRIDGE_PGM_PREVIEW=0` (Notaus), `BRIDGE_PGM_MAX_VIEWERS`,
-  `BRIDGE_PGM_SYNTHETIC_SOURCE=1920x1080@60`, `BRIDGE_LOG_PERF=1`, `BRIDGE_PGM_HELPER_PATH`.
+  `BRIDGE_PGM_SYNTHETIC_SOURCE=1920x1080@60`, `BRIDGE_LOG_PERF=1`, `BRIDGE_PGM_HELPER_PATH`. Die synthetische Quelle
+  gibt es unter Windows seit D7 (`capture/synthetic_source.cpp`); sie braucht kein Gerät, aber wie jede Quelle einen
+  Hardware-Encoder.
 - Freischalten (Standard ändern) ist eine eigene Entscheidung nach der Sitzung am Gerät.
 
 ## Bridge-Gate (D9)
@@ -100,6 +136,137 @@ und Leerzeichen egal), jede andere Plattform nie. Der Notaus `BRIDGE_PGM_PREVIEW
   Gate; der PR braucht dafür keine Änderung.
 - Bis die Web-App `recording` liest, sieht ein Windows-Nutzer **mit** Schalter die Aufnahme-Knöpfe und bekommt beim
   Klick `recording_unsupported`. Ohne Schalter (jedes Release) ändert sich in der Web-App nichts.
+
+## Paketierung (D10)
+
+Ob `pgm-helper.exe` zu einem Windows-Build gehört, entscheidet eine Stelle: `isWindowsPgmHelperEnabled(env)` in
+`scripts/lib/windows-pgm-helper.cjs`. `BROADIFY_PGM_WINDOWS` muss genau `1` sein; so prüfen auch
+`scripts/build-pgm-helper.sh` und `live-stream/CMakeLists.txt`. Alle Listen lesen von dort, die Bash- und
+PowerShell-Skripte über `scripts/list-windows-pgm-helper-paths.cjs`, das ohne Schalter nichts ausgibt.
+
+| Stelle | Ohne Schalter (jedes Release) | Mit `BROADIFY_PGM_WINDOWS=1` |
+|---|---|---|
+| `dist:win` → `npm run build:pgm-helper` | überspringt („Skipping PGM helper build on …“) | baut `apps/bridge/native/pgm-helper/pgm-helper.exe` über `build.ps1` |
+| `electron-builder.config.cjs`, `win.extraResources` | wie bisher | dazu `pgm-helper.exe` nach `resources/native/pgm-helper/` und die VC-Runtime in denselben Ordner |
+| Signierliste (`scripts/sign-windows-native-resources.cjs`) | `WINDOWS_NATIVE_RESOURCES` | dazu `resources/native/pgm-helper/pgm-helper.exe`; fehlt die Datei im Paket, bricht das Signieren ab |
+| VC-Runtime-Ordner (`scripts/lib/windows-vc-runtime.cjs`) und Abhängigkeitsprüfung (`scripts/verify-windows-native-dependencies.cjs`) | `native/display-helper`, `native/meeting-helper` | dazu `native/pgm-helper`; fehlt der Ordner im Paket, schlägt die Prüfung fehl |
+| `scripts/verify-release-artifacts.sh` | wie bisher | verlangt `pgm-helper.exe`: vorhanden, ausführbar, x64 |
+| Installer-Smoke-Tests (NSIS, MSI) | rufen `scripts/test-windows-pgm-helper.ps1` auf; das tut dann nichts | Datei vorhanden, VC-Runtime daneben, `pgm-helper.exe --probe` antwortet |
+| `scripts/verify-windows-release-signatures.ps1` | wie bisher | prüft `pgm-helper.exe` wie jede gepackte `.exe`, dazu die VC-Runtime im Helper-Ordner |
+| `release.yml`, `test-release.yml` | der Schritt „Install static OpenSSL (Windows, for pgm-helper, opt-in build only)“ wird übersprungen | der Schritt läuft (`scripts/prepare-windows-pgm-deps.ps1`) |
+
+- Die Release-Workflows setzen den Schalter nicht. Neu ist in beiden Dateien nur der eine Schritt mit der Bedingung
+  `env.BROADIFY_PGM_WINDOWS == '1'`.
+- Der Schalter muss für den ganzen Job gelten, nicht für einzelne Schritte: Build, Abhängigkeitsprüfung,
+  Signaturprüfung und Smoke-Tests lesen ihn jeweils selbst.
+- Er wirkt auf den ganzen Windows-Build, nicht nur auf den PGM-Helper: Auch im Build-Verzeichnis des Meeting-Helpers
+  wird `live-stream` dann mit Encoder und WebRTC-Teil konfiguriert, und `npm run test:meeting-helper-native` baut und
+  testet das mit. Deshalb steht der OpenSSL-Schritt in den Workflows vor dem ganzen Build.
+- Das macOS-Paket reagiert auf den Schalter nicht.
+- Ein Paket mit Helper bleibt aus, bis die Bridge mit `BRIDGE_PGM_WINDOWS=1` läuft (siehe „Bridge-Gate (D9)“).
+- `SKIP_PGM_HELPER_BUILD=1` zusammen mit dem Schalter lässt den Build aus; die Artefaktprüfung verlangt die Exe
+  trotzdem und bricht ab.
+- Vertragstest: `scripts/pgm-helper-windows-release-contract.test.cjs`, Teil von `test:release-contracts` und damit
+  von jedem Release-Build. Ohne Schalter enthalten Paket, Signierliste, VC-Runtime-Ordner, Abhängigkeits- und
+  Artefaktprüfung nichts vom Helper; mit Schalter kommen sie zusammen. `release.yml` nennt den Schalter nur in der
+  Bedingung des einen Schritts. Für `test-release.yml` gilt dasselbe, außer in einem Opt-in-Build (nächster
+  Abschnitt).
+- In `pgm-helper.exe` sind libdatachannel, OpenSSL und Opus statisch gelinkt. Opus steht noch nicht in `NOTICES.md`;
+  das betrifft bereits das macOS-Paket.
+
+## Opt-in-Build für die Sitzung am Gerät
+
+Drei Wege. Keiner ändert `dev`, keiner ist ein Release. Ob der Build-Schalter in einer Shell wirkt, zeigt
+`node scripts/list-windows-pgm-helper-paths.cjs`: Die Ausgabe ist `native/pgm-helper/pgm-helper.exe` oder leer.
+
+### A. Nur der Helper aus dem CI (unsigniert, ohne eigenen Build)
+Der Job `full` lädt `pgm-helper.exe` als Artefakt `pgm-helper-windows-x64-unsigned-<sha>` hoch (14 Tage).
+
+```powershell
+gh run list --workflow pgm-windows-native.yml --branch <branch> --limit 5
+gh run download <run-id> --name pgm-helper-windows-x64-unsigned-<sha> --dir C:\broadify-pgm
+```
+
+- Die Exe braucht die VC-Runtime. Mit Visual Studio oder dem VC++-Redistributable ist sie auf dem Rechner; sonst die
+  DLLs aus `scripts/lib/windows-vc-runtime.cjs` daneben legen.
+- Die Bridge findet die Exe über `BRIDGE_PGM_HELPER_PATH` (siehe „Laufzeit-Schalter setzen“).
+- Reicht für alles, was nur den PGM-Helper betrifft (Runbook-Abschnitte 2, 3, 5 bis 9 und 13). Das Meeting-Programm
+  (Abschnitte 4 und 12) braucht einen Meeting-Helper aus einem Build mit Schalter, also Weg B oder C; die Signatur
+  (10) und der Start aus dem Paket (11) brauchen Weg C.
+
+### B. Dev-Build auf dem Windows-Rechner
+Die Befehle stehen unter „Build“. Nur so läuft ctest gegen den Hardware-MFT (Runbook, Abschnitt 1).
+
+Ein unsignierter Installer entsteht daraus, wenn alles vorbereitet ist, was `dist:win` auch ohne Schalter braucht
+(`docs/windows-build-guide.md`; `docs/signing/windows-signing.md`, Abschnitt 4). Dieser Ablauf ist noch nie
+gelaufen:
+
+```powershell
+# Developer PowerShell for VS 2022, im Repo
+$env:BROADIFY_PGM_WINDOWS = "1"
+$env:BROADIFY_ALLOW_UNSIGNED_WINDOWS_BUILD = "1"
+.\scripts\prepare-windows-pgm-deps.ps1
+npm run dist:win
+```
+
+### C. Signierter Installer aus der Test-Pipeline
+`test-release.yml` baut, signiert und prüft wie ein Release, veröffentlicht aber nichts. Der Schalter wird dort auf
+einem Wegwerf-Branch gesetzt, der nie nach `dev` gemergt wird:
+
+```bash
+git fetch origin
+git switch -c test-release/pgm-windows origin/dev   # oder der Stand, der alle D-Einheiten enthält
+```
+
+In `.github/workflows/test-release.yml` im Block `env:` des Jobs `build` eine Zeile ergänzen, sechs Leerzeichen
+eingerückt wie `GYP_MSVS_VERSION`:
+
+```yaml
+      BROADIFY_PGM_WINDOWS: "1"
+```
+
+```bash
+BROADIFY_PGM_WINDOWS=1 npm run test:release-contracts   # grün
+npm run test:release-contracts                           # auf diesem Branch mit Absicht rot
+git commit -am "ci(test-release): build with the Windows live program switch (never merge)"
+git push origin test-release/pgm-windows
+gh run list --workflow test-release.yml --branch test-release/pgm-windows --limit 1
+gh run watch <run-id>
+gh run download <run-id> --name test-win-x64 --dir dist-pgm-windows
+```
+
+- Der Vertragstest erlaubt die Zeile nur in `test-release.yml`, nur für den ganzen Job und nur, wenn er selbst mit
+  dem Schalter läuft; in diesem Build ist das so. Ohne Schalter ist er rot, also auch in jedem Release-Build: Die
+  Zeile kann nicht unbemerkt auf `dev` liegen. `release.yml` darf den Schalter nie setzen.
+- Der Lauf baut `pgm-helper.exe`, packt, signiert und prüft sie wie in der Tabelle unter „Paketierung (D10)“. Das
+  Ergebnis ist der RC-Installer (NSIS und MSI) mit Helper.
+- Der erste Lauf dieser Art ist zugleich der erste Durchlauf von `dist:win` mit Schalter. Schlägt er fehl, ist das
+  ein Befund für „Stand der Prüfung“.
+- Nach der Sitzung den Branch löschen.
+
+### Laufzeit-Schalter setzen
+Auch ein Paket mit Helper bleibt aus, bis die Bridge den Laufzeit-Schalter sieht.
+
+- Installierte Bridge: in `userData\.env` (RC-Kanal: `%APPDATA%\Broadify Bridge RC\.env`, siehe
+  `docs/bridge/USERDATA_ON_REINSTALL.md`):
+
+  ```
+  BRIDGE_PGM_WINDOWS=1
+  BRIDGE_LOG_PERF=1
+  BROADIFY_DISABLE_AUTO_UPDATE=1
+  ```
+
+  Ohne die letzte Zeile ersetzt das nächste reguläre RC den Test-Build, und das enthält keinen Helper. Für Weg A
+  kommt `BRIDGE_PGM_HELPER_PATH=C:\broadify-pgm\pgm-helper.exe` dazu.
+- Dev-Build: die Umgebungsvariablen am Ende von „Build“.
+- Kontrolle im installierten Paket (Weg C):
+
+  ```powershell
+  $helper = "$env:ProgramFiles\BroadifyBridgeRC\resources\native\pgm-helper\pgm-helper.exe"
+  Test-Path $helper
+  & $helper --probe
+  Get-AuthenticodeSignature $helper | Format-List Status, SignerCertificate
+  ```
 
 ## Build
 
@@ -366,11 +533,17 @@ bevor weiterprobiert wird.
 - [ ] Stoppuhr-/Timecode-Quelle für die Latenzmessung (Uhr mit Millisekunden auf einem Bildschirm, Kamera darauf).
 - [ ] Klappe oder Klatschen für Lippensynchronität.
 - [ ] Branch-Stand: alle D-Einheiten gemergt oder ein Sammel-Branch; Commit-Hash notieren.
+- [ ] Build nach „Opt-in-Build für die Sitzung am Gerät“: Weg B auf dem Rechner, für die Abschnitte 10 und 11
+      zusätzlich der Installer aus Weg C.
 
 ### 1. Einrichtung
 - [ ] Grafiktreiber aktuell; Version notieren (`dxdiag` → Anzeige, oder Geräte-Manager).
 - [ ] Build wie oben mit `BROADIFY_PGM_WINDOWS=1`; ctest-Ergebnis notieren (übersprungene Tests ausdrücklich).
 - [ ] Der Encoder-Smoke-Test läuft auf diesem Rechner **nicht** als „übersprungen“, sondern gegen den Hardware-MFT.
+      Seine Ausgabe nennt den MFT und die angenommenen Einstellungen (`mf_encoder_smoke_test encoder: <Name>
+      (<Hersteller>) settings {…}`); sichern mit
+      `ctest --test-dir apps\bridge\native\pgm-helper\build --build-config Release -R mf_encoder_smoke_test --verbose`.
+      Das ist die Quelle für die Spalte „MFT-Name“ in Abschnitt 3: Der Helper selbst gibt den Namen nicht aus.
 - [ ] Gegenprobe Schalter aus: Bridge ohne `BRIDGE_PGM_WINDOWS` starten → `get_status.capabilities.live_program.supported`
       ist `false`, Web-App zeigt das Fenster nicht bzw. den bekannten Hinweis; kein `pgm-helper.exe` im Task-Manager.
 - [ ] Bridge mit `BRIDGE_PGM_WINDOWS=1` starten → `supported: true`, `recording` aus.
@@ -379,14 +552,20 @@ bevor weiterprobiert wird.
 ```powershell
 .\apps\bridge\native\pgm-helper\pgm-helper.exe --probe
 ```
-- [ ] Ausgabe ist eine JSON-Zeile `{"type":"probe","inputs":[…],"encoder":…}`; Encoder-Name ist ein Hardware-MFT
-      (z. B. NVIDIA-, Intel-Quick-Sync- oder AMD-MFT), nicht der Microsoft-Software-Encoder.
+- [ ] Ausgabe ist eine JSON-Zeile
+      `{"type":"probe","inputs":{"inputs":[…],"camera_permission":"…"},"encoder":"mediafoundation"}`.
+      `encoder` nennt nur das Backend und steht fest: `--probe` öffnet kein Gerät und sucht keinen Encoder. Der Name
+      des MFT kommt aus dem Smoke-Test (Abschnitt 1), der gewählte UVC-Modus aus `pgm_uvc_mode_selected` (Abschnitt 5).
+- [ ] `camera_permission` passt zur Datenschutzeinstellung des Rechners (`authorized`, sonst `denied` oder
+      `restricted`).
 - [ ] Angeschlossene UVC-Geräte erscheinen mit stabilen Schlüsseln; zweimal ausführen, Schlüssel bleiben gleich.
 - [ ] Ohne angeschlossenes Gerät: leere Liste, Exit-Code 0, kein Absturz.
 - [ ] Exit-Code und Laufzeit notieren (soll unter wenigen Sekunden bleiben).
 
 ### 3. Hardware-Matrix Encoder
-Je Rechner mit `BRIDGE_PGM_SYNTHETIC_SOURCE=1920x1080@60` (kein Gerät nötig) und einem Zuschauer:
+Je Rechner mit `BRIDGE_PGM_SYNTHETIC_SOURCE=1920x1080@60` und einem Zuschauer. Die synthetische Quelle braucht kein
+Gerät; unter Windows liefert sie NV12 im Systemspeicher (seit D7). Der MFT-Name kommt aus dem Smoke-Test
+(Abschnitt 1):
 
 | GPU | Treiber | MFT-Name | 1080p60 ok | Low-Latency ok | Keyframe auf PLI | CPU Helper % | Bemerkung |
 |---|---|---|---|---|---|---|---|
@@ -396,8 +575,9 @@ Je Rechner mit `BRIDGE_PGM_SYNTHETIC_SOURCE=1920x1080@60` (kein Gerät nötig) u
 | Hybrid-Laptop (iGPU aktiv) |  |  |  |  |  |  |  |
 | Hybrid-Laptop (dGPU erzwungen) |  |  |  |  |  |  |  |
 
-- [ ] `pgm_encoder_configured` nennt Encoder, Auflösung, Bitrate; `pgm_perf` (`BRIDGE_LOG_PERF=1`) zeigt
-      Kodier-fps = Quell-fps, keine wachsenden Drops.
+- [ ] `pgm_encoder_configured` nennt Auflösung, Bildrate und Bitrate; `pgm.status` zeigt `encoder.backend`
+      `mediafoundation` und `encoder.hardware` `true`. `pgm_perf` (`BRIDGE_LOG_PERF=1`) zeigt Kodier-fps = Quell-fps,
+      keine wachsenden Drops.
 - [ ] Keine B-Frames: Bild im Browser läuft ohne Sprünge; `chrome://webrtc-internals` zeigt gleichmäßige
       `framesDecoded`, keine wachsenden `framesDropped`.
 - [ ] Neuer Zuschauer bekommt sofort ein Bild (Keyframe bei Beitritt); Tab neu laden → Bild in unter 1 s.
@@ -491,11 +671,14 @@ Je Gerät (ATEM Mini, RØDECaster Video, Webcam):
 - [ ] Letzter Zuschauer geht: Encoder stoppt (`pgm_perf` ohne Kodier-fps), CPU fällt.
 
 ### 10. Signatur und Smart App Control
-- [ ] Installer aus einem Build mit `BROADIFY_PGM_WINDOWS=1` (signiert über die normale Pipeline, **kein**
-      Release): `Get-AuthenticodeSignature` für `pgm-helper.exe` und `meeting-helper.exe` → `Valid`, Aussteller wie
-      die übrigen Helper.
-- [ ] `scripts/verify-windows-release-signatures.ps1` und `scripts/verify-windows-native-dependencies.cjs` laufen
-      durch; `pgm-helper.exe` importiert nur erlaubte DLLs (keine OpenSSL-DLL, VC-Runtime wie die anderen Helper).
+- [ ] Installer aus einem Build mit `BROADIFY_PGM_WINDOWS=1` (signiert über die Test-Pipeline, **kein** Release;
+      Weg C unter „Opt-in-Build für die Sitzung am Gerät“): `Get-AuthenticodeSignature` für `pgm-helper.exe` und
+      `meeting-helper.exe` → `Valid`, Aussteller wie die übrigen Helper.
+- [ ] Im Lauf der Test-Pipeline sind die Schritte „Verify Windows native helper dependencies (dumpbin)“, „Verify
+      Windows signatures“ und beide Smoke-Tests grün. Im Log stehen `Verifying signature: …\pgm-helper.exe`, die
+      VC-Runtime unter `native\pgm-helper` (`Verified Microsoft signature: …`) und je Smoke-Test
+      `[PgmHelper] Probe passed …`. `pgm-helper.exe` importiert damit nur erlaubte DLLs (keine OpenSSL-DLL,
+      VC-Runtime wie die anderen Helper).
 - [ ] Rechner mit Smart App Control im Modus „Ein“ (frische Windows-11-Installation): Helper startet, kein Block.
       Falls geblockt: Ereignisanzeige → CodeIntegrity sichern.
 - [ ] SmartScreen/Defender: keine Warnung beim ersten Start des Helpers.

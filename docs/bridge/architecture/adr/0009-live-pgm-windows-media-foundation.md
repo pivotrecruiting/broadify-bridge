@@ -33,8 +33,8 @@ Aufnahme (ADR-0006).
   noch über RPC.
 - Die Auswahl- und Fehlerlogik (Reihenfolge der Kandidaten, Abbruchgründe) liegt in einem reinen Policy-Modul, das
   auf macOS mit einem Fake getestet wird.
-- Der Name des gewählten MFT wird gemeldet (`EncoderInfo.name`, `--probe`), damit der Gerätetest die Hardware-Matrix
-  belegen kann.
+- Der Name des gewählten MFT wird gemeldet (`EncoderInfo.name`), damit der Gerätetest die Hardware-Matrix belegen
+  kann. `--probe` nennt nur das Backend: Es sucht keinen Encoder.
 
 ### 2. Eingabe: NV12 im Systemspeicher, kein D3D-Manager in v1
 - v1 übergibt dem MFT `IMFMediaBuffer` im Systemspeicher (NV12). Kein `IMFDXGIDeviceManager`, keine D3D11-Texturen.
@@ -59,7 +59,9 @@ Aufnahme (ADR-0006).
   Media Foundation dekodieren (Source Reader mit Videoverarbeitung bzw. MJPEG-Decoder-MFT) und NV12 liefern.
 - Das ist keine Ausnahme von „kein Software-Encoder“: Die Regel betrifft die **Kodierung** des Streams. Bevorzugt
   bleibt ein unkomprimierter nativer Modus (NV12, YUY2, UYVY) gleicher Auflösung und Rate; MJPG wird nur gewählt,
-  wenn sonst Auflösung oder Bildrate verloren ginge. Der gewählte Modus steht im Status und in `--probe`.
+  wenn sonst Auflösung oder Bildrate verloren ginge. Der gewählte Modus steht im Ereignis `pgm_uvc_mode_selected`
+  und im Signal (`pgm_signal`, `pgm_status.signal`; bei MJPG mit `"decode":"mjpg"`). `--probe` nennt ihn nicht: Es
+  öffnet kein Gerät.
 
 ### 5. TLS: OpenSSL statisch, dasselbe Backend wie macOS
 - libdatachannel linkt unter Windows OpenSSL statisch aus vcpkg (Triplet `x64-windows-static-md`: statische
