@@ -4,7 +4,9 @@ name: PGM Windows Native
 # docs/bridge/features/pgm-live-preview-windows.md). Runs on the stacked
 # feature/pgm-win-* branches and manually; it never builds or publishes a
 # release. Green here means "compiles and the tests pass on a hosted runner",
-# not "verified on hardware".
+# not "verified on hardware". One job runs on macOS: the chain changes the
+# meeting helper's program stream there too, and its tests are a gate of the
+# macOS release build.
 #
 # Jobs:
 #   core     pure modules only (pgm_core, live_stream_core, helper_common):
@@ -41,6 +43,12 @@ name: PGM Windows Native
 #              tests (the worker end to end against an in-process viewer; on
 #              this GPU-less runner the real encoder path must end in
 #              `encoder_unavailable`).
+#   meeting-macos  what `dist:mac:arm64` runs for the meeting helper, on the
+#            runner image of the release: `npm run build:meeting-helper`, then
+#            `npm run test:meeting-helper-native`. The stream tests in there
+#            judge by CPU time and wall-clock limits and connect over local
+#            ICE; they run ten more times in a row afterwards, so that one
+#            green job says something about the release gate.
 
 on:
   workflow_dispatch:
@@ -845,3 +853,80 @@ jobs:
             throw "meeting-helper was built WITHOUT the OpenVINO backend (its archive was unreachable): not the release configuration. Re-run the job."
           }
           Write-Host "MEETING_HELPER_ENABLE_MODNET=$env:MEETING_HELPER_ENABLE_MODNET MEETING_HELPER_ENABLE_OPENVINO=$env:MEETING_HELPER_ENABLE_OPENVINO, as dist:win sets them"
+
+  # The macOS release build (release.yml: `npm run dist:mac:arm64` on macos-15)
+  # builds the meeting helper and then runs its native tests; a failing test
+  # stops the release. Since the program stream fixes those tests include
+  # program_stream_idle_test and the two loopback tests: assertions on CPU time
+  # and wall-clock limits, and a WebRTC connection over local ICE, on a hosted
+  # runner they had never run on. This job runs the two commands of the release
+  # for the helper, in its order, on the same runner image.
+  #
+  # Same as the release: runner image, Node 22, the image's Xcode, CMake and
+  # Homebrew openssl@3 (the release has no install step for it either), the
+  # helper's deployment target 13.0 from its CMakeLists.txt, MODNet off (set by
+  # scripts/build-meeting-helper.sh on macOS), a serial build, libdatachannel
+  # fetched while configuring.
+  # Different from the release, and why it does not matter for these tests:
+  # - Nothing else of dist:mac:arm64 runs (CoreML model, the other helpers,
+  #   Electron packaging, artifact verification). The model needs a secret URL;
+  #   it is a packaging resource that neither the helper's build nor ctest
+  #   reads.
+  # - No `npm ci`: the two scripts call a shell script, cmake and ctest.
+  # - No signing certificate: build.sh signs the helper's app bundle ad hoc
+  #   instead of with the Developer ID. The test executables are not signed by
+  #   it in either case.
+  meeting-macos:
+    name: meeting-macos (release gate of dist:mac)
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Tool versions and the image's OpenSSL
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          cmake --version
+          echo "node $(node --version), npm $(npm --version)"
+          echo "cpus: $(sysctl -n hw.ncpu), $(sysctl -n machdep.cpu.brand_string)"
+          # live-stream links Homebrew's static openssl@3 from this path.
+          if [[ ! -f /opt/homebrew/opt/openssl@3/lib/libssl.a ]]; then
+            echo "::error::Homebrew openssl@3 is not on this runner image; dist:mac would stop at the same point"
+            exit 1
+          fi
+          brew list --versions openssl@3 || true
+
+      # No parallel build level, as in a release: make runs one job at a time.
+      - name: Build the meeting helper (release command)
+        run: |
+          set -euo pipefail
+          unset CMAKE_BUILD_PARALLEL_LEVEL
+          npm run build:meeting-helper
+
+      - name: Build all targets and test (release command)
+        run: |
+          set -euo pipefail
+          unset CMAKE_BUILD_PARALLEL_LEVEL
+          npm run test:meeting-helper-native
+
+      # Verbose: the log shows the CPU shares the tests measured and whether
+      # this runner has a hardware H.264 encoder (without one the stream must
+      # report `encoder_unavailable` and encode nothing).
+      - name: Stream tests, ten more runs in a row
+        run: |
+          set -euo pipefail
+          ctest --test-dir "$MEETING_HELPER_DIR/build" --build-config Release \
+            -R '^(program_stream_idle_test|program_stream_loopback_test|program_stream_nv12_loopback_test)$' \
+            --repeat until-fail:10 --no-tests=error --verbose

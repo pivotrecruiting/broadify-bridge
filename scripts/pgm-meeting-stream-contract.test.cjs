@@ -326,6 +326,43 @@ test("the Windows workflow builds and tests the meeting helper in both configura
   assert.match(switched, /ctest --test-dir "\$env:MEETING_HELPER_DIR\/build"/);
 });
 
+test("the workflow runs the macOS release gate of the meeting helper on the release's runner image", () => {
+  const workflow = read(".github/workflows/pgm-windows-native.yml");
+  const job = workflowJob(workflow, "meeting-macos");
+  const code = stripHashComments(job);
+  // The runner image dist:mac:arm64 is built on.
+  assert.match(code, /\n    runs-on: macos-15\n/);
+  assert.match(
+    read(".github/workflows/release.yml"),
+    /\n {10}- os: macos-15\n(?: {12}.*\n)*? {12}dist_script: dist:mac:arm64\n/,
+  );
+  // The two commands of the release for the helper, in its order ...
+  const distMac = JSON.parse(read("package.json")).scripts["dist:mac:arm64"];
+  assert.match(distMac, /npm run build:meeting-helper && npm run test:meeting-helper-native &&/);
+  const build = code.indexOf("\n          npm run build:meeting-helper\n");
+  const buildAllAndTest = code.indexOf("\n          npm run test:meeting-helper-native\n");
+  assert.ok(build >= 0 && buildAllAndTest > build, "build, then build all targets and test");
+  assert.equal((code.match(/\bnpm run\b/g) || []).length, 2);
+  // ... serially, without a parallel level from this workflow's environment,
+  assert.equal((code.match(/\n {10}unset CMAKE_BUILD_PARALLEL_LEVEL\n/g) || []).length, 2);
+  // and nothing that would make the job differ from the release where it can
+  // decide a test: no other way to build the helper, no switch of its own, no
+  // dependency the release does not install, no secret, no tolerated failure.
+  assert.doesNotMatch(
+    code,
+    /cmake --build|build\.sh|MEETING_HELPER_ENABLE_|brew install|--parallel|\bsecrets\.|continue-on-error|\n {4}env:|\n {8}env:|\n {8}if:/,
+  );
+  // Afterwards the stream tests with CPU-time and wall-clock assertions run
+  // ten more times in a row, failing at the first failure.
+  const repeat = code.slice(buildAllAndTest);
+  assert.match(repeat, /ctest --test-dir "\$MEETING_HELPER_DIR\/build" --build-config Release /);
+  assert.match(repeat, /--repeat until-fail:10 --no-tests=error/);
+  assert.match(
+    repeat,
+    /-R '\^\(program_stream_idle_test\|program_stream_loopback_test\|program_stream_nv12_loopback_test\)\$'/,
+  );
+});
+
 test("the release contract suite runs these checks", () => {
   const packageJson = JSON.parse(read("package.json"));
   assert.match(
