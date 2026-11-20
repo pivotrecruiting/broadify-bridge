@@ -36,4 +36,12 @@ void runPlatformLoop(std::atomic<bool> &running);
 /** JSON value of the `encoder` field in the --probe line. */
 std::string probeEncoderJson();
 
+/**
+ * JSON value of the `encoder_candidates` field in the --probe line: the
+ * hardware encoders the platform enumerates, in the order the encoder tries
+ * them, `null` when the enumeration fails. Enumeration only, nothing is
+ * opened. Empty where the platform has no such list (macOS): no field.
+ */
+std::string probeEncoderCandidatesJson();
+
 }  // namespace broadify::pgm

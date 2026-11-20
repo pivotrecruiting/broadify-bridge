@@ -2,6 +2,7 @@
 
 #include "capture/snapshot.h"
 #include "live_stream/monotonic_clock.h"
+#include "common/encoder_info_json.h"
 #include "common/pgm_options.h"
 #include "helper_common/helper_event_log.h"
 #include "helper_common/json_utils.h"
@@ -125,8 +126,10 @@ std::string PgmEngine::statusJsonLocked() const {
       << ",\"signal\":" << (hasInput_ ? signalJsonLocked() : "null") << ",\"encoder\":";
   if (encoderConfigured_ && encoder_) {
     const EncoderInfo info = encoder_->info();
+    // The encoder's identity (name, vendor, settings that took effect) follows the keys that were always there.
     out << "{\"backend\":\"" << jsonEscape(info.backend) << "\",\"hardware\":" << (info.hardware ? "true" : "false")
-        << ",\"bitrate_kbps\":" << target_.bitrateKbps << ",\"profile\":\"" << jsonEscape(target_.profileName) << "\"}";
+        << ",\"bitrate_kbps\":" << target_.bitrateKbps << ",\"profile\":\"" << jsonEscape(target_.profileName) << "\""
+        << encoderDetailJsonMembers(info) << "}";
   } else {
     out << "null";
   }
@@ -225,6 +228,7 @@ void PgmEngine::selectSource(const std::string &inputId, const std::string &prof
     lastErrorMessage_.clear();
     tracker_ = VideoSignalTracker();
     encoderConfigured_ = false;
+    encoderRetry_.reset();
     source_ = std::move(source);
     if (!source_->start([this](const CapturedFrame &frame) { onFrame(frame); }, errorCode, error)) {
       source_.reset();
@@ -249,14 +253,21 @@ void PgmEngine::clearSource() {
   }
   std::unique_ptr<VideoSource> source;
   std::unique_ptr<VideoEncoder> encoder;
+  std::unique_ptr<AudioSource> audio;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     source = std::move(source_);
     encoder = std::move(encoder_);
-    stopAudioLocked();
+    audio = detachAudioLocked();
     hasInput_ = false;
     encoderConfigured_ = false;
+    encoderRetry_.reset();
     tracker_ = VideoSignalTracker();
+  }
+  if (audio) {
+    // Outside mutex_, like the video source: stop() may wait for a sink call
+    // in flight, and that call takes the mutex.
+    audio->stop();
   }
   if (source) {
     source->stop();
@@ -296,13 +307,10 @@ void PgmEngine::startAudioLocked(const VideoInputInfo &video) {
   audioRunning_ = true;
 }
 
-void PgmEngine::stopAudioLocked() {
-  if (audioSource_) {
-    audioSource_->stop();
-    audioSource_.reset();
-  }
+std::unique_ptr<AudioSource> PgmEngine::detachAudioLocked() {
   opus_.reset();
   audioRunning_ = false;
+  return std::move(audioSource_);
 }
 
 bool PgmEngine::ensureEncoderForSignalLocked(std::string &errorCode, std::string &error) {
@@ -315,25 +323,37 @@ bool PgmEngine::ensureEncoderForSignalLocked(std::string &errorCode, std::string
       target.fpsNum == target_.fpsNum && target.fpsDen == target_.fpsDen) {
     return true;
   }
+  if (!encoderRetry_.attemptDue(target, monotonicNowNs())) {
+    // This setup failed a moment ago and the failure is reported; no error code, the caller only drops the frame.
+    return false;
+  }
   if (!encoder_) {
     encoder_ = createHardwareEncoder();
     if (!encoder_) {
       errorCode = "encoder_unavailable";
       error = "No hardware encoder on this platform.";
+      encoderRetry_.onFailure(target, monotonicNowNs());
       return false;
     }
     encoder_->onAccessUnit = [this](EncodedAccessUnit &&unit) { onAccessUnit(std::move(unit)); };
   }
   if (!encoder_->configure(target, errorCode, error)) {
     encoderConfigured_ = false;
+    // The interval counts from the end of the attempt: a setup that fails slowly is not tried again at once.
+    encoderRetry_.onFailure(target, monotonicNowNs());
     return false;
   }
   target_ = target;
   encoderConfigured_ = true;
+  encoderRetry_.reset();
   keyframeWanted_.store(true);
+  // Says which encoder was picked; on Windows that is the encoder MFT the search ended up with.
+  const EncoderInfo info = encoder_->info();
   emitHelperEvent("{\"type\":\"pgm_encoder_configured\",\"width\":" + std::to_string(target.width) + ",\"height\":" +
                   std::to_string(target.height) + ",\"fps_num\":" + std::to_string(target.fpsNum) + ",\"fps_den\":" +
-                  std::to_string(target.fpsDen) + ",\"bitrate_kbps\":" + std::to_string(target.bitrateKbps) + "}");
+                  std::to_string(target.fpsDen) + ",\"bitrate_kbps\":" + std::to_string(target.bitrateKbps) +
+                  ",\"backend\":\"" + jsonEscape(info.backend) + "\",\"hardware\":" + (info.hardware ? "true" : "false") +
+                  encoderDetailJsonMembers(info) + "}");
   return true;
 }
 
@@ -357,6 +377,8 @@ void PgmEngine::onFrame(const CapturedFrame &frame) {
       emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJsonLocked() + "}");
       std::string code;
       std::string error;
+      // A changed signal is tried at once, whatever failed before.
+      encoderRetry_.reset();
       if (!ensureEncoderForSignalLocked(code, error) && !code.empty()) {
         setErrorLocked(code, error);
       } else if (!lastErrorCode_.empty() && code.empty()) {
@@ -367,6 +389,8 @@ void PgmEngine::onFrame(const CapturedFrame &frame) {
     }
     if (!encoderConfigured_) {
       // Frame rate not measured yet (first frames) or encoder failed: nothing to encode into.
+      // A failed setup is not repeated on every frame: without a signal change it is tried
+      // again once per kEncoderRetryIntervalNs (common/encoder_retry_backoff.h).
       std::string code;
       std::string error;
       if (ensureEncoderForSignalLocked(code, error)) {

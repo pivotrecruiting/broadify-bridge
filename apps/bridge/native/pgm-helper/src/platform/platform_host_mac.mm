@@ -65,4 +65,7 @@ void runPlatformLoop(std::atomic<bool> &running) { runMacosApplicationLoop(runni
 
 std::string probeEncoderJson() { return "\"videotoolbox\""; }
 
+// VideoToolbox picks its hardware encoder itself; there is no candidate list to report.
+std::string probeEncoderCandidatesJson() { return ""; }
+
 }  // namespace broadify::pgm

@@ -28,6 +28,7 @@ class AudioSource {
  public:
   virtual ~AudioSource() = default;
   virtual bool start(AudioSink sink, std::string &errorCode, std::string &error) = 0;
+  /** Ends delivery. A backend may wait here for a sink call in flight: never call it under a lock the sink takes. */
   virtual void stop() = 0;
 };
 

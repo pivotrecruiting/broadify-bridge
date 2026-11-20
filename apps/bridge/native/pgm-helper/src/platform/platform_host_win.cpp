@@ -8,20 +8,26 @@
 
 #include "platform/platform_host.h"
 
+#include "common/encoder_info_json.h"
 #include "helper_common/helper_event_log.h"
 #include "helper_common/path_utf8.h"
+#include "live_stream/mf_encoder_policy.h"
 
 #include <windows.h>
 
 #include <mfapi.h>
+#include <mfobjects.h>
+#include <mftransform.h>
 #include <objbase.h>
 #include <shellapi.h>
 
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <thread>
+#include <utility>
 
 namespace broadify::pgm {
 namespace {
@@ -129,6 +135,48 @@ void runPlatformLoop(std::atomic<bool> &running) {
 }
 
 std::string probeEncoderJson() { return "\"mediafoundation\""; }
+
+// The hardware H.264 encoder MFTs this machine offers, for --probe. Enumeration
+// only: no transform is activated, so nothing is opened on the GPU. Category,
+// flags and types are the ones the encoder itself enumerates with
+// (live-stream/src/mf_encoder.cpp), and the list is put into the order the
+// encoder tries it, BRIDGE_PGM_ENCODER_VENDOR included. Hardware only, like
+// the encoder: a software encoder MFT never shows up here.
+std::string probeEncoderCandidatesJson() {
+  std::vector<broadify::live::EncoderCandidateInfo> candidates;
+  MFT_REGISTER_TYPE_INFO inputType = {MFMediaType_Video, MFVideoFormat_NV12};
+  MFT_REGISTER_TYPE_INFO outputType = {MFMediaType_Video, MFVideoFormat_H264};
+  IMFActivate **activates = nullptr;
+  UINT32 count = 0;
+  const HRESULT hr = MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
+                               &inputType, &outputType, &activates, &count);
+  if (FAILED(hr)) {
+    return "null";
+  }
+  for (UINT32 index = 0; index < count; ++index) {
+    IMFActivate *activate = activates[index];
+    if (activate == nullptr) {
+      continue;
+    }
+    broadify::live::EncoderCandidateInfo candidate;
+    wchar_t *text = nullptr;
+    UINT32 length = 0;
+    if (SUCCEEDED(activate->GetAllocatedString(MFT_FRIENDLY_NAME_Attribute, &text, &length)) && text != nullptr) {
+      candidate.name = broadify::helper::wideToUtf8(text);
+      CoTaskMemFree(text);
+    }
+    text = nullptr;
+    if (SUCCEEDED(activate->GetAllocatedString(MFT_ENUM_HARDWARE_VENDOR_ID_Attribute, &text, &length)) && text != nullptr) {
+      candidate.vendorId = broadify::helper::wideToUtf8(text);
+      CoTaskMemFree(text);
+    }
+    activate->Release();
+    candidates.push_back(std::move(candidate));
+  }
+  CoTaskMemFree(activates);
+  const char *vendor = std::getenv("BRIDGE_PGM_ENCODER_VENDOR");
+  return encoderCandidatesJson(candidates, broadify::live::parseEncoderVendor(vendor != nullptr ? vendor : ""));
+}
 
 }  // namespace broadify::pgm
 
