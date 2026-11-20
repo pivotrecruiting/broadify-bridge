@@ -4144,6 +4144,120 @@ describe("electron-renderer-entry", () => {
     );
   });
 
+  describe("layer canvas", () => {
+    const CANVAS = { width: 1080, height: 1920 };
+    // Byte for byte what the page was handed before the field existed.
+    const BASELINE_SCRIPT =
+      'window.__createLayer({"layerId":"layer-1","html":"<div>test</div>","css":"",' +
+      '"values":{},"bindings":{},"layout":{"x":0,"y":0,"scale":1},' +
+      '"backgroundMode":"transparent","zIndex":0});';
+    const CANVAS_SCRIPT =
+      'window.__createLayer({"layerId":"layer-1","html":"<div>test</div>","css":"",' +
+      '"values":{},"bindings":{},"layout":{"x":0,"y":0,"scale":1},' +
+      '"backgroundMode":"transparent","zIndex":0,"canvas":{"width":1080,"height":1920}});';
+
+    const createLayerScripts = (): string[] =>
+      mockExecuteJS.mock.calls
+        .map(([script]) => String(script))
+        .filter((script) => script.includes("__createLayer"));
+
+    /** Waits until the page got `count` __createLayer calls (or times out). */
+    const waitForCreateLayerScripts = async (count: number): Promise<string[]> => {
+      const deadline = Date.now() + 2000;
+      while (createLayerScripts().length < count && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      return createLayerScripts();
+    };
+
+    beforeEach(() => {
+      mockLoadFrameBusModule.mockReturnValue({
+        createWriter: () => ({
+          name: "/test-shm",
+          size: 16588928,
+          header: {
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            slotCount: 2,
+            pixelFormat: 1,
+            seq: 0n,
+          },
+          writeFrame: jest.fn(),
+          close: jest.fn(),
+        }),
+      });
+    });
+
+    // The first layer reaches the page twice: the freshly created window
+    // replays the stored snapshots, then the create itself runs.
+    it("hands the page the unchanged payload for a layer without a canvas", async () => {
+      await bootRendererWithPackets([
+        { type: "renderer_configure", ...validFrameBusConfig },
+        { type: "create_layer", ...validLayerPayload },
+      ]);
+
+      expect(await waitForCreateLayerScripts(2)).toEqual([
+        BASELINE_SCRIPT,
+        BASELINE_SCRIPT,
+      ]);
+      expect(mockPinoInfo).toHaveBeenCalledWith(
+        expect.not.objectContaining({ canvas: expect.anything() }),
+        "[GraphicsRenderer] create_layer rendered",
+      );
+    });
+
+    it("hands the page the canvas of the layer", async () => {
+      await bootRendererWithPackets([
+        { type: "renderer_configure", ...validFrameBusConfig },
+        { type: "create_layer", ...validLayerPayload, canvas: CANVAS },
+      ]);
+
+      expect(await waitForCreateLayerScripts(2)).toEqual([
+        CANVAS_SCRIPT,
+        CANVAS_SCRIPT,
+      ]);
+      expect(mockPinoInfo).toHaveBeenCalledWith(
+        expect.objectContaining({ layerId: "layer-1", canvas: CANVAS }),
+        "[GraphicsRenderer] create_layer rendered",
+      );
+    });
+
+    it("replays the canvas when the offscreen window is recreated", async () => {
+      await bootRendererWithPackets([
+        { type: "renderer_configure", ...validFrameBusConfig },
+        { type: "create_layer", ...validLayerPayload, canvas: CANVAS },
+      ]);
+      await waitForCreateLayerScripts(2);
+      mockExecuteJS.mockClear();
+
+      renderProcessGoneHandlers[0]({}, { reason: "crashed" });
+
+      // Without the canvas in the snapshot the replayed layer would come
+      // back in the 1920x1080 box.
+      expect(await waitForCreateLayerScripts(1)).toEqual([CANVAS_SCRIPT]);
+      expect(mockBrowserWindow).toHaveBeenCalledTimes(2);
+    });
+
+    it("drops the canvas from the replay once the layer is sent without one", async () => {
+      await bootRendererWithPackets([
+        { type: "renderer_configure", ...validFrameBusConfig },
+        { type: "create_layer", ...validLayerPayload, canvas: CANVAS },
+        { type: "create_layer", ...validLayerPayload },
+      ]);
+      expect(await waitForCreateLayerScripts(3)).toEqual([
+        CANVAS_SCRIPT,
+        CANVAS_SCRIPT,
+        BASELINE_SCRIPT,
+      ]);
+      mockExecuteJS.mockClear();
+
+      renderProcessGoneHandlers[0]({}, { reason: "crashed" });
+
+      expect(await waitForCreateLayerScripts(1)).toEqual([BASELINE_SCRIPT]);
+    });
+  });
+
   it("exits the process on the second render-process-gone within 60s", async () => {
     const exitSpy = jest
       .spyOn(process, "exit")
