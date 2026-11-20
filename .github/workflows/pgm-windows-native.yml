@@ -28,11 +28,14 @@ name: PGM Windows Native
 #            opus) are cached.
 #   meeting  meeting-helper.exe in both configurations, each with its ctest
 #            run, the way `dist:win` builds and tests it (matting backends on:
-#            vendored ONNX Runtime, OpenVINO from the release's own script):
-#            - default: no switch, exactly the release's two commands. Stub
-#              program stream, nothing of the live program configured. This
-#              is the Windows compile of every change under meeting-helper,
-#              whichever branch it comes from.
+#            vendored ONNX Runtime, OpenVINO from the release's own script; a
+#            leg that had to build without OpenVINO ends red and says so in
+#            the job summary):
+#            - default: no switch, exactly the release's two commands, built
+#              serially as a release does. Stub program stream, nothing of
+#              the live program configured. This is the Windows compile of
+#              every change under meeting-helper, whichever branch it comes
+#              from.
 #            - BROADIFY_PGM_WINDOWS=1: program_stream.cpp + NV12 frame
 #              converter + WebRTC linked into the helper, plus the stream
 #              tests (the worker end to end against an in-process viewer; on
@@ -611,9 +614,10 @@ jobs:
 
       # The release's own script: pinned archive, SHA-256 checked. A failed
       # download gets two more attempts. If the archive stays unreachable the
-      # helper is still compiled, without the OpenVINO backend and with a
-      # warning on the run: a third-party server must not take away the
-      # Windows compile of everything else.
+      # helper is still compiled and tested, without the OpenVINO backend: a
+      # third-party server must not take away the Windows compile of
+      # everything else. That build is not the release configuration; the job
+      # summary says so and the last step of the job fails the leg.
       - name: OpenVINO runtime
         run: |
           $ErrorActionPreference = 'Stop'
@@ -630,11 +634,19 @@ jobs:
           }
           if ($prepared) {
             "MEETING_HELPER_ENABLE_OPENVINO=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "meeting (${{ matrix.label }}): matting backends as in a release (ONNX Runtime and OpenVINO)." |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           } else {
             # Nothing half-prepared may end up in the cache.
             if (Test-Path $runtime) { Remove-Item -Recurse -Force $runtime }
-            Write-Host "::warning title=OpenVINO runtime unavailable::meeting-helper is built without MEETING_HELPER_ENABLE_OPENVINO in this run; a release builds the OpenVINO backend."
+            Write-Host "::warning title=Built WITHOUT OpenVINO::meeting-helper is built without MEETING_HELPER_ENABLE_OPENVINO in this run; a release builds the OpenVINO backend. The last step of the job fails for that reason."
             "MEETING_HELPER_ENABLE_OPENVINO=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            @(
+              "## meeting (${{ matrix.label }}): built WITHOUT the OpenVINO backend",
+              "",
+              "The OpenVINO archive could not be prepared in three attempts. meeting-helper is compiled and tested without ``MEETING_HELPER_ENABLE_OPENVINO``, which is **not** what a release builds.",
+              "Every step before the last one reports on the code as usual; the last step fails this leg because of the missing backend. Re-run the job once the archive is reachable again."
+            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           }
 
       # ---- only with the switch: what the WebRTC part needs (as in job full) ----
@@ -695,12 +707,17 @@ jobs:
       # ---- default: the two commands of dist:win, nothing else ----------------
       #   cross-env MEETING_HELPER_ENABLE_MODNET=1 MEETING_HELPER_ENABLE_OPENVINO=1 npm run build:meeting-helper
       #   npm run test:meeting-helper-native
+      # A release has no CMAKE_BUILD_PARALLEL_LEVEL in its environment: MSBuild
+      # then builds one project after the other (no /m). The level this
+      # workflow sets for its other jobs is taken away in both steps.
 
       - name: Build meeting-helper.exe (default)
         if: matrix.pgm_windows != '1'
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:BROADIFY_PGM_WINDOWS) { throw "BROADIFY_PGM_WINDOWS must not be set in the default configuration" }
+          Remove-Item Env:CMAKE_BUILD_PARALLEL_LEVEL -ErrorAction SilentlyContinue
+          if (Test-Path Env:CMAKE_BUILD_PARALLEL_LEVEL) { throw "CMAKE_BUILD_PARALLEL_LEVEL must not be set in the default configuration" }
           npm run build:meeting-helper
           if ($LASTEXITCODE -ne 0) { throw "npm run build:meeting-helper failed with exit code $LASTEXITCODE" }
           if (-not (Test-Path (Join-Path $env:MEETING_HELPER_DIR 'meeting-helper.exe'))) { throw "meeting-helper.exe was not built" }
@@ -711,6 +728,8 @@ jobs:
         if: matrix.pgm_windows != '1'
         run: |
           $ErrorActionPreference = 'Stop'
+          Remove-Item Env:CMAKE_BUILD_PARALLEL_LEVEL -ErrorAction SilentlyContinue
+          if (Test-Path Env:CMAKE_BUILD_PARALLEL_LEVEL) { throw "CMAKE_BUILD_PARALLEL_LEVEL must not be set in the default configuration" }
           npm run test:meeting-helper-native
           if ($LASTEXITCODE -ne 0) { throw "npm run test:meeting-helper-native failed with exit code $LASTEXITCODE" }
 
@@ -809,3 +828,20 @@ jobs:
             echo "::error::the default build failed for another reason"
             exit 1
           fi
+
+      # ---- both legs, last step ------------------------------------------------
+
+      # When the OpenVINO archive stayed unreachable, the helper was compiled and
+      # tested above without that backend, so that the run still reports on the
+      # code. That is not what a release builds, and the leg must not end green.
+      # A red leg for this reason is rare enough to mean something: every one of
+      # the 154 Windows release builds since the backend exists (2026-08-08 to
+      # 2026-11-20, release.yml and test-release.yml, one attempt, no cache) got
+      # the archive.
+      - name: Matting backends as in a release (OpenVINO was built)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:MEETING_HELPER_ENABLE_OPENVINO -ne '1') {
+            throw "meeting-helper was built WITHOUT the OpenVINO backend (its archive was unreachable): not the release configuration. Re-run the job."
+          }
+          Write-Host "MEETING_HELPER_ENABLE_MODNET=$env:MEETING_HELPER_ENABLE_MODNET MEETING_HELPER_ENABLE_OPENVINO=$env:MEETING_HELPER_ENABLE_OPENVINO, as dist:win sets them"

@@ -298,6 +298,28 @@ test("the Windows workflow builds and tests the meeting helper in both configura
   for (const step of defaultSteps) {
     assert.doesNotMatch(step, /\n {8}env:/, "a default step must not set its own environment");
   }
+  // Built serially, as a release: the parallel level this workflow sets for
+  // its other jobs is taken out of the environment before the npm command.
+  for (const step of [build, buildAllAndTest]) {
+    const removal = step.indexOf("Remove-Item Env:CMAKE_BUILD_PARALLEL_LEVEL");
+    assert.ok(
+      removal >= 0 && removal < step.indexOf("npm run "),
+      "the parallel build level must be removed before the build",
+    );
+    assert.match(step, /if \(Test-Path Env:CMAKE_BUILD_PARALLEL_LEVEL\) \{ throw /);
+    assert.doesNotMatch(step, /--parallel|\/m\b|-j\d/);
+  }
+  // A leg that had to build without OpenVINO is not the release configuration:
+  // the job summary says so and the last step of the job, which runs for both
+  // legs, fails it.
+  assert.match(
+    body,
+    /built WITHOUT the OpenVINO backend[\s\S]*?Out-File -FilePath \$env:GITHUB_STEP_SUMMARY/,
+  );
+  const last = steps[steps.length - 1];
+  assert.match(last, /^Matting backends as in a release \(OpenVINO was built\)\n/);
+  assert.doesNotMatch(last, /\n {8}if:/);
+  assert.match(last, /if \(\$env:MEETING_HELPER_ENABLE_OPENVINO -ne '1'\) \{\n\s+throw /);
   const switched = switchSteps.join("\n");
   assert.match(switched, /BROADIFY_PGM_WINDOWS: "1"/);
   assert.match(switched, /\n {10}npm run build:meeting-helper\n/);
