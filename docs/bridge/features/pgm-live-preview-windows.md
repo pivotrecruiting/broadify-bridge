@@ -131,7 +131,10 @@ Was der Konverter dem Worker vorgibt:
 |---|---|---|
 | Übergabe (`runsUnderStoreLock`) | Umwandlung und `encode()` unter der Store-Sperre, direkt aus dem Bild des Stores (wie bisher) | erst die Kopie aus dem Store, alles Weitere ohne Sperre |
 | Pause nach gescheiterter Encoder-Einrichtung (`encoderRetryInterval`) | keine: jedes Bild versucht es neu (wie bisher) | 3 s für dasselbe Ziel, wie im PGM-Helper; ein anderes Ziel (Bildgröße, Profil) wird sofort versucht |
-| Store geleert, Zuschauer bleibt (Kamera-Stopp) | Worker läuft bis zum nächsten Bild im Kreis (Bestand, siehe „Offen“) | Worker wartet |
+
+Unabhängig vom Konverter: Ist der Store geleert, während ein Zuschauer bleibt (`camera.stop`,
+`output.vcam.raw.stop`), gibt es eine neue Sequenz, aber kein Bild. Der Worker wartet dann auf das nächste Bild, bei
+beiden Übergaben; auf macOS ist das der Fix aus #291.
 
 Ohne Hardware-Encoder meldet `program.stream.status` `encoder: null` und `last_error.code = encoder_unavailable` mit der
 Meldung des Encoders (versuchte MFTs mit Schritt und HRESULT). Bilder werden verworfen und gezählt; einen Software-Weg
@@ -154,8 +157,9 @@ Tests:
 | Test | Wo | Was |
 |---|---|---|
 | `program_frame_converter_nv12_test` | macOS; Windows mit Schalter | Der NV12-Konverter: Farbwerte, Lage der Ebenen, 1920×1080, 1080×1920, 3840×2160, ungerade Größe, Wiederverwendung und Neuanlage des Puffers, abgelehnte Bilder. Dazu der Weg durch `frameToNv12` auf die Größe, die der Encoder plant |
-| `program_stream_loopback_test` | macOS; Windows mit Schalter | Der echte Worker gegen einen libdatachannel-Zuschauer im selben Prozess, mit Konverter und Hardware-Encoder der Plattform: Anmeldung als Vorschau-Verbraucher, Encoder aus der Bildgeometrie (1920×1080 mit Profil `remote`), Wechsel auf 1080×1920, neues Profil durch einen neuen ersten Zuschauer, Ruhe ohne Zuschauer, Stop und Neustart. Ohne Hardware-Encoder erwartet er `encoder_unavailable` und kein kodiertes Bild |
-| `program_stream_nv12_loopback_test` | macOS; Windows mit Schalter | Derselbe Test mit dem NV12-Konverter und einem Encoder, den der Test stellt. Läuft überall ohne Hardware und hält die Windows-Übergabe fest: Bilder kommen als NV12 in Bildgröße mit den richtigen Werten an, kein Encoder-Aufruf unter der Store-Sperre, Pause nach gescheiterter Einrichtung (gleiches Ziel erst nach 3 s, anderes Ziel sofort), kein Leerlauf im Kreis bei geleertem Store |
+| `program_stream_loopback_test` | macOS; Windows mit Schalter | Der echte Worker gegen einen libdatachannel-Zuschauer im selben Prozess, mit Konverter und Hardware-Encoder der Plattform: Anmeldung als Vorschau-Verbraucher, Encoder aus der Bildgeometrie (1920×1080 mit Profil `remote`), Wechsel auf 1080×1920, neues Profil durch einen neuen ersten Zuschauer, Warten bei geleertem Store (CPU-Zeit des Prozesses, höchstens 5 % der Laufzeit) und das nächste Bild danach, Ruhe ohne Zuschauer, Stop und Neustart. Ohne Hardware-Encoder erwartet er `encoder_unavailable` und kein kodiertes Bild |
+| `program_stream_nv12_loopback_test` | macOS; Windows mit Schalter | Derselbe Test mit dem NV12-Konverter und einem Encoder, den der Test stellt. Läuft überall ohne Hardware und hält die Windows-Übergabe fest: Bilder kommen als NV12 in Bildgröße mit den richtigen Werten an, kein Encoder-Aufruf unter der Store-Sperre, Pause nach gescheiterter Einrichtung (gleiches Ziel erst nach 3 s, anderes Ziel sofort). Das Warten bei geleertem Store prüft er damit für die kopierende Übergabe |
+| `program_stream_idle_test` | macOS | Aus #291: der echte Stream mit VideoToolbox und einem Zuschauer, der nie verbindet; CPU-Zeit des Prozesses bei geleertem Store |
 | `program_stream_scale_test` | macOS | wie bisher Pool und Kopie, jetzt zusätzlich über die Konverter-Naht |
 
 Die beiden Loopback-Tests signalisieren die ICE-Kandidaten beider Seiten auf 127.0.0.1 (beide Seiten binden ihren
@@ -196,9 +200,6 @@ Offen bis zur Sitzung am Gerät:
   Bildgröße oder Profil ändern oder der Helper neu startet. Im PGM-Helper ist es dasselbe.
 - Der Helper selbst kennt keinen Laufzeit-Schalter. Ob ein Offer bis zu ihm kommt, entscheidet die Bridge
   (`BRIDGE_PGM_WINDOWS`).
-- Bestand auf macOS, hier nicht geändert: Leert jemand den `PreviewFrameStore`, während ein Zuschauer angemeldet ist
-  (`camera.stop`, `output.vcam.raw.stop`), läuft der Worker bis zum nächsten veröffentlichten Bild ohne Pause im Kreis
-  und belegt einen Kern. Der Windows-Weg wartet in diesem Zustand.
 
 ## Windows-Quellen des Helpers (D7)
 
