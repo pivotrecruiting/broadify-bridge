@@ -94,3 +94,6 @@ apps/bridge/native/pgm-helper/pgm-helper
 apps/bridge/native/pgm-helper/pgm-helper.exe
 apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app/
 apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app
+
+# TLS-inspection replica: throwaway CA and keys
+scripts/tls-inspection-replica/out/
