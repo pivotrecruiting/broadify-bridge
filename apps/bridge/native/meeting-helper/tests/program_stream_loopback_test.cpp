@@ -4,7 +4,7 @@
 // Covers what the RPC test with the stub cannot: consumer registration, the
 // frame hand-over, encoder set-up from the frame geometry, reconfiguration on
 // a program format change (1920x1080 -> 1080x1920) and on a profile change,
-// idle without viewers, stop and restart.
+// the wait on a cleared store, idle without viewers, stop and restart.
 //
 // Built twice from this file:
 //   program_stream_loopback_test       the platform's frame converter and its
@@ -44,13 +44,11 @@
 #include <thread>
 #include <vector>
 
-#if defined(PROGRAM_STREAM_TEST_ENCODER)
 // Process CPU time, for the check that an idle worker does not spin.
 #if defined(_WIN32)
 #include <windows.h>
 #else
 #include <sys/resource.h>
-#endif
 #endif
 
 using namespace broadify::live;
@@ -66,6 +64,11 @@ using broadify::meeting::ProgramStreamConfig;
 #endif
 
 namespace {
+
+// CPU time of the process as a share of the wall time while the worker has nothing to take. The
+// measurements behind the limit are in program_stream_idle_test.cpp: an idle process stays far below
+// it however loaded the machine is, a spinning worker far above.
+constexpr double kMaxIdleCpuShare = 0.05;
 
 [[noreturn]] void fail(const std::string &message) {
   std::cerr << TEST_NAME " failed: " << message << std::endl;
@@ -126,6 +129,12 @@ class FramePublisher {
       height_ = height;
       rgba_ = makeProgramFrame(width, height);
     }
+    resume();
+  }
+
+  /** Publishes the frame it had again, after stop(). */
+  void resume() {
+    stop();
     running_.store(true);
     thread_ = std::thread([this] {
       while (running_.load()) {
@@ -304,10 +313,6 @@ std::string encoderJsonFor(const EncodeTarget &target) {
          target.profileName + "\"";
 }
 
-#if defined(PROGRAM_STREAM_TEST_ENCODER)
-
-// --- the encoder of the NV12 build ---------------------------------------------
-
 double processCpuSeconds() {
 #if defined(_WIN32)
   FILETIME creation;
@@ -331,6 +336,10 @@ double processCpuSeconds() {
          static_cast<double>(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6;
 #endif
 }
+
+#if defined(PROGRAM_STREAM_TEST_ENCODER)
+
+// --- the encoder of the NV12 build ---------------------------------------------
 
 // BT.709 limited range of the two halves of makeProgramFrame().
 constexpr uint8_t kRedY = 63, kRedCb = 102, kRedCr = 240;
@@ -745,7 +754,6 @@ int main() {
     }
   }
 
-#if defined(PROGRAM_STREAM_TEST_ENCODER)
   // The store is cleared while the viewer stays (camera stop): there is a new sequence but no frame to
   // take. The worker has to wait for the next publish, not spin on the store.
   publisher.stop();
@@ -757,12 +765,26 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     const double cpu = processCpuSeconds() - cpuBefore;
     const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - wallBefore).count();
-    if (cpu > 0.5 * wall) {
-      fail("the worker spins on a cleared store: " + std::to_string(cpu) + " s CPU in " + std::to_string(wall) + " s");
+    const double share = wall > 0.0 ? cpu / wall : 0.0;
+    std::cout << TEST_NAME ": CPU share of wall time with the store cleared " << share << std::endl;
+    if (share > kMaxIdleCpuShare) {
+      fail("the worker spins on a cleared store: CPU share " + std::to_string(share) + " of wall time");
     }
   }
-  publisher.start(1080, 1920);
-#endif
+  // The wait does not cost the next frame: it is taken as soon as the pipeline publishes again.
+  {
+    const std::string json = stream.statusJson();
+    const uint64_t handledBefore = numberField(json, "encoded_frames") + numberField(json, "dropped_frames");
+    publisher.resume();
+    if (!waitFor(
+            [&] {
+              const std::string now = stream.statusJson();
+              return numberField(now, "encoded_frames") + numberField(now, "dropped_frames") > handledBefore;
+            },
+            5000)) {
+      fail("the worker did not take the frame published after the cleared store: " + stream.statusJson());
+    }
+  }
 
   // The viewer leaves: the consumer registration goes away and nothing is encoded any more.
   stream.viewerClose(viewer->viewerId);
