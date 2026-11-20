@@ -140,6 +140,30 @@ test("the picked encoder is reported through the PGM helper's module, only where
   assert.equal((worker.match(/pgm::encoderDetailJsonMembers\(info\)/g) || []).length, 2);
 });
 
+test("failed encoder set-ups are paced by the PGM helper's back-off, not by a rule of the worker's own", () => {
+  const workerSource = read(`${LIVE}/program_stream.cpp`);
+  assert.match(workerSource, /\n#include "encoder_retry_backoff\.h"/);
+  assert.ok(fs.existsSync(path.join(root, "apps/bridge/native/pgm-helper/src/common/encoder_retry_backoff.h")));
+  assert.deepEqual(
+    fs.readdirSync(path.join(root, LIVE)).filter((name) => /backoff/i.test(name)),
+    [],
+    "the meeting helper must not carry its own back-off",
+  );
+  // The failed target waits, both failure exits report to the back-off, and
+  // a set-up that works clears it: a target that returns after another one
+  // was set up is tried at once.
+  const worker = stripComments(workerSource);
+  assert.match(worker, /\n  pgm::EncoderRetryBackoff encoderRetry;\n/);
+  assert.match(
+    worker,
+    /converter->pacesEncoderRetries\(\) && !encoderRetry\.attemptDue\(wanted, live::monotonicNowNs\(\)\)/,
+  );
+  assert.equal((worker.match(/encoderRetry\.onFailure\(wanted, live::monotonicNowNs\(\)\);/g) || []).length, 2);
+  assert.match(worker, /\n    encoderConfigured = true;\n    encoderRetry\.reset\(\);\n/);
+  // No second clock next to it.
+  assert.doesNotMatch(worker, /steady_clock::time_point [a-zA-Z]*[rR]etry/);
+});
+
 test("build.ps1 passes the WebRTC arguments only with BROADIFY_PGM_WINDOWS=1", () => {
   const branches = buildPs1.match(
     /\nif \(\$env:BROADIFY_PGM_WINDOWS -eq "1"\) \{\n([\s\S]*?)\n\} else \{\n([\s\S]*?)\n\}\nInvoke-NativeCommand cmake --build /,
@@ -205,14 +229,12 @@ test("the stream worker is portable and the NV12 converter is pure C++", () => {
     assert.doesNotMatch(converter, pattern, `program_frame_converter_nv12.cpp must stay free of ${pattern}`);
   }
   assert.match(converter, /bool runsUnderStoreLock\(\) const override \{ return false; \}/);
+  assert.match(converter, /bool pacesEncoderRetries\(\) const override \{ return true; \}/);
 
   // macOS keeps today's hand-over: under the store lock, a new encoder attempt with every frame.
   const vt = stripComments(read(`${LIVE}/program_frame_converter_vt.mm`));
   assert.match(vt, /bool runsUnderStoreLock\(\) const override \{ return true; \}/);
-  assert.match(
-    vt,
-    /std::chrono::milliseconds encoderRetryInterval\(\) const override \{ return std::chrono::milliseconds\(0\); \}/,
-  );
+  assert.match(vt, /bool pacesEncoderRetries\(\) const override \{ return false; \}/);
 });
 
 test("the Windows workflow builds and tests the meeting helper in both configurations", () => {

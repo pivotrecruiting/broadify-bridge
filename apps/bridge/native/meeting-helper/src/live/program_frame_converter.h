@@ -2,7 +2,6 @@
 
 #include "live_stream/video_frame.h"
 
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -58,13 +57,14 @@ class ProgramFrameConverter {
   virtual bool runsUnderStoreLock() const = 0;
 
   /**
-   * Pause before the worker asks the platform again for an encoder with a
-   * target whose set-up just failed; another target is tried at once. Zero
-   * asks again with every frame (VideoToolbox answers at once); Media
-   * Foundation enumerates and activates driver MFTs on a new thread for
-   * every attempt.
+   * Whether the worker spaces out its encoder set-up attempts after a failure,
+   * with the back-off of the PGM helper (encoder_retry_backoff.h): the target
+   * that failed waits, another target is tried at once, and a set-up that
+   * works clears the wait. False asks the platform again with every frame
+   * (VideoToolbox answers at once); Media Foundation enumerates and activates
+   * driver MFTs on a new thread for every attempt.
    */
-  virtual std::chrono::milliseconds encoderRetryInterval() const = 0;
+  virtual bool pacesEncoderRetries() const = 0;
 };
 
 /** The converter of this platform (defined in the platform's converter source). */

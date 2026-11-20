@@ -167,7 +167,7 @@ int main() {
 
   // The worker copies the frame out of the store before it converts, and spaces out failed encoder set-ups.
   if (converter->runsUnderStoreLock()) fail("the NV12 conversion must not run under the PreviewFrameStore lock");
-  if (converter->encoderRetryInterval().count() < 500) fail("a failed Media Foundation encoder set-up needs a retry pause");
+  if (!converter->pacesEncoderRetries()) fail("a failed Media Foundation encoder set-up must not be repeated with every frame");
 
   // One converter across the cases, as one stream sees program format changes.
   runCase(*converter, 1920, 1080, EncodeProfile::Lan, "1920x1080 lan (target == frame)");

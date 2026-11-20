@@ -1,6 +1,9 @@
 #include "live/program_stream.h"
 
-#include "encoder_info_json.h"  // from the PGM helper's common directory, built here as program_stream_encoder_info
+// Both from the PGM helper's common directory (CMake target program_stream_encoder_info): one
+// implementation for the two helpers.
+#include "encoder_info_json.h"
+#include "encoder_retry_backoff.h"
 #include "live/program_frame_converter.h"
 #include "live_stream/bitrate_ladder.h"
 #include "live_stream/monotonic_clock.h"
@@ -48,9 +51,10 @@ struct ProgramStream::Impl {
   std::string lastErrorCode;
   std::string lastErrorMessage;
   std::unique_ptr<ProgramFrameConverter> converter = createProgramFrameConverter();
-  // After a failed encoder set-up: the target that failed and the earliest time for the next attempt at it.
-  live::EncodeTarget refusedTarget;
-  std::chrono::steady_clock::time_point encoderRetryAt{};
+  // Where the converter asks for it, spaces out the set-up attempts after a failure: the target that
+  // failed waits, another one (size or frame rate) is tried at once, and a set-up that works clears
+  // the wait.
+  pgm::EncoderRetryBackoff encoderRetry;
   // Worker only: the frame taken out of the store for a converter that must not run under the store lock.
   PreviewFrame frameCopy;
 
@@ -83,20 +87,6 @@ struct ProgramStream::Impl {
     encoderConfigured = false;
   }
 
-  // A converter with a retry interval spaces out the set-up attempts for a target that failed (another
-  // target, i.e. another frame size or profile, is tried at once); without one every frame asks again.
-  bool encoderRetryPausedLocked(const live::EncodeTarget &wanted) const {
-    return converter->encoderRetryInterval().count() > 0 && wanted.width == refusedTarget.width &&
-           wanted.height == refusedTarget.height && wanted.bitrateKbps == refusedTarget.bitrateKbps &&
-           std::chrono::steady_clock::now() < encoderRetryAt;
-  }
-
-  // The interval counts from the end of the attempt: a set-up that fails slowly is not tried again at once.
-  void noteEncoderFailureLocked(const live::EncodeTarget &wanted) {
-    refusedTarget = wanted;
-    encoderRetryAt = std::chrono::steady_clock::now() + converter->encoderRetryInterval();
-  }
-
   bool ensureEncoderLocked(uint32_t width, uint32_t height) {
     const live::EncodeTarget wanted =
         live::selectEncodeTarget(width, height, config.fps == 0 ? 30u : config.fps, 1, live::parseEncodeProfile(profile));
@@ -104,15 +94,17 @@ struct ProgramStream::Impl {
         wanted.bitrateKbps == target.bitrateKbps) {
       return true;
     }
-    if (encoderRetryPausedLocked(wanted)) {
-      return false;  // last_error still names the failed attempt
+    // While an attempt waits there is no encoder and last_error names the failure: the attempt that
+    // failed tore the old encoder down, and a set-up that works clears the wait.
+    if (converter->pacesEncoderRetries() && !encoderRetry.attemptDue(wanted, live::monotonicNowNs())) {
+      return false;
     }
     teardownEncoderLocked();
     encoder = live::createHardwareEncoder();
     if (!encoder) {
       lastErrorCode = "encoder_unavailable";
       lastErrorMessage = "No hardware H.264 encoder on this machine.";
-      noteEncoderFailureLocked(wanted);
+      encoderRetry.onFailure(wanted, live::monotonicNowNs());
       return false;
     }
     // The encoder's thread gets its own reference to the publisher: it never reads `publisher`, which stop() resets.
@@ -123,11 +115,13 @@ struct ProgramStream::Impl {
       lastErrorCode = code;
       lastErrorMessage = error;
       encoder.reset();
-      noteEncoderFailureLocked(wanted);
+      // Counted from the end of the attempt: a set-up that fails slowly is not tried again at once.
+      encoderRetry.onFailure(wanted, live::monotonicNowNs());
       return false;
     }
     target = wanted;
     encoderConfigured = true;
+    encoderRetry.reset();
     lastErrorCode.clear();
     lastErrorMessage.clear();
     keyframeWanted.store(true);
@@ -277,7 +271,7 @@ void ProgramStream::stop() {
     impl_->encoder->flush();
   }
   impl_->teardownEncoderLocked();
-  impl_->encoderRetryAt = {};
+  impl_->encoderRetry.reset();
   impl_->converter->reset();
   impl_->publisher.reset();
 }

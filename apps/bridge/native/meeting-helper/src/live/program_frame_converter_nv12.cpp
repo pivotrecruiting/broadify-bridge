@@ -27,11 +27,6 @@ namespace broadify::meeting {
 
 namespace {
 
-// After `encoder_unavailable`: every attempt enumerates the hardware encoder
-// MFTs and activates each candidate on a new encoder thread. Three seconds,
-// the pause the PGM helper uses for the same encoder.
-constexpr auto kEncoderRetryInterval = std::chrono::seconds(3);
-
 class Nv12ProgramFrameConverter final : public ProgramFrameConverter {
  public:
   bool prepare(uint32_t width, uint32_t height) override {
@@ -107,7 +102,9 @@ class Nv12ProgramFrameConverter final : public ProgramFrameConverter {
 
   bool runsUnderStoreLock() const override { return false; }
 
-  std::chrono::milliseconds encoderRetryInterval() const override { return kEncoderRetryInterval; }
+  // After `encoder_unavailable`: every attempt enumerates the hardware encoder
+  // MFTs and activates each candidate on a new encoder thread.
+  bool pacesEncoderRetries() const override { return true; }
 
  private:
   std::vector<uint8_t> buffer_;

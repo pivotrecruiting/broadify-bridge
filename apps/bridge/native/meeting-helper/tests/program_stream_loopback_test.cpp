@@ -17,9 +17,12 @@
 //       (PROGRAM_STREAM_TEST_ENCODER). Runs on every platform without
 //       hardware: the frames must arrive as frame-size NV12 with the right
 //       pixels, no encoder call may happen while the PreviewFrameStore lock is
-//       held, and a failed encoder set-up must not be repeated with every frame.
+//       held, and a failed encoder set-up must not be repeated with every frame
+//       but must not hold back another target, nor anything after a set-up
+//       that worked.
 #include "live/program_stream.h"
 
+#include "encoder_retry_backoff.h"  // the PGM helper's back-off the worker paces failed set-ups with
 #include "helper_common/helper_event_log.h"
 #include "live_stream/bitrate_ladder.h"
 #include "live_stream/video_encoder.h"
@@ -43,6 +46,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // Process CPU time, for the check that an idle worker does not spin.
@@ -371,6 +375,9 @@ double processCpuSeconds() {
 
 // --- the encoder of the NV12 build ---------------------------------------------
 
+// The pause the worker keeps before it tries a failed encoder set-up for the same target again.
+constexpr long long kRetryMs = static_cast<long long>(broadify::pgm::kEncoderRetryIntervalNs / 1'000'000ULL);
+
 // BT.709 limited range of the two halves of makeProgramFrame().
 constexpr uint8_t kRedY = 63, kRedCb = 102, kRedCr = 240;
 constexpr uint8_t kBlueY = 32, kBlueCb = 240, kBlueCr = 118;
@@ -379,10 +386,12 @@ struct TestEncoderState {
   std::mutex mutex;
   PreviewFrameStore *store = nullptr;
   bool failConfigure = false;
+  uint32_t failWidth = 0;  // configure() also fails for a target of this width
   int configureAttempts = 0;
   int failedAttempts = 0;
   std::vector<std::chrono::steady_clock::time_point> attemptTimes;
   std::vector<EncodeTarget> configured;
+  std::vector<std::pair<uint32_t, uint32_t>> firstFrameSizes;  // per configured encoder: size of its first frame
   uint64_t frames = 0;
   uint64_t forcedKeyframes = 0;
   uint32_t lastWidth = 0;
@@ -466,7 +475,7 @@ class TestEncoder final : public VideoEncoder {
     std::lock_guard<std::mutex> lock(state.mutex);
     ++state.configureAttempts;
     state.attemptTimes.push_back(std::chrono::steady_clock::now());
-    if (state.failConfigure) {
+    if (state.failConfigure || (state.failWidth != 0 && target.width == state.failWidth)) {
       ++state.failedAttempts;
       errorCode = "encoder_unavailable";
       error = "test encoder: no hardware encoder";
@@ -497,6 +506,9 @@ class TestEncoder final : public VideoEncoder {
       state.lastCaptureNs = frame.captureNs;
       state.lastWidth = frame.width;
       state.lastHeight = frame.height;
+      if (first_) {
+        state.firstFrameSizes.emplace_back(frame.width, frame.height);
+      }
     }
     if (index < 5 || index % 15 == 0) {
       probeStoreLock("VideoEncoder::encode");
@@ -688,11 +700,11 @@ int main() {
     fail("unavailable status: " + status);
   }
   {
-    // One attempt, then one more per elapsed retry pause (3 s): never one per frame.
+    // One attempt, then one more per elapsed retry pause: never one per frame.
     const auto elapsedMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - joinedAt).count();
     const int attempts = configureAttempts();
-    if (attempts < 1 || attempts > 1 + static_cast<int>(elapsedMs / 3000)) {
+    if (attempts < 1 || attempts > 1 + static_cast<int>(elapsedMs / kRetryMs)) {
       fail("the failed encoder set-up ran " + std::to_string(attempts) + " times in " + std::to_string(elapsedMs) + " ms");
     }
   }
@@ -709,7 +721,7 @@ int main() {
     fail("the encoder set-up was not retried after the pause");
   }
   // The same target is not tried again before the pause is over.
-  if (msBetweenAttempts(0, 1) < 2800) {
+  if (msBetweenAttempts(0, 1) < kRetryMs - 200) {
     fail("the failed target was tried again after " + std::to_string(msBetweenAttempts(0, 1)) + " ms");
   }
 #endif
@@ -863,27 +875,57 @@ int main() {
       }
     }
 #if defined(PROGRAM_STREAM_TEST_ENCODER)
-    // A failed set-up holds back its own target only: when the program changes its size right after a
-    // failure, the new target is tried at once instead of after the retry pause.
+    // A failed set-up holds back its own target only, and only until a set-up works again. The program
+    // goes to 960x540, whose encoder fails; to 640x360, which is tried at once and works; and straight
+    // back to 960x540, which is tried at once again although its own failure is less than the retry
+    // pause old. (Held back, every 960x540 frame would be dropped for the rest of that pause while the
+    // status still showed the 640x360 encoder and no error.)
+    const EncodeTarget refused = selectEncodeTarget(960, 540, 30, 1, EncodeProfile::Lan);
+    const EncodeTarget small = selectEncodeTarget(640, 360, 30, 1, EncodeProfile::Lan);
+    if (refused.width == small.width) {
+      fail("the two test programs must map to encode targets of different widths");
+    }
     {
       std::lock_guard<std::mutex> lock(encoderState().mutex);
-      encoderState().failConfigure = true;
+      encoderState().failWidth = refused.width;
     }
     const int failedBefore = failedAttempts();
+    const size_t configuredBefore = configuredEncoders();
     const size_t attemptsBefore = static_cast<size_t>(configureAttempts());
     publisher.start(960, 540);
     if (!waitFor([&] { return failedAttempts() == failedBefore + 1; }, 5000)) {
       fail("no set-up attempt for the 960x540 program");
     }
     publisher.start(640, 360);
-    if (!waitFor([&] { return failedAttempts() == failedBefore + 2; }, 2500)) {
+    if (!waitFor([&] { return configuredEncoders() == configuredBefore + 1; }, 2500)) {
       fail("a failed set-up held back the attempt for another target");
     }
-    if (msBetweenAttempts(attemptsBefore, attemptsBefore + 1) >= 2500) {
-      fail("the attempt for another target waited for the retry pause");
+    if (!waitFor(
+            [&] {
+              const std::string json = stream.statusJson();
+              return contains(json, encoderStatusFor(small)) && contains(json, "\"last_error\":null");
+            },
+            2000)) {
+      fail("status with the 640x360 encoder: " + stream.statusJson());
     }
-    if (!contains(stream.statusJson(), "\"encoder\":null") || !contains(stream.statusJson(), "\"code\":\"encoder_unavailable\"")) {
-      fail("status after the failed reconfiguration: " + stream.statusJson());
+    publisher.start(960, 540);
+    if (!waitFor([&] { return failedAttempts() == failedBefore + 2; }, 2000)) {
+      fail("the returning 960x540 program was not tried again at once: " + stream.statusJson());
+    }
+    // Attempts from attemptsBefore on: 960x540 fails, 640x360 works, 960x540 fails again.
+    if (msBetweenAttempts(attemptsBefore, attemptsBefore + 2) >= kRetryMs - 500) {
+      fail("the returning target waited " + std::to_string(msBetweenAttempts(attemptsBefore, attemptsBefore + 2)) +
+           " ms: a set-up that works must clear the retry pause");
+    }
+    // The status says what is the case: no encoder, and the failure.
+    status = stream.statusJson();
+    if (!contains(status, "\"encoder\":null") || !contains(status, "\"code\":\"encoder_unavailable\"")) {
+      fail("status after the failed reconfiguration: " + status);
+    }
+    // Its own failure holds the target back again: no attempt with every frame.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    if (static_cast<size_t>(configureAttempts()) != attemptsBefore + 3) {
+      fail("the failed target was tried again within its retry pause");
     }
 #endif
     second->close();
@@ -892,25 +934,43 @@ int main() {
 #if defined(PROGRAM_STREAM_TEST_ENCODER)
   {
     expectNoViolation("hand-over");
+    // The 640x360 set-up that worked between the two 960x540 failures is the fourth event.
+    const std::vector<std::string> events = encoderConfiguredEvents(eventLog);
+    if (events.size() != 4 || !contains(events[3], encoderEventFor(selectEncodeTarget(640, 360, 30, 1, EncodeProfile::Lan)))) {
+      fail("expected a fourth encoder_configured event, for the 640x360 program; got " + std::to_string(events.size()));
+    }
     TestEncoderState &encoder = encoderState();
     std::lock_guard<std::mutex> lock(encoder.mutex);
     const EncodeTarget expected[] = {remoteLandscape, selectEncodeTarget(1080, 1920, 30, 1, EncodeProfile::Remote),
-                                     selectEncodeTarget(1080, 1920, 30, 1, EncodeProfile::Lan)};
-    // The failed attempts of the beginning, then exactly one set-up per target.
-    if (encoder.failedAttempts < 1 || encoder.configured.size() != 3 ||
-        encoder.configureAttempts != encoder.failedAttempts + 3) {
+                                     selectEncodeTarget(1080, 1920, 30, 1, EncodeProfile::Lan),
+                                     selectEncodeTarget(640, 360, 30, 1, EncodeProfile::Lan)};
+    // The program frame each of these encoders was fed with.
+    const std::pair<uint32_t, uint32_t> programSizes[] = {{1920, 1080}, {1080, 1920}, {1080, 1920}, {640, 360}};
+    // The failed attempts (the first set-up, 960x540 twice), and exactly one set-up per target that worked.
+    if (encoder.failedAttempts < 3 || encoder.configured.size() != 4 ||
+        encoder.configureAttempts != encoder.failedAttempts + 4) {
       fail("encoder set-ups: " + std::to_string(encoder.configureAttempts) + " attempts, " + std::to_string(encoder.failedAttempts) +
            " failed, " + std::to_string(encoder.configured.size()) + " configured");
     }
-    for (size_t i = 0; i < 3; ++i) {
+    for (size_t i = 0; i < 4; ++i) {
       if (encoder.configured[i].width != expected[i].width || encoder.configured[i].height != expected[i].height ||
           encoder.configured[i].bitrateKbps != expected[i].bitrateKbps || encoder.configured[i].profileName != expected[i].profileName) {
         fail("encoder target " + std::to_string(i) + " does not come from the frame geometry and the viewer's profile");
       }
     }
-    // The frames stay at the size of the program frame; scaling to the target is the encoder's input stage.
-    if (encoder.lastWidth != 1080 || encoder.lastHeight != 1920) {
-      fail("the last frame handed to the encoder is not the 1080x1920 program frame");
+    // The frames stay at the size of the program frame, also where the target is smaller (1920x1080 into
+    // 1280x720, 1080x1920 into 720x1280): scaling to the target is the encoder's input stage.
+    if (encoder.firstFrameSizes.size() != 4) {
+      fail("not every configured encoder was given a frame");
+    }
+    for (size_t i = 0; i < 4; ++i) {
+      if (encoder.firstFrameSizes[i] != programSizes[i]) {
+        fail("encoder " + std::to_string(i) + " was given " + std::to_string(encoder.firstFrameSizes[i].first) + "x" +
+             std::to_string(encoder.firstFrameSizes[i].second) + " frames, not the program frame");
+      }
+    }
+    if (encoder.lastWidth != 640 || encoder.lastHeight != 360) {
+      fail("the last frame handed to an encoder is not the 640x360 program frame");
     }
     if (encoder.forcedKeyframes < 3) {
       fail("a new encoder or viewer must start on a forced keyframe");
