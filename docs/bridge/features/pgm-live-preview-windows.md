@@ -25,13 +25,16 @@ klären (Runbook unten). Grün im CI heißt nie „auf Hardware geprüft“.
 | Portabler Helper: `main.cpp`, Plattform-Host (D6) | ctest; einmal von Hand ein Lauf des Helpers mit der synthetischen Quelle | Job `full`: Start, Steuer-Pipe und `control.shutdown` als Teil von `pgm-helper.exe` | | Konsolenfenster, Wächter auf den Elternprozess, verwaiste Prozesse (Runbook 11) |
 | Windows-Quellen des Helpers: UVC, WASAPI, Standbild, Recorder-Stub (D7) | die reinen Module (`uvc_format_select_test`, `audio_pairing_test`, `snapshot_portable_test`, `portable_sources_test`) | Job `full`: `--probe`; der Lauf mit der synthetischen Quelle endet in `encoder_unavailable` (kein Software-Weg); Status, Standbild, `recording_unsupported` | `uvc_mediafoundation.cpp` und `audio_capture_wasapi.cpp`: nie gelaufen | der ganze UVC- und WASAPI-Weg: Aushandlung, Hot-Plug, Paarung, Lippensynchronität, Kamera-Datenschutz (Runbook 5, 6) |
 | **Meeting-Programm (D8): Platzhalter. Diese Zeile trägt die Einheit D8 nach.** | | | | |
-| Bridge-Gate: `BRIDGE_PGM_WINDOWS`, `windowsHide`, Fähigkeit `recording` (D9) | jest mit eingesetzter Plattform und Umgebung | Job `bridge-tests`: die ganze jest-Suite | | Schalter und Helper-Start in der paketierten Bridge (Runbook 1, 11) |
-| Paketierung hinter dem Build-Schalter (D10) | Vertragstest für alle Listen mit und ohne Schalter; die Artefaktprüfung läuft darin mit einem vorgetäuschten Windows-Host. Dazu einmalig der Vorher-nachher-Vergleich aller Listen ohne Schalter (PR der Einheit) | Job `bridge-tests`: die Vertragstests mit und ohne Schalter, `npm run build:pgm-helper` überspringt ohne Schalter, das Smoke-Skript des Helpers in beiden Zuständen. Job `full`: Artefaktliste, Smoke-Skript (`--probe`) und Abhängigkeitsprüfung gegen die gebaute Exe im Paket-Layout | die Installer-Smoke-Tests: von den PowerShell-Skripten wird nur die Syntax geprüft | alles, was erst ein Build mit Schalter durchläuft: `dist:win` als Ganzes, der Schritt in den Release-Workflows, electron-builder mit der Exe, ihre Signatur, NSIS- und MSI-Smoke-Test, Smart App Control (Runbook 10) |
+| Bridge-Gate: `BRIDGE_PGM_WINDOWS`, `windowsHide`, Fähigkeit `recording` (D9) | jest mit eingesetzter Plattform und Umgebung | Job `bridge-tests`: die ganze jest-Suite. **Erster Lauf steht aus.** | | Schalter und Helper-Start in der paketierten Bridge (Runbook 1, 11) |
+| Paketierung hinter dem Build-Schalter (D10) | Vertragstest: ohne Schalter nichts vom Helper in den Listen, mit Schalter alle zusammen; die Artefaktprüfung läuft darin mit einem vorgetäuschten Windows-Host. Dass die Listen ohne Schalter die bisherigen sind, ist durch Auswerten vor und nach der Änderung gezeigt, nicht durch den Test (siehe unten) | Job `bridge-tests`: die Vertragstests mit und ohne Schalter, `npm run build:pgm-helper` überspringt ohne Schalter, das Smoke-Skript des Helpers in beiden Zuständen. Job `full`: Artefaktliste, Smoke-Skript (`--probe`) und Abhängigkeitsprüfung gegen die gebaute Exe im Paket-Layout; das Smoke-Skript lehnt zwei kaputte Stellvertreter ab. **Erster Lauf steht aus.** | die Installer-Smoke-Tests: von den PowerShell-Skripten wird nur die Syntax geprüft | alles, was erst ein Build mit Schalter durchläuft: `dist:win` als Ganzes, der Schritt in den Release-Workflows, electron-builder mit der Exe, ihre Signatur, NSIS- und MSI-Smoke-Test, Smart App Control (Runbook 10) |
 | Aufnahme unter Windows | | | Stub (`recording_unsupported`) | nicht umgesetzt (ADR-0009, Punkt 7) |
 
-- Ohne den Build-Schalter gilt für ein Windows-Release: dieselben Dateien im Paket, dieselbe Signierliste, dieselben
-  VC-Runtime-Ordner, dieselbe Artefakt- und Abhängigkeitsprüfung. Das hält
+- Ohne den Build-Schalter enthält ein Windows-Release nichts vom Helper: nicht im Paket, nicht in der Signierliste,
+  nicht in den VC-Runtime-Ordnern, nicht in der Artefakt- und Abhängigkeitsprüfung. Das hält
   `scripts/pgm-helper-windows-release-contract.test.cjs` fest; die Einzelheiten stehen unter „Paketierung (D10)“.
+  Der Test enthält keine Soll-Liste der übrigen Einträge. Dass die Listen ohne Schalter dieselben sind wie vor der
+  Einheit, ist durch Auswerten gezeigt: alle Listen und die ganze electron-builder-Konfiguration vor und nach der
+  Änderung verglichen, einmal bei der Umsetzung und einmal unabhängig bei der Prüfung.
 - Der Job `bridge-tests` probt das Tor eines Windows-Release: `dist:win` ruft `npm run build` auf, und das beginnt
   mit `npm run test` (jest und die Vertragstests). Jeder dieser Tests läuft also im Release-Build unter Windows; einer,
   der vom Rechner abhängt, bricht das Release. Der Job fährt dasselbe vor dem Merge, mit den Installationsschritten
@@ -74,12 +77,12 @@ Regeln, die unter Windows genauso gelten:
 | `BRIDGE_PGM_WINDOWS=1` | Laufzeit (Umgebung der Bridge) | Bridge meldet unter Windows `capabilities.live_program.supported = true` und startet den Helper | aus |
 | `LIVE_STREAM_WITH_MF=ON` | Build (CMake-Option oder Umgebung, nur `live-stream`) | Baut allein den Media-Foundation-Encoder und seine Tests, ohne WebRTC/OpenSSL. Wird von `BROADIFY_PGM_WINDOWS=1` mit eingeschaltet | aus |
 | `LIVE_STREAM_WITH_WEBRTC=ON` | Build (CMake-Option, nur `live-stream`) | Baut unter Windows den WebRTC-Teil (`live_stream`: `publisher.cpp` auf dem Encoder, libdatachannel, statisches OpenSSL) und `webrtc_loopback_test`. Schaltet `LIVE_STREAM_WITH_MF` mit ein. Wird von `BROADIFY_PGM_WINDOWS=1` mit eingeschaltet; auf macOS ist es immer an | aus (Windows) |
-| `BRIDGE_PGM_ENCODER_VENDOR=nvidia\|intel\|amd` | Laufzeit (Umgebung des Helpers) | Zieht die Hardware-MFTs dieses Herstellers in der Reihenfolge nach vorn (Gerätetest auf Hybrid-Laptops). Die übrigen bleiben Ausweichkandidaten; welcher Encoder läuft, steht in `EncoderInfo.name` | nicht gesetzt |
+| `BRIDGE_PGM_ENCODER_VENDOR=nvidia\|intel\|amd` | Laufzeit (Umgebung des Helpers) | Zieht die Hardware-MFTs dieses Herstellers in der Reihenfolge nach vorn (Gerätetest auf Hybrid-Laptops). Die übrigen bleiben Ausweichkandidaten. Die Reihenfolge zeigt `--probe` (`encoder_candidates`); welcher Encoder läuft, steht in `pgm_encoder_configured` und im Status (`name`, `vendor`) | nicht gesetzt |
 
-- Ohne Build-Schalter packt, signiert und prüft ein Windows-Release dasselbe wie zuvor (siehe „Paketierung (D10)“).
-  Gebaut werden zusätzlich nur die reinen Module von `live_stream_core` und ihre Tests, die auf jeder Plattform
-  laufen. Windows-eigene Targets (Encoder, WebRTC, `pgm-helper.exe`, Meeting-`ProgramStream`) sind opt-in, weil
-  `npm run test:meeting-helper-native` in `dist:win` alle Targets des Build-Verzeichnisses baut.
+- Ohne Build-Schalter kommt nichts vom Live-Programm in Paket, Signatur und Prüfungen eines Windows-Release (siehe
+  „Paketierung (D10)“). Gebaut werden zusätzlich nur die reinen Module von `live_stream_core` und ihre Tests, die
+  auf jeder Plattform laufen. Windows-eigene Targets (Encoder, WebRTC, `pgm-helper.exe`, Meeting-`ProgramStream`)
+  sind opt-in, weil `npm run test:meeting-helper-native` in `dist:win` alle Targets des Build-Verzeichnisses baut.
 - Der Build-Schalter gilt nur mit dem Wert `1`; jeder andere Wert zählt als aus (Build-Skript, CMake und
   Paketlisten prüfen gleich).
 - Ohne Laufzeit-Schalter antwortet auch eine mit Build-Schalter gebaute Bridge wie heute
@@ -171,8 +174,8 @@ PowerShell-Skripte über `scripts/list-windows-pgm-helper-paths.cjs`, das ohne S
   Artefaktprüfung nichts vom Helper; mit Schalter kommen sie zusammen. `release.yml` nennt den Schalter nur in der
   Bedingung des einen Schritts. Für `test-release.yml` gilt dasselbe, außer in einem Opt-in-Build (nächster
   Abschnitt).
-- In `pgm-helper.exe` sind libdatachannel, OpenSSL und Opus statisch gelinkt. Opus steht noch nicht in `NOTICES.md`;
-  das betrifft bereits das macOS-Paket.
+- In `pgm-helper.exe` sind libdatachannel (mit libjuice, usrsctp, libSRTP und plog), OpenSSL und Opus statisch
+  gelinkt; alle stehen in `NOTICES.md`.
 
 ## Opt-in-Build für die Sitzung am Gerät
 
@@ -211,7 +214,8 @@ npm run dist:win
 
 ### C. Signierter Installer aus der Test-Pipeline
 `test-release.yml` baut, signiert und prüft wie ein Release, veröffentlicht aber nichts. Der Schalter wird dort auf
-einem Wegwerf-Branch gesetzt, der nie nach `dev` gemergt wird:
+einem Wegwerf-Branch gesetzt, der nie nach `dev` gemergt wird. Der Branch muss `test-release/pgm-windows` heißen
+(oder so beginnen): Im CI lässt der Vertragstest den Schalter nur dort gelten.
 
 ```bash
 git fetch origin
@@ -237,7 +241,10 @@ gh run download <run-id> --name test-win-x64 --dir dist-pgm-windows
 
 - Der Vertragstest erlaubt die Zeile nur in `test-release.yml`, nur für den ganzen Job und nur, wenn er selbst mit
   dem Schalter läuft; in diesem Build ist das so. Ohne Schalter ist er rot, also auch in jedem Release-Build: Die
-  Zeile kann nicht unbemerkt auf `dev` liegen. `release.yml` darf den Schalter nie setzen.
+  Zeile kann nicht unbemerkt auf `dev` liegen. Läuft er in GitHub Actions, verlangt er zusätzlich einen Branch,
+  dessen Name mit `test-release/pgm-windows` beginnt: Eine verirrte Zeile auf einem anderen Ref ergibt keinen
+  signierten Installer mit Helper. `release.yml` darf den Schalter nie setzen. Der Name wird in jeder Schreibweise
+  erkannt, weil Windows Umgebungsvariablen ohne Rücksicht auf Groß- und Kleinschreibung liest.
 - Der Lauf baut `pgm-helper.exe`, packt, signiert und prüft sie wie in der Tabelle unter „Paketierung (D10)“. Das
   Ergebnis ist der RC-Installer (NSIS und MSI) mit Helper.
 - Der erste Lauf dieser Art ist zugleich der erste Durchlauf von `dist:win` mit Schalter. Schlägt er fehl, ist das
@@ -328,6 +335,8 @@ reinen Module und ihre Tests (`scripts/pgm-helper-windows-contract.test.cjs`, Te
 | `audio/audio_pairing` (rein) | Paarung Video ↔ Audio: gleiche Container-ID, sonst die Namensregel von macOS |
 | `audio/audio_capture_wasapi.cpp` | WASAPI-Capture im Shared Mode, ereignisgetrieben, 48 kHz Stereo Float über `AUTOCONVERTPCM` |
 | `recorder/mp4_recorder_stub.cpp` | Recorder ohne Funktion; `pgm.recording.start` antwortet `recording_unsupported` |
+| `common/encoder_info_json` (rein) | Was der gewählte Encoder über sich meldet, als JSON-Felder für Ereignis und Status; dazu die Kandidatenliste für `--probe` |
+| `common/encoder_retry_backoff.h` (rein) | Takt der Einrichtungsversuche des Encoders nach einem Fehlschlag: dasselbe Ziel alle 3 s, ein anderes sofort |
 | `build.ps1` | Baut `pgm-helper.exe` neben das Skript, nach dem Muster von `meeting-helper/build.ps1` |
 
 UVC (`uvc_mediafoundation.cpp`):
@@ -352,9 +361,9 @@ UVC (`uvc_mediafoundation.cpp`):
   `monotonic_clock.h`.
 - **Fehlercodes** wie auf macOS: `camera_permission_denied` (Zugriff verweigert), `unsupported_format` (kein
   Medientyp aushandelbar), sonst `device_in_use`. `start` wartet bis zu 750 ms auf das erste Bild oder den ersten
-  Fehler, damit ein belegtes Gerät als Antwort auf `pgm.source.select` scheitert. Spätere Fehler (Kabel gezogen)
-  kommen als Ereignis `pgm_capture_error` mit Code, HRESULT und Grund; der Status fällt über die Signalmessung auf
-  „kein Signal“.
+  Fehler, damit ein belegtes Gerät als Antwort auf `pgm.source.select` scheitert. Spätere Fehler (Kabel gezogen,
+  oder ein erstes Lesen, das erst nach diesen 750 ms scheitert) kommen als Ereignis `pgm_capture_error` mit Code,
+  HRESULT und Grund; der Status fällt über die Signalmessung auf „kein Signal“.
 - **Kamera-Datenschutz**: Windows fragt Desktop-Programme nicht. `camera_permission` liest die Einstellung aus der
   Registrierung (`CapabilityAccessManager\ConsentStore\webcam`, dazu `NonPackaged`): `denied` bei „Deny“ für den
   Benutzer, `restricted` bei „Deny“ für das ganze Gerät, sonst `authorized`.
@@ -368,18 +377,38 @@ Ton (`audio_capture_wasapi.cpp`):
 - Zeitstempel je Paket aus WASAPI (Performance-Counter), mit derselben Plausibilitätsprüfung wie beim Bild.
 - Geht das Gerät im Betrieb verloren (`AUDCLNT_E_DEVICE_INVALIDATED` u. ä.), endet der Capture-Thread mit
   `pgm_audio_unavailable` (Code `audio_device_lost`); das Bild läuft weiter.
-- `stop()` wartet nicht auf den Capture-Thread: die Engine stoppt den Ton unter ihrem Mutex, auf den ein laufender
-  Callback gerade warten kann. Der Thread hält seinen Zustand selbst und räumt ihn ab.
+- `stop()` beendet die Zustellung, bevor es zurückkehrt: Es wartet auf einen laufenden Aufruf der Senke, danach
+  kommt keiner mehr. Die Engine ruft es deshalb außerhalb ihres Mutex auf, den dieser Aufruf braucht. Auf den
+  Capture-Thread selbst wartet es nicht; der hält seinen Zustand und räumt ihn ab.
 
 Standbild und Aufnahme:
 - `pgm.snapshot` liefert unter Windows ein JPEG aus dem portablen Weg. Das Bild kann bis zu 200 ms alt sein.
 - `pgm.recording.start` antwortet `recording_unsupported`, bevor irgendetwas geprüft wird; `pgm.recording.stop` und
   `pgm.recording.status` antworten wie ohne laufende Aufnahme.
 
+Encoder (`pgm_engine.cpp`, `common/encoder_info_json`):
+- **Welcher Encoder läuft**, steht im Ereignis `pgm_encoder_configured` und im Status unter `encoder` (Ereignis
+  `pgm_status`, Antwort auf `pgm.status`). Immer dabei sind `backend` (`mediafoundation`, auf macOS `videotoolbox`)
+  und `hardware`. Unter Windows kommen dazu, soweit der Encoder sie meldet: `name` (Anzeigename des MFT),
+  `vendor_id` (z. B. `VEN_10DE`), `vendor` (`nvidia`, `amd`, `intel` oder `unknown`) und `settings`, die
+  Einstellungen, die gegriffen haben (`codec_api`, `rate_control` mit `peak_vbr`, `cbr`, `vbr` oder `default`,
+  `low_latency`, `gop_frames`, `b_frames_off`, `cabac`, `quality_vs_speed`, `force_keyframe`, `color_signalled`).
+  Ist der Bericht des Encoders kein einzeiliges JSON-Objekt, steht er als Text unter `settings_text`.
+- **`--probe`** listet unter `encoder_candidates` die Hardware-MFTs des Rechners in der Reihenfolge, in der der
+  Encoder sie versucht (`BRIDGE_PGM_ENCODER_VENDOR` eingerechnet), je mit `name`, `vendor_id` und `vendor`. Es ist
+  die Aufzählung des Encoders und nur eine Aufzählung: Kein MFT wird aktiviert, kein Gerät geöffnet. `[]` heißt
+  „kein Hardware-MFT“, `null` „Aufzählung gescheitert“. `encoder` bleibt der Name des Backends. Auf macOS fehlt das
+  Feld.
+- **Einrichtungsversuche**: Scheitert die Einrichtung, wird sie für dasselbe Ziel alle 3 s wiederholt, nicht bei
+  jedem Bild; ändert sich das Signal oder das Ziel, sofort.
+- **Ohne Kamera**: Ein Lauf mit `--synthetic-source 1280x720@30` richtet den Encoder ein. So lässt sich die
+  Hardware-Matrix ohne Gerät aufnehmen (Runbook, Abschnitt 3).
+
 CI (Job `full`), in dieser Reihenfolge:
 1. `scripts/build-pgm-helper.sh` ohne Schalter überspringt und hinterlässt weder Build-Verzeichnis noch `pgm-helper.exe`.
 2. Derselbe Aufruf mit `BROADIFY_PGM_WINDOWS=1` baut `pgm-helper.exe` und die Tests; ctest läuft im Helper-Verzeichnis.
-3. `pgm-helper.exe --probe`: eine JSON-Zeile, Exit-Code 0, leere Geräteliste (der Runner hat keine Kamera).
+3. `pgm-helper.exe --probe`: eine JSON-Zeile, Exit-Code 0, leere Geräteliste (der Runner hat keine Kamera). Geprüft
+   werden Exit-Code, `encoder` und `camera_permission`; die ganze Zeile mit `encoder_candidates` steht im Log.
 4. Lauf mit `--synthetic-source 1280x720@30`: Der Runner hat keinen Hardware-Encoder, also muss `pgm_error` mit
    `encoder_unavailable` kommen und darf kein `pgm_encoder_configured` erscheinen (kein stiller Software-Weg). Über
    die Steuer-Pipe werden danach `pgm.status` (`state: error`, kein Encoder), `pgm.snapshot` (JPEG 1280×720),
@@ -397,10 +426,10 @@ Offen bis zur Sitzung am Gerät (im CI nicht prüfbar, Runbook Abschnitte 5 und 
 - Ob die Registrierungswerte der Kamera-Datenschutzeinstellung auf allen Windows-Ständen so heißen; ein falsches
   `denied` würde die Quellenwahl sperren.
 - Geht der Ton im Betrieb verloren, meldet `pgm_status.audio` weiter `true` (die Engine erfährt es nur als Ereignis).
-- Ohne Hardware-Encoder versucht die Engine die Einrichtung bei jedem Bild neu (wie auf macOS); auf einem Rechner
-  ohne Hardware-MFT ist das eine `MFTEnumEx`-Abfrage je Bild.
-- `--probe` nennt als Encoder weiter fest `"mediafoundation"`, ohne nach einem Hardware-MFT zu suchen, und keinen
-  Gerätemodus (dafür müsste es das Gerät öffnen). Der gewählte Modus steht in `pgm_uvc_mode_selected` und im Signal.
+- Die Felder `name`, `vendor_id`, `vendor` und `settings` und die Liste `encoder_candidates` hat noch kein
+  Hardware-MFT gefüllt: Der CI-Runner hat keinen, dort endet der Lauf in `encoder_unavailable`.
+- `--probe` nennt keinen Gerätemodus (dafür müsste es das Gerät öffnen). Der gewählte Modus steht in
+  `pgm_uvc_mode_selected` und im Signal.
 
 ## Portabler Helper (D6)
 
@@ -508,6 +537,8 @@ Tests:
 | `audio_pairing_test` | alle Plattformen | Container-ID vor Name, zwei gleiche Geräte, Rechner-Container zählt nicht, Namensregel, nie ein fremdes Mikrofon |
 | `snapshot_portable_test` | alle Plattformen | NV12 (mit Zeilenauffüllung) und YUY2 → JPEG → base64; das JPEG wird mit `stb_image` wieder dekodiert und auf Größe und Farben geprüft |
 | `portable_sources_test` | alle Plattformen | die Windows-Bausteine in reinem C++: synthetische Quelle (Form, Takt, Bildzähler), kopierender Bildhalter mit Standbild, Recorder-Stub |
+| `encoder_info_json_test` | alle Plattformen | Encoder-Identität als JSON: nur gemeldete Felder, Einordnung des Herstellers, `settings` als Objekt oder als `settings_text`, Kandidatenliste in der Reihenfolge des Encoders; die Zeile bleibt in jedem Fall ein JSON-Objekt |
+| `encoder_retry_backoff_test` | alle Plattformen | Takt nach einem Fehlschlag: dasselbe Ziel erst nach 3 s wieder, ein anderes Ziel und ein Zurücksetzen sofort |
 | `webrtc_loopback_test` | macOS; Windows mit `LIVE_STREAM_WITH_WEBRTC` | Publisher gegen einen libdatachannel-„Browser“ im selben Prozess: Answer, ICE über Loopback, RTP für eine synthetische IDR-Einheit |
 
 Offen bis zur Sitzung am Gerät (im CI nicht prüfbar):
@@ -515,7 +546,8 @@ Offen bis zur Sitzung am Gerät (im CI nicht prüfbar):
   die Dokumentation nennt an einer Stelle Byte. Am Gerät prüfen, ob die Spitzen im Rahmen bleiben (Abschnitt 3).
 - Reihenfolge NVIDIA/AMD vor Intel ist eine Annahme nach Hersteller, nicht nach tatsächlicher Leistung oder danach,
   an welcher GPU ein Bildschirm hängt. Auf Hybrid-Laptops mit `BRIDGE_PGM_ENCODER_VENDOR` gegenprüfen.
-- Ob jeder Treiber die ICodecAPI-Einstellungen vor oder nach den Medientypen annimmt, zeigt `EncoderInfo.settings`.
+- Ob jeder Treiber die ICodecAPI-Einstellungen vor oder nach den Medientypen annimmt, zeigt `settings` im Ereignis
+  `pgm_encoder_configured` (aus `EncoderInfo.settings`).
 - Verhalten bei Geräteverlust (Treiber-Update, GPU-Wechsel): der MFT meldet `MEError`, der Encoder nimmt danach
   keine Bilder mehr an (`encode()` gibt `false` zurück). Den Neuaufbau muss der Aufrufer anstoßen.
 
@@ -540,10 +572,9 @@ bevor weiterprobiert wird.
 - [ ] Grafiktreiber aktuell; Version notieren (`dxdiag` → Anzeige, oder Geräte-Manager).
 - [ ] Build wie oben mit `BROADIFY_PGM_WINDOWS=1`; ctest-Ergebnis notieren (übersprungene Tests ausdrücklich).
 - [ ] Der Encoder-Smoke-Test läuft auf diesem Rechner **nicht** als „übersprungen“, sondern gegen den Hardware-MFT.
-      Seine Ausgabe nennt den MFT und die angenommenen Einstellungen (`mf_encoder_smoke_test encoder: <Name>
-      (<Hersteller>) settings {…}`); sichern mit
+      Seine Ausgabe (`mf_encoder_smoke_test encoder: <Name> (<Hersteller-ID>) settings {…}`) sichern mit
       `ctest --test-dir apps\bridge\native\pgm-helper\build --build-config Release -R mf_encoder_smoke_test --verbose`.
-      Das ist die Quelle für die Spalte „MFT-Name“ in Abschnitt 3: Der Helper selbst gibt den Namen nicht aus.
+      Sie ist die Gegenprobe zu dem, was der Helper in Abschnitt 3 meldet: Name und Einstellungen müssen gleich sein.
 - [ ] Gegenprobe Schalter aus: Bridge ohne `BRIDGE_PGM_WINDOWS` starten → `get_status.capabilities.live_program.supported`
       ist `false`, Web-App zeigt das Fenster nicht bzw. den bekannten Hinweis; kein `pgm-helper.exe` im Task-Manager.
 - [ ] Bridge mit `BRIDGE_PGM_WINDOWS=1` starten → `supported: true`, `recording` aus.
@@ -553,9 +584,16 @@ bevor weiterprobiert wird.
 .\apps\bridge\native\pgm-helper\pgm-helper.exe --probe
 ```
 - [ ] Ausgabe ist eine JSON-Zeile
-      `{"type":"probe","inputs":{"inputs":[…],"camera_permission":"…"},"encoder":"mediafoundation"}`.
-      `encoder` nennt nur das Backend und steht fest: `--probe` öffnet kein Gerät und sucht keinen Encoder. Der Name
-      des MFT kommt aus dem Smoke-Test (Abschnitt 1), der gewählte UVC-Modus aus `pgm_uvc_mode_selected` (Abschnitt 5).
+      `{"type":"probe","inputs":{"inputs":[…],"camera_permission":"…"},"encoder":"mediafoundation","encoder_candidates":[…]}`.
+      `encoder` nennt das Backend und steht fest.
+- [ ] `encoder_candidates` nennt mindestens einen Hardware-MFT (`name`, `vendor_id`, `vendor`), keinen
+      Software-Encoder. Der erste Eintrag ist der, den der Encoder zuerst versucht. `[]` heißt: Dieser Rechner hat
+      keinen Hardware-H.264-MFT, Abschnitt 3 endet dann in `encoder_unavailable`. `null` heißt: Die Aufzählung ist
+      gescheitert; notieren.
+- [ ] Mit `$env:BRIDGE_PGM_ENCODER_VENDOR = "intel"` (bzw. `nvidia`, `amd`) rückt dieser Hersteller in der Liste nach
+      vorn; ohne die Variable gilt NVIDIA, AMD, Intel, unbekannt.
+- [ ] `--probe` öffnet kein Gerät und aktiviert keinen MFT. Der gewählte UVC-Modus steht deshalb nicht hier, sondern
+      in `pgm_uvc_mode_selected` (Abschnitt 5), der gewählte Encoder in `pgm_encoder_configured` (Abschnitt 3).
 - [ ] `camera_permission` passt zur Datenschutzeinstellung des Rechners (`authorized`, sonst `denied` oder
       `restricted`).
 - [ ] Angeschlossene UVC-Geräte erscheinen mit stabilen Schlüsseln; zweimal ausführen, Schlüssel bleiben gleich.
@@ -563,9 +601,24 @@ bevor weiterprobiert wird.
 - [ ] Exit-Code und Laufzeit notieren (soll unter wenigen Sekunden bleiben).
 
 ### 3. Hardware-Matrix Encoder
-Je Rechner mit `BRIDGE_PGM_SYNTHETIC_SOURCE=1920x1080@60` und einem Zuschauer. Die synthetische Quelle braucht kein
-Gerät; unter Windows liefert sie NV12 im Systemspeicher (seit D7). Der MFT-Name kommt aus dem Smoke-Test
-(Abschnitt 1):
+Die synthetische Quelle braucht kein Gerät; unter Windows liefert sie NV12 im Systemspeicher (seit D7). Der Helper
+richtet den Encoder ein, sobald das Signal gemessen ist, auch ohne Zuschauer. Welcher MFT es geworden ist, steht dann
+in einer Zeile auf stdout:
+
+```powershell
+# optional: $env:BRIDGE_PGM_ENCODER_VENDOR = "intel"
+.\apps\bridge\native\pgm-helper\pgm-helper.exe --run --control-socket \\.\pipe\broadify-pgm-matrix --synthetic-source 1920x1080@60
+# ... {"type":"pgm_encoder_configured","width":1920,"height":1080,…,"backend":"mediafoundation","hardware":true,
+#      "name":"…","vendor_id":"VEN_…","vendor":"…","settings":{…}}      Ende mit Strg+C
+```
+
+- [ ] Je Rechner die Zeile `pgm_encoder_configured` sichern: `name` und `vendor` für die Spalte „MFT-Name“,
+      `settings` für „Low-Latency ok“ (`low_latency`, `rate_control`, `b_frames_off`, `force_keyframe`). `hardware`
+      ist `true`. Dasselbe zeigt `pgm.status` unter `encoder`.
+- [ ] Kommt stattdessen `pgm_error` mit `encoder_unavailable`: Meldung sichern (sie nennt jeden versuchten MFT mit
+      Schritt und HRESULT). Der Helper versucht es alle 3 s erneut, nicht bei jedem Bild.
+
+Die übrigen Spalten mit der Bridge, `BRIDGE_PGM_SYNTHETIC_SOURCE=1920x1080@60` und einem Zuschauer:
 
 | GPU | Treiber | MFT-Name | 1080p60 ok | Low-Latency ok | Keyframe auf PLI | CPU Helper % | Bemerkung |
 |---|---|---|---|---|---|---|---|
@@ -575,17 +628,17 @@ Gerät; unter Windows liefert sie NV12 im Systemspeicher (seit D7). Der MFT-Name
 | Hybrid-Laptop (iGPU aktiv) |  |  |  |  |  |  |  |
 | Hybrid-Laptop (dGPU erzwungen) |  |  |  |  |  |  |  |
 
-- [ ] `pgm_encoder_configured` nennt Auflösung, Bildrate und Bitrate; `pgm.status` zeigt `encoder.backend`
-      `mediafoundation` und `encoder.hardware` `true`. `pgm_perf` (`BRIDGE_LOG_PERF=1`) zeigt Kodier-fps = Quell-fps,
-      keine wachsenden Drops.
+- [ ] `pgm_encoder_configured` (im Helper-Ereignislog) nennt denselben Encoder wie oben, dazu Auflösung, Bildrate
+      und Bitrate. `pgm_perf` (`BRIDGE_LOG_PERF=1`) zeigt Kodier-fps = Quell-fps, keine wachsenden Drops.
 - [ ] Keine B-Frames: Bild im Browser läuft ohne Sprünge; `chrome://webrtc-internals` zeigt gleichmäßige
       `framesDecoded`, keine wachsenden `framesDropped`.
 - [ ] Neuer Zuschauer bekommt sofort ein Bild (Keyframe bei Beitritt); Tab neu laden → Bild in unter 1 s.
 - [ ] Profil `remote` (720p) wählen → Skalierung stimmt (kein Versatz, keine grünen Ränder, Farben wie in 1080p).
 - [ ] Farben gegen macOS vergleichen (Farbbalken): kein sichtbarer Range-/Matrix-Fehler (BT.709, Video-Range).
 - [ ] Hybrid-Laptop: welcher MFT wird gewählt, wenn das interne Display an der iGPU hängt? Auf Akku wiederholen.
-- [ ] Rechner ohne Hardware-H.264 (falls vorhanden: VM oder RDP-Sitzung): sauberes `encoder_unavailable`, kein Bild,
-      kein Software-Fallback, Helper bleibt bedienbar.
+- [ ] Rechner ohne Hardware-H.264 (falls vorhanden: VM oder RDP-Sitzung): `--probe` zeigt `encoder_candidates: []`,
+      der Lauf endet in einem sauberen `encoder_unavailable`, kein Bild, kein Software-Fallback, Helper bleibt
+      bedienbar, CPU-Last des Helpers unauffällig (Wiederholung alle 3 s).
 
 ### 4. Zwei parallele Encoder-Sessions
 Hintergrund: Meeting-Aufnahme (Media Foundation) und Programm-Stream laufen gleichzeitig; später kommt die

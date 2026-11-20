@@ -33,8 +33,9 @@ Aufnahme (ADR-0006).
   noch über RPC.
 - Die Auswahl- und Fehlerlogik (Reihenfolge der Kandidaten, Abbruchgründe) liegt in einem reinen Policy-Modul, das
   auf macOS mit einem Fake getestet wird.
-- Der Name des gewählten MFT wird gemeldet (`EncoderInfo.name`), damit der Gerätetest die Hardware-Matrix belegen
-  kann. `--probe` nennt nur das Backend: Es sucht keinen Encoder.
+- Der Name des gewählten MFT wird gemeldet, damit der Gerätetest die Hardware-Matrix belegen kann: aus
+  `EncoderInfo.name` im Ereignis `pgm_encoder_configured` und im Status. `--probe` listet die Hardware-MFTs in der
+  Reihenfolge, in der der Encoder sie versucht (`encoder_candidates`), ohne einen zu aktivieren.
 
 ### 2. Eingabe: NV12 im Systemspeicher, kein D3D-Manager in v1
 - v1 übergibt dem MFT `IMFMediaBuffer` im Systemspeicher (NV12). Kein `IMFDXGIDeviceManager`, keine D3D11-Texturen.
