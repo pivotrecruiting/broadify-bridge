@@ -30,6 +30,7 @@ namespace {
 constexpr auto kIdlePoll = std::chrono::milliseconds(100);
 constexpr auto kFrameWait = std::chrono::milliseconds(200);
 constexpr auto kHousekeeping = std::chrono::seconds(1);
+constexpr auto kEmptyStoreWait = std::chrono::milliseconds(20);
 
 }  // namespace
 
@@ -201,10 +202,17 @@ struct ProgramStream::Impl {
       if (!frames.waitForNewFrame(lastSequence, now + kFrameWait)) {
         continue;
       }
-      frames.visitLatestIfNew(lastSequence, [&](const PreviewFrame &frame) {
+      const bool visited = frames.visitLatestIfNew(lastSequence, [&](const PreviewFrame &frame) {
         lastSequence = frame.sequence;
         encodeFrame(frame);
       });
+      if (!visited) {
+        // A new sequence without a frame: the store was cleared (camera stop, virtual camera stop).
+        // There is nothing to take until the next publish and waitForNewFrame() would return at
+        // once again, so wait here instead of spinning.
+        std::unique_lock<std::mutex> lock(wakeMutex);
+        wake.wait_for(lock, kEmptyStoreWait, [this]() { return !running.load(); });
+      }
     }
     setConsumer(false);
   }
