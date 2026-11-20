@@ -140,6 +140,11 @@ struct Harness {
   }
 };
 
+ULONG refsOf(IUnknown *object) {
+  object->AddRef();
+  return object->Release();
+}
+
 size_t countNals(const std::vector<uint8_t> &annexB, int type) {
   size_t count = 0;
   for (size_t i = 0; i + 4 < annexB.size(); ++i) {
@@ -461,7 +466,8 @@ void testInputFormats() {
   auto state = fake->state();
   if (state.lastInputLength != kWidth * kHeight * 3 / 2 || state.lastInputFirstByte != 77) fail("formats: YUY2 must arrive as NV12 of the encode size");
 
-  // An NV12 sample of the encode size is handed on without a copy.
+  // A capturer's sample behind nativeHandle is not an input path: the planes are copied into one of the
+  // encoder's own samples, the capturer's sample is neither handed to the MFT nor kept nor touched.
   ComPtr<IMFMediaBuffer> buffer;
   ComPtr<IMFSample> sample;
   const DWORD size = kWidth * kHeight * 3 / 2;
@@ -472,21 +478,31 @@ void testInputFormats() {
   buffer->Unlock();
   buffer->SetCurrentLength(size);
   sample->SetSampleTime(123);
-  CapturedFrame native;
-  native.nativeHandle = sample.Get();
-  native.width = kWidth;
-  native.height = kHeight;
-  native.pixelFormat = "nv12";
-  native.captureNs = captureNsOf(1);
-  if (!h.encoder->encode(native, false)) fail("formats: native sample rejected");
-  if (!waitFor([&] { return h.unitCount() == 2; })) fail("formats: native sample not encoded");
+  const ULONG sampleRefs = refsOf(sample.Get());
+  const ULONG bufferRefs = refsOf(buffer.Get());
+  Nv12Frame native(kWidth, kHeight, 88, captureNsOf(1));
+  native.frame.nativeHandle = sample.Get();
+  if (!h.encoder->encode(native.frame, false)) fail("formats: frame with planes and a native sample rejected");
+  if (!waitFor([&] { return h.unitCount() == 2; })) fail("formats: frame with a native sample not encoded");
   state = fake->state();
-  if (state.lastInputBuffer != buffer.Get()) fail("formats: native NV12 sample must be passed without a copy");
-  if (state.inputTimes.back() != static_cast<LONGLONG>(captureNsOf(1) / 100)) fail("formats: native sample must be stamped with the capture time");
+  if (state.lastInputBuffer == buffer.Get()) fail("formats: the capturer's buffer must not be handed to the MFT");
+  if (state.lastInputLength != size || state.lastInputFirstByte != 88) fail("formats: the planes must be copied into the encoder's own sample");
+  if (state.inputTimes.back() != static_cast<LONGLONG>(captureNsOf(1) / 100)) fail("formats: the encoder's sample must be stamped with the capture time");
+  if (refsOf(sample.Get()) != sampleRefs || refsOf(buffer.Get()) != bufferRefs) fail("formats: the encoder must not keep the capturer's sample or buffer");
   LONGLONG untouched = 0;
   sample->GetSampleTime(&untouched);
   if (untouched != 123) fail("formats: the capturer's sample must keep its own timestamp");
-  if (h.unit(1).captureNs != captureNsOf(1)) fail("formats: native sample timestamp");
+  if (h.unit(1).captureNs != captureNsOf(1)) fail("formats: timestamp of the frame with a native sample");
+
+  // Without planes there is nothing to encode, whatever nativeHandle carries.
+  CapturedFrame nativeOnly;
+  nativeOnly.nativeHandle = sample.Get();
+  nativeOnly.width = kWidth;
+  nativeOnly.height = kHeight;
+  nativeOnly.pixelFormat = "nv12";
+  nativeOnly.captureNs = captureNsOf(2);
+  if (h.encoder->encode(nativeOnly, false)) fail("formats: a native sample without planes accepted");
+  if (refsOf(sample.Get()) != sampleRefs) fail("formats: a refused frame must not leave a reference on the capturer's sample");
 
   // Unknown formats and frames without pixels are refused, not encoded as garbage.
   CapturedFrame unknown = packed;
@@ -497,7 +513,7 @@ void testInputFormats() {
   empty.height = kHeight;
   empty.pixelFormat = "nv12";
   if (h.encoder->encode(empty, false)) fail("formats: frame without planes accepted");
-  if (mediaFoundationEncoderStats(*h.encoder).rejected != 2) fail("formats: rejected stat");
+  if (mediaFoundationEncoderStats(*h.encoder).rejected != 3) fail("formats: rejected stat");
 }
 
 void testShutdownWithPendingWork() {

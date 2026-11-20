@@ -202,11 +202,38 @@ add_subdirectory(../helper-common helper-common)
 # Shared hardware encoder + WebRTC publisher (apps/bridge/native/live-stream), also used by the PGM helper.
 add_subdirectory(../live-stream live-stream)
 
+if(TARGET live_stream)
+  # Where the real program stream is built (macOS, Windows behind the build
+  # switch): what it shares with the PGM helper, taken from that helper's
+  # sources so that both go through one implementation. Compiled here: the
+  # picked encoder's identity for the stream's event and status. Header only:
+  # the pacing of failed encoder set-ups (encoder_retry_backoff.h). The users
+  # of this library see the PGM helper's `common` directory and nothing else
+  # of that tree (both helpers have e.g. a macos/macos_app.h); only the
+  # module's own source is compiled with the tree root, which its include
+  # names.
+  add_library(program_stream_encoder_info STATIC ../pgm-helper/src/common/encoder_info_json.cpp)
+  target_include_directories(program_stream_encoder_info
+    PUBLIC ../pgm-helper/src/common
+    PRIVATE ../pgm-helper/src
+  )
+  target_link_libraries(program_stream_encoder_info PUBLIC live_stream_core helper_common)
+endif()
+
 if(APPLE)
-  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.mm src/live/program_stream_frame_copy.mm)
-  set_source_files_properties(src/live/program_stream.mm src/live/program_stream_frame_copy.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  # Program stream: portable worker + the VideoToolbox frame converter.
+  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.cpp src/live/program_frame_converter_vt.mm)
+  set_source_files_properties(src/live/program_frame_converter_vt.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   add_executable(meeting-helper MACOSX_BUNDLE ${MEETING_HELPER_SOURCES})
-  target_link_libraries(meeting-helper PRIVATE live_stream)
+  target_link_libraries(meeting-helper PRIVATE live_stream program_stream_encoder_info)
+elseif(WIN32 AND TARGET live_stream)
+  # Windows behind the build switch (ADR-0009): `live_stream` only exists when
+  # live-stream was configured with its WebRTC part (BROADIFY_PGM_WINDOWS=1 or
+  # -DLIVE_STREAM_WITH_WEBRTC=ON, see build.ps1). Same worker, NV12 frame
+  # converter, Media Foundation encoder and libdatachannel from live_stream.
+  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.cpp src/live/program_frame_converter_nv12.cpp)
+  add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
+  target_link_libraries(meeting-helper PRIVATE live_stream program_stream_encoder_info)
 else()
   list(APPEND MEETING_HELPER_SOURCES src/live/program_stream_stub.cpp)
   add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
@@ -695,7 +722,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     # -fsanitize=address to see the pre-fix write past the buffer).
     add_executable(program_stream_scale_test
       tests/program_stream_scale_test.mm
-      src/live/program_stream_frame_copy.mm
+      src/live/program_frame_converter_vt.mm
       src/util/pixel_swizzle.cpp
     )
     set_source_files_properties(tests/program_stream_scale_test.mm PROPERTIES
@@ -705,19 +732,71 @@ if(MEETING_HELPER_BUILD_TESTS)
     target_link_libraries(program_stream_scale_test PRIVATE live_stream)
     add_test(NAME program_stream_scale_test COMMAND program_stream_scale_test)
     set_tests_properties(program_stream_scale_test PROPERTIES TIMEOUT 60)
-    # Regression for the worker spinning on a cleared PreviewFrameStore: the
-    # real ProgramStream with a registered viewer, judged by the CPU time of
-    # the process while there is no frame to take.
-    add_executable(program_stream_idle_test
-      tests/program_stream_idle_test.cpp
-      src/live/program_stream.mm
-      src/live/program_stream_frame_copy.mm
-      src/preview/preview_frame_store.cpp
-      src/util/pixel_swizzle.cpp
+  endif()
+
+  # Tests of the real program stream: wherever it is built, i.e. macOS and
+  # Windows behind the build switch. A Windows build without the switch has no
+  # `live_stream` target and none of these.
+  if(TARGET live_stream)
+    # The NV12 frame converter (the Windows one) is pure C++: converted pixels,
+    # plane layout and the way through the encoder's NV12 input stage.
+    add_executable(program_frame_converter_nv12_test
+      tests/program_frame_converter_nv12_test.cpp
+      src/live/program_frame_converter_nv12.cpp
     )
-    target_include_directories(program_stream_idle_test PRIVATE src)
-    target_link_libraries(program_stream_idle_test PRIVATE live_stream helper_common)
-    add_test(NAME program_stream_idle_test COMMAND program_stream_idle_test)
-    set_tests_properties(program_stream_idle_test PROPERTIES TIMEOUT 60)
+    target_include_directories(program_frame_converter_nv12_test PRIVATE src)
+    target_link_libraries(program_frame_converter_nv12_test PRIVATE live_stream_core helper_common)
+    add_test(NAME program_frame_converter_nv12_test COMMAND program_frame_converter_nv12_test)
+
+    # The worker end to end against a libdatachannel viewer in the same
+    # process, with the platform's frame converter and hardware encoder.
+    set(PROGRAM_STREAM_LOOPBACK_TEST_SOURCES
+      tests/program_stream_loopback_test.cpp
+      src/live/program_stream.cpp
+      src/preview/preview_frame_store.cpp
+    )
+    if(APPLE)
+      list(APPEND PROGRAM_STREAM_LOOPBACK_TEST_SOURCES
+        src/live/program_frame_converter_vt.mm
+        src/util/pixel_swizzle.cpp
+      )
+    else()
+      list(APPEND PROGRAM_STREAM_LOOPBACK_TEST_SOURCES src/live/program_frame_converter_nv12.cpp)
+    endif()
+    add_executable(program_stream_loopback_test ${PROGRAM_STREAM_LOOPBACK_TEST_SOURCES})
+    # The same test on top of the NV12 converter and an encoder defined in the
+    # test (it replaces createHardwareEncoder(); the platform encoder object in
+    # the live_stream archive is then never pulled in). Runs without hardware,
+    # also on macOS: the Windows frame hand-over of the worker.
+    add_executable(program_stream_nv12_loopback_test
+      tests/program_stream_loopback_test.cpp
+      src/live/program_stream.cpp
+      src/live/program_frame_converter_nv12.cpp
+      src/preview/preview_frame_store.cpp
+    )
+    target_compile_definitions(program_stream_nv12_loopback_test PRIVATE PROGRAM_STREAM_TEST_ENCODER=1)
+    foreach(stream_test program_stream_loopback_test program_stream_nv12_loopback_test)
+      target_include_directories(${stream_test} PRIVATE src)
+      target_link_libraries(${stream_test} PRIVATE live_stream program_stream_encoder_info helper_common)
+      add_test(NAME ${stream_test} COMMAND ${stream_test})
+      set_tests_properties(${stream_test} PROPERTIES TIMEOUT 120)
+    endforeach()
+
+    if(APPLE)
+      # Regression for the worker spinning on a cleared PreviewFrameStore: the
+      # real ProgramStream with a registered viewer, judged by the CPU time of
+      # the process while there is no frame to take.
+      add_executable(program_stream_idle_test
+        tests/program_stream_idle_test.cpp
+        src/live/program_stream.cpp
+        src/live/program_frame_converter_vt.mm
+        src/preview/preview_frame_store.cpp
+        src/util/pixel_swizzle.cpp
+      )
+      target_include_directories(program_stream_idle_test PRIVATE src)
+      target_link_libraries(program_stream_idle_test PRIVATE live_stream program_stream_encoder_info helper_common)
+      add_test(NAME program_stream_idle_test COMMAND program_stream_idle_test)
+      set_tests_properties(program_stream_idle_test PROPERTIES TIMEOUT 60)
+    endif()
   endif()
 endif()

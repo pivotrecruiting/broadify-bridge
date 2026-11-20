@@ -57,12 +57,16 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # Development cert). Ad-hoc signatures change on every build, which
   # invalidates the macOS camera (TCC) grant and breaks the meeting camera after
   # each rebuild. `-p` (not `-v`) so an untrusted self-signed identity is found.
+  # A machine with no such identity (hosted CI runner, fresh checkout) makes
+  # grep find nothing; under `pipefail` that would end the script here without
+  # a word. It means "no identity" and leads to the ad-hoc signature below.
   if [[ -z "${SIGNING_IDENTITY}" ]]; then
     SIGNING_IDENTITY="$(
       security find-identity -p codesigning 2>/dev/null \
         | grep -oE '"(Broadify Dev Signing|Apple Development: [^"]*)"' \
         | tr -d '"' \
-        | head -n 1
+        | head -n 1 \
+        || true
     )"
   fi
 

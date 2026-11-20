@@ -60,7 +60,7 @@ macOS-Fassung; unter Windows kommt nur `recording_unsupported` dazu.
 | Standbild | ImageIO | portabler JPEG-Pfad | D7 |
 | Aufnahme | zweiter VT-Encoder + AVAssetWriter (ADR-0006) | Stub, `recording_unsupported` | D7, D9 |
 | Helper-Einstieg | `main.cpp` + `platform/platform_host_mac.mm` (bis D6 `main.mm`) | dasselbe `main.cpp` + `platform/platform_host_win.cpp` | D6 |
-| Meeting-Programm | `program_stream.mm` | gemeinsamer `program_stream.cpp` + Konverter je Plattform | D8 |
+| Meeting-Programm | `program_stream.cpp` + `program_frame_converter_vt.mm` (bis D8 `program_stream.mm`) | derselbe `program_stream.cpp` + `program_frame_converter_nv12.cpp`, nur mit Build-Schalter | D8 |
 | Bridge-Gate | `platform === "darwin"` | `isPgmPlatformSupported()` mit `BRIDGE_PGM_WINDOWS`, `windowsHide` beim Start | D9 |
 | Packaging | signierte Helper-App | `pgm-helper.exe` in Packaging-, Signier-, VC-Runtime- und Artefaktlisten, nur mit Build-Schalter | D10 |
 
@@ -318,6 +318,151 @@ $env:BRIDGE_LOG_PERF = "1"
 $env:BRIDGE_PGM_HELPER_PATH = "<repo>\apps\bridge\native\pgm-helper\pgm-helper.exe"
 ```
 
+## Meeting-Programm (D8)
+
+`ProgramStream` des Meeting-Helpers ist in einen portablen Worker und einen Bildkonverter je Plattform geteilt. Auf
+macOS verhält er sich wie vorher, mit einer Ausnahme: Das Ereignis `encoder_configured` nennt zusätzlich
+`"backend":"videotoolbox","hardware":true`; `program.stream.status` hatte beide Schlüssel schon und ist unverändert.
+Unter Windows entsteht der Stream nur mit dem Build-Schalter; ohne ihn linkt der Helper wie bisher den Stub und
+antwortet `program_stream_unavailable`. Auf Windows-Hardware gelaufen ist davon nichts.
+
+| Datei (`meeting-helper/src/live/`) | Inhalt | Gebaut |
+|---|---|---|
+| `program_stream.cpp` (vorher `program_stream.mm`) | Worker-Thread, Zuschauer, Encoder-Einrichtung aus der Bildgeometrie, Status-JSON. Keine Plattform-API | macOS; Windows mit Schalter |
+| `program_frame_converter.h` | Naht zum Plattformteil: `prepare(Breite, Höhe)`, `convert(PreviewFrame, CapturedFrame)`, `release`, `reset`, dazu zwei Angaben für den Worker (Tabelle unten) | – |
+| `program_frame_converter_vt.mm` (vorher `program_stream_frame_copy.mm`) | macOS: Puffer-Pool und begrenzte RGBA→BGRA-Kopie, unverändert, und der Konverter darum | macOS |
+| `program_frame_converter_nv12.cpp` | Windows: RGBA → NV12 in Bildgröße (BT.709, Video-Range) mit `rgba_to_nv12` in einen wiederverwendeten Puffer. Reines C++, kein Media-Foundation-Aufruf | Windows mit Schalter; als Test auch macOS |
+| `program_stream_stub.cpp` | unverändert | Windows ohne Schalter, übrige Plattformen |
+
+Weg eines Bildes unter Windows:
+1. Der Worker kopiert das Programmbild aus dem `PreviewFrameStore` (`copyLatestIfNew`). Nur für diese Kopie hält er die
+   Sperre des Stores; `publish()` der Frame-Pipeline wartet also nie auf Umwandlung, Skalierung oder einen
+   Media-Foundation-Aufruf.
+2. Der Konverter wandelt nach NV12 in der Größe des Bildes. Die Geometrie kommt aus jedem Bild: Ändert sie sich
+   (z. B. auf 1080×1920), legt er den Puffer neu an. Ein Bild, das nicht zur vorbereiteten Größe passt oder zu kurz
+   ist, wird verworfen und gezählt (`dropped_frames`), nie abgeschnitten.
+3. Das Encoder-Ziel ist `selectEncodeTarget(Bildgröße, Profil des ersten Zuschauers)`. Ändert es sich, wird der
+   Encoder neu eingerichtet.
+4. `encode()`: Die Eingangsstufe des Media-Foundation-Encoders kopiert die NV12-Ebenen in ein eigenes `IMFSample`
+   aus ihrem Vorrat und skaliert dabei mit `nv12_scale`, wenn das Ziel kleiner ist als das Bild (Profil `remote`:
+   1920×1080 → 1280×720, 1080×1920 → 720×1280). Der Konverter selbst skaliert nicht und hält kein
+   Media-Foundation-Objekt.
+
+Was der Konverter dem Worker vorgibt:
+
+| | macOS (VideoToolbox) | Windows (Media Foundation) |
+|---|---|---|
+| Übergabe (`runsUnderStoreLock`) | Umwandlung und `encode()` unter der Store-Sperre, direkt aus dem Bild des Stores (wie bisher) | erst die Kopie aus dem Store, alles Weitere ohne Sperre |
+| Pause nach gescheiterter Encoder-Einrichtung (`pacesEncoderRetries`) | keine: jedes Bild versucht es neu (wie bisher) | die Regel des PGM-Helpers, aus derselben Datei (`pgm-helper/src/common/encoder_retry_backoff.h`): 3 s für dasselbe Ziel; ein Ziel anderer Größe wird sofort versucht, und eine gelungene Einrichtung hebt die Pause auf |
+
+Unabhängig vom Konverter: Ist der Store geleert, während ein Zuschauer bleibt (`camera.stop`,
+`output.vcam.raw.stop`), gibt es eine neue Sequenz, aber kein Bild. Der Worker wartet dann auf das nächste Bild, bei
+beiden Übergaben; auf macOS ist das der Fix aus #291.
+
+Ohne Hardware-Encoder meldet `program.stream.status` `encoder: null` und `last_error.code = encoder_unavailable` mit der
+Meldung des Encoders (versuchte MFTs mit Schritt und HRESULT). Bilder werden verworfen und gezählt; einen Software-Weg
+gibt es nicht.
+
+Welcher Encoder gewählt wurde, steht im Ereignis `meeting_program_stream` / `encoder_configured` und in
+`program.stream.status.encoder`, mit den Schlüsseln des PGM-Helpers:
+
+| Schlüssel | Inhalt | macOS (VideoToolbox) |
+|---|---|---|
+| `backend`, `hardware` | `mediafoundation` bzw. `videotoolbox`, Hardware-Encoder ja/nein | ja |
+| `name` | Anzeigename des gewählten Encoder-MFT | – |
+| `vendor_id`, `vendor` | z. B. `VEN_10DE`; daraus `nvidia`, `amd`, `intel` oder `unknown` | – |
+| `settings` | Objekt mit den Einstellungen, die der Encoder angenommen hat (als Text in `settings_text`, falls es kein JSON-Objekt in einer Zeile ist) | – |
+
+`name`, `vendor_id`, `vendor` und `settings` erscheinen nur, wenn der Encoder sie meldet. Gebaut werden sie vom Modul
+des PGM-Helpers (`pgm-helper/src/common/encoder_info_json.cpp`); der Meeting-Helper kompiliert diese Datei von dort
+(`program_stream_encoder_info` in `meeting-helper/CMakeLists.txt`, nur wo der echte Stream gebaut wird) und hat keine
+eigene Fassung. Die Bridge reicht den Status ohne Schema durch (`meeting_program_status`).
+
+Build:
+- `meeting-helper/CMakeLists.txt`: macOS → Worker + VideoToolbox-Konverter. `WIN32 AND TARGET live_stream` → Worker +
+  NV12-Konverter + `live_stream`. Sonst der Stub, Zeile für Zeile wie bisher. Das Target `live_stream` gibt es unter
+  Windows nur, wenn `live-stream` mit seinem WebRTC-Teil konfiguriert wurde.
+- `meeting-helper/build.ps1`: mit `BROADIFY_PGM_WINDOWS=1` zusätzlich `-DLIVE_STREAM_WITH_WEBRTC=ON`;
+  `MEETING_HELPER_CMAKE_EXTRA_ARGS` reicht dann weitere Konfigurationsargumente durch. Ohne Schalter derselbe
+  Konfigurationsaufruf wie bisher.
+- Ein Build-Verzeichnis, das mit Schalter konfiguriert wurde, behält ihn im CMake-Cache. `build.ps1` ohne Schalter
+  bricht dann mit einem Hinweis ab, statt den Stream stillschweigend wieder zu bauen: `meeting-helper\build` löschen.
+- Voraussetzung mit Schalter: das statische OpenSSL aus `scripts/prepare-windows-pgm-deps.ps1`, wie beim PGM-Helper.
+- `scripts/pgm-meeting-stream-contract.test.cjs` (Teil von `test:release-contracts`) prüft das am Quelltext.
+
+Tests:
+
+| Test | Wo | Was |
+|---|---|---|
+| `program_frame_converter_nv12_test` | macOS; Windows mit Schalter | Der NV12-Konverter: Farbwerte, Lage der Ebenen, 1920×1080, 1080×1920, 3840×2160, ungerade Größe, Wiederverwendung und Neuanlage des Puffers, abgelehnte Bilder. Dazu der Weg durch `frameToNv12` auf die Größe, die der Encoder plant |
+| `program_stream_loopback_test` | macOS; Windows mit Schalter | Der echte Worker gegen einen libdatachannel-Zuschauer im selben Prozess, mit Konverter und Hardware-Encoder der Plattform: Anmeldung als Vorschau-Verbraucher, Encoder aus der Bildgeometrie (1920×1080 mit Profil `remote`), Wechsel auf 1080×1920, neues Profil durch einen neuen ersten Zuschauer, Warten bei geleertem Store (CPU-Zeit des Prozesses, höchstens 5 % der Laufzeit) und das nächste Bild danach, Ruhe ohne Zuschauer, Stop und Neustart. Ohne Hardware-Encoder erwartet er `encoder_unavailable` und kein kodiertes Bild |
+| `program_stream_nv12_loopback_test` | macOS; Windows mit Schalter | Derselbe Test mit dem NV12-Konverter und einem Encoder, den der Test stellt. Läuft überall ohne Hardware und hält die Windows-Übergabe fest: Bilder kommen als NV12 in Bildgröße mit den richtigen Werten an, kein Encoder-Aufruf unter der Store-Sperre, ein vom Encoder abgelehntes Bild zählt als verworfen, Pause nach gescheiterter Einrichtung (gleiches Ziel erst nach 3 s, anderes Ziel sofort, ein zurückkehrendes Ziel nach einer gelungenen Einrichtung ebenfalls sofort). Das Warten bei geleertem Store prüft er damit für die kopierende Übergabe |
+| `program_stream_idle_test` | macOS | Aus #291: der echte Stream mit VideoToolbox und einem Zuschauer, der nie verbindet; CPU-Zeit des Prozesses bei geleertem Store |
+| `program_stream_scale_test` | macOS | wie bisher Pool und Kopie, jetzt zusätzlich über die Konverter-Naht |
+
+Die beiden Loopback-Tests signalisieren die ICE-Kandidaten beider Seiten auf 127.0.0.1 (beide Seiten binden ihren
+Socket an alle Adressen). Auf der LAN-Adresse des Rechners verwerfen lokale Paketfilter auf manchen Rechnern
+Datagramme zwischen zwei Sockets desselben Prozesses; mit dem Stream hat das nichts zu tun.
+
+CI (Job `meeting`), zwei unabhängige Läufe, beide mit den Matting-Backends wie `dist:win` (ONNX Runtime aus dem Repo,
+OpenVINO über das Skript des Releases). Bleibt der OpenVINO-Download nach drei Versuchen aus, wird trotzdem gebaut und
+getestet, ohne dieses Backend; das ist dann nicht die Release-Konfiguration, die Job-Zusammenfassung sagt es
+(„built WITHOUT the OpenVINO backend“), und der letzte Schritt lässt den Lauf rot enden. In den Release-Workflows ist
+derselbe Download seit dem 08.08. in 154 von 154 Windows-Builds gelungen (Stand 20.11.).
+1. **Standard, ohne Schalter**: genau die beiden Befehle des Releases, `npm run build:meeting-helper` und
+   `npm run test:meeting-helper-native`, seriell gebaut wie dort (ohne `CMAKE_BUILD_PARALLEL_LEVEL`, also ohne `/m`).
+   Danach die Prüfung, dass nichts vom Live-Programm konfiguriert oder kompiliert wurde (kein `_deps`, kein
+   `LIVE_STREAM_*` im CMake-Cache, Stub im Helper). Dieser Lauf braucht nichts, was erst D8 mitbringt; er ist der
+   Windows-Compile jeder Änderung unter `meeting-helper`.
+2. **Mit `BROADIFY_PGM_WINDOWS=1`**: derselbe Einstieg mit Schalter, Prüfung, dass der Helper `program_stream.cpp` und
+   den NV12-Konverter enthält und keine OpenSSL-DLL importiert, ctest, die Loopback-Tests mit einer Wiederholung. Zum
+   Schluss muss ein Build ohne Schalter dieses Build-Verzeichnis ablehnen.
+
+Der Pfadfilter des Workflows umfasst seit D8 ganz `meeting-helper` (Quellen, Tests, `CMakeLists.txt`, `build.ps1`).
+
+CI (Job `meeting-macos`, Runner `macos-15`): das Tor des macOS-Releases für den Meeting-Helper. `dist:mac:arm64` baut
+den Helper und lässt dann seine nativen Tests laufen; schlägt einer fehl, gibt es kein Release. Dazu gehören seit
+#291 und D8 `program_stream_idle_test` und die beiden Loopback-Tests, die nach CPU-Zeit und Zeitgrenzen urteilen und
+einen Zuschauer über lokales ICE verbinden. Der Job führt die beiden Befehle des Releases in dessen Reihenfolge aus
+(`npm run build:meeting-helper`, `npm run test:meeting-helper-native`), seriell gebaut, und danach die drei Tests
+zehnmal in Folge.
+
+| | Release (`dist:mac:arm64`) | Job `meeting-macos` |
+|---|---|---|
+| Runner, Node, Xcode, CMake, Homebrew-`openssl@3` des Runner-Images | ja (kein eigener Installationsschritt für OpenSSL) | gleich; `openssl@3` wird geprüft, nicht installiert |
+| Deployment-Target 13.0, MODNet aus, libdatachannel beim Konfigurieren geholt | ja | gleich |
+| CoreML-Modell (`prepare:modnet-coreml-model`, Secret-URL) | ja | nein: Paketierungs-Ressource, weder Build noch ctest des Helpers lesen sie |
+| übrige Schritte von `dist:mac` (andere Helper, Electron, Prüfskripte), `npm ci` | ja | nein: die beiden Befehle rufen ein Shell-Skript, cmake und ctest |
+| Signatur des Helper-Bundles | Developer ID | ad hoc (kein Zertifikat ohne Secrets); die Test-Programme signiert `build.sh` in keinem Fall |
+
+Encoder-Eingabe, Änderung an D4: `mf_encoder.cpp` hat nur noch einen Eingabeweg, die Kopie in ein eigenes Sample. Der
+frühere Weg für ein `IMFSample` des Capturers (`CapturedFrame.nativeHandle`) legte ein neues Sample um dessen Puffer,
+ohne das Sample des Capturers festzuhalten und ohne zu prüfen, ob der Puffer Systemspeicher mit genau einem NV12-Bild
+ist. Der Allokator eines Source Readers verwendet ein Sample wieder, sobald dessen eigener Referenzzähler es freigibt;
+die Kamera hätte den Puffer also überschreiben können, während der MFT noch liest. Keine Quelle setzt `nativeHandle`
+(UVC lässt es absichtlich leer, das Meeting-Programm übergibt Ebenen), und prüfbar wäre der Weg nur am Gerät gewesen.
+Er ist deshalb entfernt statt gehärtet; `mf_encoder_fake_mft_test` und `scripts/pgm-mf-encoder-contract.test.cjs`
+halten das fest.
+
+Offen bis zur Sitzung am Gerät:
+- Kein Bild des Meeting-Programms ist unter Windows je durch einen Hardware-Encoder gelaufen. Im CI endet der echte
+  Weg in `encoder_unavailable`; der Weg mit Bildern läuft dort nur gegen den Encoder des Tests.
+- CPU-Kosten je Bild: eine Kopie des RGBA-Bildes (8,3 MB bei 1080p), die skalare Umwandlung nach NV12 und die Kopie
+  bzw. Skalierung in das Sample des Encoders. Am Gerät messen (Runbook, Abschnitte 8 und 12).
+- Die Encoder-Einrichtung läuft unter dem Mutex des Streams. Solange ein Hardware-MFT aktiviert wird (vom Encoder auf
+  15 s begrenzt), warten `program.stream.status` und `program.viewer.offer` auf diesen Mutex. Der Control-Server des
+  Helpers arbeitet Befehle nacheinander ab; hinter einem so wartenden Befehl steht deshalb jeder weitere RPC des
+  Helpers, bis die Einrichtung fertig ist.
+- `dropped_frames` zählt, was der Worker verwirft (kein Encoder, der Konverter oder `encode()` lehnt ab). Ersetzt der
+  Media-Foundation-Encoder ein Bild in seinem Postfach („Encoder (D4)“), zählt nur er das (`MfEncoderStats.dropped`,
+  lesbar allein über die Test-Naht); in `program.stream.status` steht es nicht. Sichtbar wird es dort nur daran, dass
+  `encoded_frames` langsamer wächst als die Bildrate des Programms.
+- Meldet der MFT im Betrieb `MEError` (Treiber-Update, GPU-Wechsel), lehnt der Encoder danach jedes Bild ab (siehe
+  „Encoder (D4)“). Der Worker zählt diese Bilder nur als verworfen; neu eingerichtet wird der Encoder erst, wenn sich
+  Bildgröße oder Profil ändern oder der Helper neu startet. Im PGM-Helper ist es dasselbe.
+- Der Helper selbst kennt keinen Laufzeit-Schalter. Ob ein Offer bis zu ihm kommt, entscheidet die Bridge
+  (`BRIDGE_PGM_WINDOWS`).
+
 ## Windows-Quellen des Helpers (D7)
 
 `pgm-helper.exe` entsteht nur, wenn der WebRTC-Teil von `live-stream` konfiguriert wurde (CMake:
@@ -355,7 +500,7 @@ UVC (`uvc_mediafoundation.cpp`):
 - **Bilder**: NV12, YUY2 oder UYVY als Ebenen im Systemspeicher (`CapturedFrame.planes`) mit dem echten Zeilenabstand
   aus `IMF2DBuffer2::Lock2DSize` bzw. `IMF2DBuffer::Lock2D`; der flache `Lock` ist nur der Ausweichweg. Das
   `IMFSample` selbst wird nicht weitergereicht (`nativeHandle` bleibt leer): der Encoder kopiert jedes Bild einmal
-  in sein eigenes Sample. Der kopierfreie Weg aus D4 ist damit vorhanden, aber nicht in Benutzung.
+  in sein eigenes Sample. Den kopierfreien Weg aus D4 gibt es seit D8 nicht mehr (siehe „Meeting-Programm (D8)“).
 - **Zeitstempel**: der Geräte-Zeitstempel des Samples (`MFSampleExtension_DeviceTimestamp`, Performance-Counter),
   wenn er plausibel ist (nicht in der Zukunft, jünger als 1 s), sonst die Ankunftszeit; beides auf der Uhr aus
   `monotonic_clock.h`.
@@ -514,9 +659,10 @@ Ablauf und Regeln:
   reicht ein kleiner `IMFAsyncCallback` in dessen Warteschlange. `encode()` läuft auf dem Capture-Thread und wartet
   nie auf den Encoder: Bild nach NV12 bringen, in ein Postfach mit einem Platz legen. Liegt dort noch ein Bild, wird
   es ersetzt und als verworfen gezählt; ein angeforderter Keyframe wandert auf das ersetzende Bild.
-- **Eingabe**: NV12-`IMFSample` in Zielgröße (`CapturedFrame.nativeHandle`) wird ohne Kopie weitergereicht, und zwar
-  als neues Sample um dieselben Puffer, damit das Sample des Capturers seine Zeitstempel behält. Alles andere wird
-  in ein Sample aus einem kleinen Vorrat (6 Stück) umgewandelt. Ungerade Zielgrößen werden auf gerade gekürzt.
+- **Eingabe**: Jedes Bild wird aus seinen Ebenen im Systemspeicher (`CapturedFrame.planes`) in ein Sample aus einem
+  kleinen Vorrat (6 Stück) umgewandelt und dabei auf die Zielgröße gebracht. Ein Sample des Capturers
+  (`CapturedFrame.nativeHandle`) wird seit D8 nicht mehr weitergereicht (Grund: „Meeting-Programm (D8)“). Ungerade
+  Zielgrößen werden auf gerade gekürzt.
 - **Ausgabe**: Annex B; SPS/PPS aus `MF_MT_MPEG_SEQUENCE_HEADER` vor jedem Keyframe, sofern der MFT sie nicht selbst
   mitliefert. `MFT_OUTPUT_STREAM_PROVIDES_SAMPLES` und `MF_E_TRANSFORM_STREAM_CHANGE` werden behandelt. Der
   Zeitstempel jedes Bildes ist wieder der Capture-Zeitstempel in Nanosekunden.
@@ -645,7 +791,11 @@ Die übrigen Spalten mit der Bridge, `BRIDGE_PGM_SYNTHETIC_SOURCE=1920x1080@60` 
 Hintergrund: Meeting-Aufnahme (Media Foundation) und Programm-Stream laufen gleichzeitig; später kommt die
 PGM-Aufnahme als zweiter Encoder im PGM-Helper dazu (ADR-0006).
 - [ ] Meeting-Engine starten, Aufnahme starten, dann Zuschauer auf das Meeting-Programm: beide laufen, die
-      Aufnahme bleibt ruckelfrei (Datei danach prüfen), `program.stream.status` ohne wachsende `dropped_frames`.
+      Aufnahme bleibt ruckelfrei (Datei danach prüfen). `program.stream.status` zweimal im Abstand von 10 s abfragen:
+      `dropped_frames` wächst nicht, und `encoded_frames` wächst um etwa 10 × Bildrate des Programms. Erst der zweite
+      Wert zeigt Verluste im Postfach des Media-Foundation-Encoders; dessen eigener Zähler steht noch in keinem Status.
+- [ ] `encoder` aus `program.stream.status` notieren (`name`, `vendor_id`, `vendor`, `settings`): welchen Hardware-MFT
+      das Meeting-Programm gewählt hat. Mit dem des PGM-Helpers (`pgm_encoder_configured`) vergleichen.
 - [ ] Zusätzlich im Studio-Modus PGM-Vorschau mit Zuschauer (zweiter Prozess, zweite Session).
 - [ ] NVIDIA-Consumer-Karten begrenzen parallele Sessions treiberseitig: Zahl gleichzeitig möglicher Sessions
       notieren, Fehlerbild der überzähligen Session notieren (soll `encoder_unavailable` sein, kein Hänger).

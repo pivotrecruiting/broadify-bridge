@@ -4,7 +4,9 @@ name: PGM Windows Native
 # docs/bridge/features/pgm-live-preview-windows.md). Runs on the stacked
 # feature/pgm-win-* branches and manually; it never builds or publishes a
 # release. Green here means "compiles and the tests pass on a hosted runner",
-# not "verified on hardware".
+# not "verified on hardware". One job runs on macOS: the chain changes the
+# meeting helper's program stream there too, and its tests are a gate of the
+# macOS release build.
 #
 # Jobs:
 #   core     pure modules only (pgm_core, live_stream_core, helper_common):
@@ -35,9 +37,29 @@ name: PGM Windows Native
 #            `encoder_unavailable` on this GPU-less runner - the doctrine test:
 #            no silent software fallback. The exe's imports go through the
 #            release dependency gate and it is uploaded unsigned for the
-#            device session. The only job with network dependencies; all
-#            three (OpenSSL, libdatachannel, opus) are cached.
-# A later unit of the chain adds meeting (meeting-helper program stream).
+#            device session. Network dependencies (OpenSSL, libdatachannel,
+#            opus) are cached.
+#   meeting  meeting-helper.exe in both configurations, each with its ctest
+#            run, the way `dist:win` builds and tests it (matting backends on:
+#            vendored ONNX Runtime, OpenVINO from the release's own script; a
+#            leg that had to build without OpenVINO ends red and says so in
+#            the job summary):
+#            - default: no switch, exactly the release's two commands, built
+#              serially as a release does. Stub program stream, nothing of
+#              the live program configured. This is the Windows compile of
+#              every change under meeting-helper, whichever branch it comes
+#              from.
+#            - BROADIFY_PGM_WINDOWS=1: program_stream.cpp + NV12 frame
+#              converter + WebRTC linked into the helper, plus the stream
+#              tests (the worker end to end against an in-process viewer; on
+#              this GPU-less runner the real encoder path must end in
+#              `encoder_unavailable`).
+#   meeting-macos  what `dist:mac:arm64` runs for the meeting helper, on the
+#            runner image of the release: `npm run build:meeting-helper`, then
+#            `npm run test:meeting-helper-native`. The stream tests in there
+#            judge by CPU time and wall-clock limits and connect over local
+#            ICE; they run ten more times in a row afterwards, so that one
+#            green job says something about the release gate.
 
 on:
   workflow_dispatch:
@@ -67,10 +89,17 @@ on:
       - apps/bridge/native/live-stream/**
       - apps/bridge/native/pgm-helper/**
       - apps/bridge/native/helper-common/**
-      - apps/bridge/native/meeting-helper/src/live/**
-      - apps/bridge/native/meeting-helper/third_party/stb/**
+      # Sources, tests, CMakeLists.txt and build.ps1 of the meeting helper,
+      # and what its build compiles from the neighbouring directories.
+      - apps/bridge/native/meeting-helper/**
+      - apps/bridge/native/vcam-helper/Shared/**
+      - apps/bridge/native/vcam-helper/windows/**
+      - apps/bridge/native/framebus/include/**
       - scripts/prepare-windows-pgm-deps.ps1
       - scripts/build-pgm-helper.sh
+      - scripts/build-meeting-helper.sh
+      - scripts/prepare-windows-meeting-helper-deps.ps1
+      - scripts/prepare-windows-openvino-deps.ps1
       - scripts/prepare-windows-vc-runtime.ps1
       - scripts/verify-windows-native-dependencies.cjs
       - scripts/lib/windows-native-dependency-policy.cjs
@@ -91,6 +120,7 @@ defaults:
 env:
   PGM_HELPER_DIR: apps/bridge/native/pgm-helper
   LIVE_STREAM_DIR: apps/bridge/native/live-stream
+  MEETING_HELPER_DIR: apps/bridge/native/meeting-helper
   # Hosted runners have 4 cores; keep the same cap when run elsewhere.
   CMAKE_BUILD_PARALLEL_LEVEL: "4"
 
@@ -777,3 +807,373 @@ jobs:
           path: apps/bridge/native/pgm-helper/pgm-helper.exe
           if-no-files-found: error
           retention-days: 14
+
+  meeting:
+    name: meeting (${{ matrix.label }})
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      # The default configuration must report on its own, whatever the switch does.
+      fail-fast: false
+      matrix:
+        include:
+          - label: default, as a release builds it
+            pgm_windows: "0"
+          - label: BROADIFY_PGM_WINDOWS=1
+            pgm_windows: "1"
+    env:
+      # As dist:win sets them (package.json): both matting backends are part
+      # of every Windows release build of the helper. The OpenVINO one is
+      # switched on by the step that provides its runtime.
+      MEETING_HELPER_ENABLE_MODNET: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: 2022
+
+      - name: Assert Media Foundation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mfplat = Join-Path $env:SystemRoot 'System32\mfplat.dll'
+          if (-not (Test-Path $mfplat)) {
+            Write-Host "mfplat.dll missing - trying Install-WindowsFeature Server-Media-Foundation"
+            try {
+              Install-WindowsFeature Server-Media-Foundation | Format-List
+            } catch {
+              Write-Host "Install-WindowsFeature failed: $_"
+            }
+          }
+          if (-not (Test-Path $mfplat)) {
+            throw "Media Foundation is not available on this runner ($mfplat missing; the feature may need a restart)."
+          }
+          Write-Host "Media Foundation present: $((Get-Item $mfplat).VersionInfo.FileVersion)"
+
+      # The two dependency steps of release.yml. ONNX Runtime is vendored in
+      # git: its script only checks the tree and returns.
+      - name: ONNX Runtime DirectML (vendored)
+        run: ./scripts/prepare-windows-meeting-helper-deps.ps1
+
+      - name: Cache OpenVINO runtime
+        uses: actions/cache@v4
+        with:
+          path: apps/bridge/native/meeting-helper/deps/openvino/windows-x64
+          key: pgm-win-openvino-${{ runner.os }}-${{ hashFiles('scripts/prepare-windows-openvino-deps.ps1') }}
+
+      # The release's own script: pinned archive, SHA-256 checked. A failed
+      # download gets two more attempts. If the archive stays unreachable the
+      # helper is still compiled and tested, without the OpenVINO backend: a
+      # third-party server must not take away the Windows compile of
+      # everything else. That build is not the release configuration; the job
+      # summary says so and the last step of the job fails the leg.
+      - name: OpenVINO runtime
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtime = 'apps/bridge/native/meeting-helper/deps/openvino/windows-x64'
+          $prepared = (Test-Path "$runtime/lib/openvino.lib") -and (Test-Path "$runtime/bin/openvino.dll")
+          for ($attempt = 1; $attempt -le 3 -and -not $prepared; $attempt++) {
+            try {
+              ./scripts/prepare-windows-openvino-deps.ps1
+              $prepared = $true
+            } catch {
+              Write-Host "OpenVINO preparation failed (attempt $attempt): $_"
+              if ($attempt -lt 3) { Start-Sleep -Seconds 20 }
+            }
+          }
+          if ($prepared) {
+            "MEETING_HELPER_ENABLE_OPENVINO=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "meeting (${{ matrix.label }}): matting backends as in a release (ONNX Runtime and OpenVINO)." |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          } else {
+            # Nothing half-prepared may end up in the cache.
+            if (Test-Path $runtime) { Remove-Item -Recurse -Force $runtime }
+            Write-Host "::warning title=Built WITHOUT OpenVINO::meeting-helper is built without MEETING_HELPER_ENABLE_OPENVINO in this run; a release builds the OpenVINO backend. The last step of the job fails for that reason."
+            "MEETING_HELPER_ENABLE_OPENVINO=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            @(
+              "## meeting (${{ matrix.label }}): built WITHOUT the OpenVINO backend",
+              "",
+              "The OpenVINO archive could not be prepared in three attempts. meeting-helper is compiled and tested without ``MEETING_HELPER_ENABLE_OPENVINO``, which is **not** what a release builds.",
+              "Every step before the last one reports on the code as usual; the last step fails this leg because of the missing backend. Re-run the job once the archive is reachable again."
+            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+      # ---- only with the switch: what the WebRTC part needs (as in job full) ----
+
+      - name: Cache static OpenSSL (vcpkg)
+        if: matrix.pgm_windows == '1'
+        uses: actions/cache@v4
+        with:
+          path: apps/bridge/native/live-stream/deps/vcpkg_installed
+          key: pgm-win-openssl-${{ runner.os }}-${{ hashFiles('apps/bridge/native/live-stream/vcpkg.json', 'scripts/prepare-windows-pgm-deps.ps1') }}
+
+      - name: Prepare static OpenSSL
+        if: matrix.pgm_windows == '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot) { $vcpkgRoot = 'C:\vcpkg' }
+          ./scripts/prepare-windows-pgm-deps.ps1 -VcpkgRoot $vcpkgRoot
+
+      - name: Resolve libdatachannel tag
+        if: matrix.pgm_windows == '1'
+        id: ldc
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmake = Get-Content -Raw "$env:LIVE_STREAM_DIR/CMakeLists.txt"
+          $match = [regex]::Match($cmake, 'libdatachannel\.git\s+GIT_TAG\s+(\S+)')
+          if (-not $match.Success) { throw "libdatachannel GIT_TAG not found in live-stream/CMakeLists.txt" }
+          $tag = $match.Groups[1].Value
+          Write-Host "libdatachannel $tag"
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          # Forward slashes: the path ends up in a CMake cache variable.
+          $src = (Join-Path $env:RUNNER_TEMP 'libdatachannel-src').Replace('\', '/')
+          "LIBDATACHANNEL_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Cache libdatachannel sources
+        if: matrix.pgm_windows == '1'
+        id: ldc-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/libdatachannel-src
+          key: pgm-win-libdatachannel-${{ steps.ldc.outputs.tag }}
+
+      - name: Fetch libdatachannel sources
+        if: matrix.pgm_windows == '1' && steps.ldc-cache.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path $env:LIBDATACHANNEL_SRC) { Remove-Item -Recurse -Force $env:LIBDATACHANNEL_SRC }
+          git clone --depth 1 --branch "${{ steps.ldc.outputs.tag }}" --recurse-submodules --shallow-submodules `
+            https://github.com/paullouisageneau/libdatachannel.git $env:LIBDATACHANNEL_SRC
+          if ($LASTEXITCODE -ne 0) { throw "git clone libdatachannel failed with exit code $LASTEXITCODE" }
+
+      - name: Tool versions
+        run: |
+          cmake --version
+          Write-Host "cl: $((Get-Command cl.exe).Source)"
+          Write-Host "node: $(node --version), npm: $(npm --version)"
+
+      # ---- default: the two commands of dist:win, nothing else ----------------
+      #   cross-env MEETING_HELPER_ENABLE_MODNET=1 MEETING_HELPER_ENABLE_OPENVINO=1 npm run build:meeting-helper
+      #   npm run test:meeting-helper-native
+      # A release has no CMAKE_BUILD_PARALLEL_LEVEL in its environment: MSBuild
+      # then builds one project after the other (no /m). The level this
+      # workflow sets for its other jobs is taken away in both steps.
+
+      - name: Build meeting-helper.exe (default)
+        if: matrix.pgm_windows != '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BROADIFY_PGM_WINDOWS) { throw "BROADIFY_PGM_WINDOWS must not be set in the default configuration" }
+          Remove-Item Env:CMAKE_BUILD_PARALLEL_LEVEL -ErrorAction SilentlyContinue
+          if (Test-Path Env:CMAKE_BUILD_PARALLEL_LEVEL) { throw "CMAKE_BUILD_PARALLEL_LEVEL must not be set in the default configuration" }
+          npm run build:meeting-helper
+          if ($LASTEXITCODE -ne 0) { throw "npm run build:meeting-helper failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path (Join-Path $env:MEETING_HELPER_DIR 'meeting-helper.exe'))) { throw "meeting-helper.exe was not built" }
+
+      # Builds every target of the build directory and runs ctest: what a
+      # release runs before it packages the helper.
+      - name: Build all targets and test (default)
+        if: matrix.pgm_windows != '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item Env:CMAKE_BUILD_PARALLEL_LEVEL -ErrorAction SilentlyContinue
+          if (Test-Path Env:CMAKE_BUILD_PARALLEL_LEVEL) { throw "CMAKE_BUILD_PARALLEL_LEVEL must not be set in the default configuration" }
+          npm run test:meeting-helper-native
+          if ($LASTEXITCODE -ne 0) { throw "npm run test:meeting-helper-native failed with exit code $LASTEXITCODE" }
+
+      # Without the switch nothing of the live program may be configured or
+      # compiled into the helper: no fetched dependency, no WebRTC, no encoder,
+      # the stub as program stream.
+      - name: Assert the default build contains nothing of the live program
+        if: matrix.pgm_windows != '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:MEETING_HELPER_DIR 'build'
+          if (Test-Path (Join-Path $build '_deps')) { throw "the default build fetched a dependency ($build/_deps exists)" }
+          $cache = Get-Content -Raw (Join-Path $build 'CMakeCache.txt')
+          if ($cache -match '(?m)^LIVE_STREAM_WITH_(WEBRTC|MF)\b') { throw "the default build has a live-stream switch in its CMake cache" }
+          $objects = @(Get-ChildItem -Path $build -Recurse -File -Filter '*.obj' | ForEach-Object { $_.Name })
+          Write-Host "$($objects.Count) object files"
+          foreach ($forbidden in @('program_stream.obj', 'program_frame_converter_nv12.obj', 'encoder_info_json.obj', 'publisher.obj', 'mf_encoder.obj')) {
+            if ($objects -contains $forbidden) { throw "$forbidden was compiled without the build switch" }
+          }
+          $helperObjects = @(Get-ChildItem -Path (Join-Path $build 'meeting-helper.dir') -Recurse -File -Filter '*.obj' | ForEach-Object { $_.Name })
+          if ($helperObjects -notcontains 'program_stream_stub.obj') { throw "meeting-helper.exe was not built with the stub program stream" }
+          $imports = & dumpbin /NOLOGO /DEPENDENTS (Join-Path $env:MEETING_HELPER_DIR 'meeting-helper.exe')
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed with exit code $LASTEXITCODE" }
+          $imports | Write-Host
+
+      # ---- with the switch -----------------------------------------------------
+
+      # The same entry point with the switch: build.ps1 then passes the WebRTC
+      # arguments. libdatachannel comes from the cached sources (offline path).
+      - name: Build meeting-helper.exe (BROADIFY_PGM_WINDOWS=1)
+        if: matrix.pgm_windows == '1'
+        env:
+          BROADIFY_PGM_WINDOWS: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:MEETING_HELPER_CMAKE_EXTRA_ARGS = "-DFETCHCONTENT_SOURCE_DIR_LIBDATACHANNEL=$env:LIBDATACHANNEL_SRC -DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+          npm run build:meeting-helper
+          if ($LASTEXITCODE -ne 0) { throw "npm run build:meeting-helper failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path (Join-Path $env:MEETING_HELPER_DIR 'meeting-helper.exe'))) { throw "meeting-helper.exe was not built" }
+
+      - name: Build all targets (BROADIFY_PGM_WINDOWS=1)
+        if: matrix.pgm_windows == '1'
+        run: cmake --build "$env:MEETING_HELPER_DIR/build" --config Release
+
+      - name: Assert the helper links the program stream
+        if: matrix.pgm_windows == '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:MEETING_HELPER_DIR 'build'
+          $helperObjects = @(Get-ChildItem -Path (Join-Path $build 'meeting-helper.dir') -Recurse -File -Filter '*.obj' | ForEach-Object { $_.Name })
+          foreach ($required in @('program_stream.obj', 'program_frame_converter_nv12.obj')) {
+            if ($helperObjects -notcontains $required) { throw "$required is not part of meeting-helper.exe" }
+          }
+          if ($helperObjects -contains 'program_stream_stub.obj') { throw "meeting-helper.exe still contains the stub program stream" }
+          # ADR-0009, point 5: OpenSSL and libdatachannel are linked statically.
+          $imports = & dumpbin /NOLOGO /DEPENDENTS (Join-Path $env:MEETING_HELPER_DIR 'meeting-helper.exe')
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed with exit code $LASTEXITCODE" }
+          $imports | Write-Host
+          $bad = @($imports | Where-Object { $_ -match '(?i)\b(libssl|libcrypto|ssleay|libeay|datachannel)[^\s]*\.dll' })
+          if ($bad.Count -gt 0) { throw "unexpected DLL imports: $($bad -join ', ')" }
+
+      - name: Test (all but the loopback tests)
+        if: matrix.pgm_windows == '1'
+        run: >
+          ctest --test-dir "$env:MEETING_HELPER_DIR/build" --build-config Release
+          --output-on-failure -E "loopback_test$"
+
+      # The stream worker against an in-process viewer, plus the publisher's
+      # own loopback test. Verbose: the log shows the `encoder_unavailable`
+      # status of the real encoder path on this GPU-less runner. One retry for
+      # a lost connectivity check, a second failure is a real one.
+      - name: Test program stream and WebRTC loopback
+        if: matrix.pgm_windows == '1'
+        run: >
+          ctest --test-dir "$env:MEETING_HELPER_DIR/build" --build-config Release
+          --output-on-failure --verbose -R "loopback_test$"
+          --repeat until-pass:2 --no-tests=error
+
+      # Last, it deletes the built exe on its way: a default build must refuse
+      # this build directory instead of silently building the stream again.
+      - name: Default build refuses a directory configured with the switch
+        if: matrix.pgm_windows == '1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          unset BROADIFY_PGM_WINDOWS
+          # The runner starts bash with errexit: the build that is expected to
+          # fail must hand over its exit code instead of ending the step.
+          code=0
+          output="$(bash scripts/build-meeting-helper.sh 2>&1)" || code=$?
+          echo "$output"
+          if [[ $code -eq 0 ]]; then
+            echo "::error::the default build accepted a build directory configured with BROADIFY_PGM_WINDOWS=1"
+            exit 1
+          fi
+          # PowerShell wraps its error text: compare without whitespace.
+          if ! tr -d ' \r\n' <<<"$output" | grep -q "wasconfiguredwithBROADIFY_PGM_WINDOWS=1"; then
+            echo "::error::the default build failed for another reason"
+            exit 1
+          fi
+
+      # ---- both legs, last step ------------------------------------------------
+
+      # When the OpenVINO archive stayed unreachable, the helper was compiled and
+      # tested above without that backend, so that the run still reports on the
+      # code. That is not what a release builds, and the leg must not end green.
+      # A red leg for this reason is rare enough to mean something: every one of
+      # the 154 Windows release builds since the backend exists (2026-08-08 to
+      # 2026-11-20, release.yml and test-release.yml, one attempt, no cache) got
+      # the archive.
+      - name: Matting backends as in a release (OpenVINO was built)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:MEETING_HELPER_ENABLE_OPENVINO -ne '1') {
+            throw "meeting-helper was built WITHOUT the OpenVINO backend (its archive was unreachable): not the release configuration. Re-run the job."
+          }
+          Write-Host "MEETING_HELPER_ENABLE_MODNET=$env:MEETING_HELPER_ENABLE_MODNET MEETING_HELPER_ENABLE_OPENVINO=$env:MEETING_HELPER_ENABLE_OPENVINO, as dist:win sets them"
+
+  # The macOS release build (release.yml: `npm run dist:mac:arm64` on macos-15)
+  # builds the meeting helper and then runs its native tests; a failing test
+  # stops the release. Since the program stream fixes those tests include
+  # program_stream_idle_test and the two loopback tests: assertions on CPU time
+  # and wall-clock limits, and a WebRTC connection over local ICE, on a hosted
+  # runner they had never run on. This job runs the two commands of the release
+  # for the helper, in its order, on the same runner image.
+  #
+  # Same as the release: runner image, Node 22, the image's Xcode, CMake and
+  # Homebrew openssl@3 (the release has no install step for it either), the
+  # helper's deployment target 13.0 from its CMakeLists.txt, MODNet off (set by
+  # scripts/build-meeting-helper.sh on macOS), a serial build, libdatachannel
+  # fetched while configuring.
+  # Different from the release, and why it does not matter for these tests:
+  # - Nothing else of dist:mac:arm64 runs (CoreML model, the other helpers,
+  #   Electron packaging, artifact verification). The model needs a secret URL;
+  #   it is a packaging resource that neither the helper's build nor ctest
+  #   reads.
+  # - No `npm ci`: the two scripts call a shell script, cmake and ctest.
+  # - No signing certificate: build.sh signs the helper's app bundle ad hoc
+  #   instead of with the Developer ID. The test executables are not signed by
+  #   it in either case.
+  meeting-macos:
+    name: meeting-macos (release gate of dist:mac)
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Tool versions and the image's OpenSSL
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          cmake --version
+          echo "node $(node --version), npm $(npm --version)"
+          echo "cpus: $(sysctl -n hw.ncpu), $(sysctl -n machdep.cpu.brand_string)"
+          # live-stream links Homebrew's static openssl@3 from this path.
+          if [[ ! -f /opt/homebrew/opt/openssl@3/lib/libssl.a ]]; then
+            echo "::error::Homebrew openssl@3 is not on this runner image; dist:mac would stop at the same point"
+            exit 1
+          fi
+          brew list --versions openssl@3 || true
+
+      # No parallel build level, as in a release: make runs one job at a time.
+      - name: Build the meeting helper (release command)
+        run: |
+          set -euo pipefail
+          unset CMAKE_BUILD_PARALLEL_LEVEL
+          npm run build:meeting-helper
+
+      - name: Build all targets and test (release command)
+        run: |
+          set -euo pipefail
+          unset CMAKE_BUILD_PARALLEL_LEVEL
+          npm run test:meeting-helper-native
+
+      # Verbose: the log shows the CPU shares the tests measured and whether
+      # this runner has a hardware H.264 encoder (without one the stream must
+      # report `encoder_unavailable` and encode nothing).
+      - name: Stream tests, ten more runs in a row
+        run: |
+          set -euo pipefail
+          ctest --test-dir "$MEETING_HELPER_DIR/build" --build-config Release \
+            -R '^(program_stream_idle_test|program_stream_loopback_test|program_stream_nv12_loopback_test)$' \
+            --repeat until-fail:10 --no-tests=error --verbose

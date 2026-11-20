@@ -138,6 +138,19 @@ test("the encoder test seam is used by live-stream tests only", () => {
   );
 });
 
+test("the encoder builds its input from the frame's CPU planes only", () => {
+  // A capturer's sample behind CapturedFrame::nativeHandle is borrowed for one
+  // call, while an MFT keeps its input until it has encoded it. The encoder
+  // copies the planes into its own pooled sample and never wraps or forwards
+  // the borrowed one.
+  const source = stripComments(read(ENCODER));
+  assert.doesNotMatch(source, /nativeHandle/);
+  assert.match(
+    source,
+    /frameToNv12\(frame, planes, plan_\.width, plan_\.height, scratch_\)/,
+  );
+});
+
 test("the Media Foundation targets are opt-in and the seam test stays a test", () => {
   const cmake = read(`${LIVE_STREAM}/CMakeLists.txt`);
   // Default OFF: only an explicit option, LIVE_STREAM_WITH_MF or the build

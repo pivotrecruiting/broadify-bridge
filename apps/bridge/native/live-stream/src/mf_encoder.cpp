@@ -1052,14 +1052,15 @@ class Session : public std::enable_shared_from_this<Session> {
 
   // --- capture thread -------------------------------------------------------
 
+  // Always a copy into one of the encoder's own samples. The frame is only
+  // borrowed for this call while the MFT keeps its input until it has encoded
+  // it, so a capturer's sample (CapturedFrame::nativeHandle) is never handed
+  // on: that would need the sample kept alive for the MFT and its buffer
+  // checked (system memory, one contiguous NV12 frame), and no source needs it.
   bool buildInputSample(const CapturedFrame &frame, ComPtr<IMFSample> &out) {
     std::lock_guard<std::mutex> lock(inputMutex_);
     if (inputClosed_) {
       return false;
-    }
-    if (frame.nativeHandle != nullptr && frame.pixelFormat == "nv12" && frame.width == plan_.width &&
-        frame.height == plan_.height && wrapNativeSample(static_cast<IMFSample *>(frame.nativeHandle), out)) {
-      return true;
     }
     if (frame.planeCount == 0) {
       return false;
@@ -1082,27 +1083,6 @@ class Session : public std::enable_shared_from_this<Session> {
     }
     slot->buffer->SetCurrentLength(static_cast<DWORD>(lumaSize + lumaSize / 2));
     out = slot->sample;
-    return true;
-  }
-
-  // Zero copy for an NV12 sample of the encode size: a new sample around the
-  // same buffers, so the capturer's own sample keeps its timestamps.
-  bool wrapNativeSample(IMFSample *native, ComPtr<IMFSample> &out) {
-    DWORD count = 0;
-    if (FAILED(native->GetBufferCount(&count)) || count == 0) {
-      return false;
-    }
-    ComPtr<IMFSample> wrapper;
-    if (FAILED(MFCreateSample(&wrapper))) {
-      return false;
-    }
-    for (DWORD index = 0; index < count; ++index) {
-      ComPtr<IMFMediaBuffer> buffer;
-      if (FAILED(native->GetBufferByIndex(index, &buffer)) || FAILED(wrapper->AddBuffer(buffer.Get()))) {
-        return false;
-      }
-    }
-    out = std::move(wrapper);
     return true;
   }
 

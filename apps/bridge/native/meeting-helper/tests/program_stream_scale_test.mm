@@ -9,13 +9,16 @@
 // Needs no camera and no WebRTC peer.
 #import <CoreVideo/CoreVideo.h>
 
-#include "live/program_stream_frame_copy.h"
+#include "live/program_frame_converter.h"
+#include "live/program_frame_converter_vt.h"
 #include "live_stream/bitrate_ladder.h"
 #include "live_stream/video_encoder.h"
+#include "preview/preview_frame_store.h"
 
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -163,6 +166,54 @@ int main() {
     CVPixelBufferRelease(portrait);
     sized.reset();
     if (sized.createBuffer() != nullptr) fail("a reset pool must not hand out buffers");
+  }
+
+  // The converter the stream worker drives (prepare, convert, encode, release): the same pool + copy behind
+  // the interface of program_frame_converter.h, across a program format change.
+  {
+    const std::unique_ptr<ProgramFrameConverter> converter = createProgramFrameConverter();
+    PreviewFrame landscape;
+    landscape.width = 1920;
+    landscape.height = 1080;
+    landscape.rgba = makeRgbaFrame(1920, 1080);
+    PreviewFrame portrait;
+    portrait.width = 1080;
+    portrait.height = 1920;
+    portrait.rgba = makeRgbaFrame(1080, 1920);
+
+    CapturedFrame captured;
+    if (converter->convert(landscape, captured)) fail("an unprepared converter must not hand out a frame");
+    if (converter->prepare(0, 1080) || converter->prepare(1920, 0)) fail("converter: an empty frame size must be refused");
+    if (converter->failure().empty()) fail("converter: a refused size needs a reason for last_error");
+    if (!converter->prepare(1920, 1080) || !converter->prepare(1920, 1080)) fail("converter 1920x1080");
+    if (!converter->convert(landscape, captured)) fail("converter: 1920x1080 frame was not converted");
+    if (captured.pixelBuffer == nullptr || captured.width != 1920 || captured.height != 1080 || captured.pixelFormat != "bgra") {
+      fail("converter: the frame must carry a frame-size BGRA buffer");
+    }
+    if (CVPixelBufferGetWidth(captured.pixelBuffer) != 1920 || CVPixelBufferGetHeight(captured.pixelBuffer) != 1080) {
+      fail("converter: buffer geometry");
+    }
+    CVPixelBufferLockBaseAddress(captured.pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    expectPixel(captured.pixelBuffer, 0, 0, "converter 1920x1080");
+    expectPixel(captured.pixelBuffer, 1919, 1079, "converter 1920x1080");
+    CVPixelBufferUnlockBaseAddress(captured.pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    encoded = encodeScaled(captured.pixelBuffer, 1920, 1080, EncodeProfile::Remote, "converter 1920x1080 remote") && encoded;
+    converter->release(captured);
+    if (captured.pixelBuffer != nullptr) fail("converter: release must take the buffer back");
+
+    // The program turns portrait: the prepared geometry bounds the conversion until prepare() follows.
+    if (converter->convert(portrait, captured)) fail("converter: a 1080x1920 frame must not go into 1920x1080 buffers");
+    if (!converter->prepare(1080, 1920) || !converter->convert(portrait, captured)) fail("converter 1080x1920");
+    if (CVPixelBufferGetWidth(captured.pixelBuffer) != 1080 || CVPixelBufferGetHeight(captured.pixelBuffer) != 1920 ||
+        captured.width != 1080 || captured.height != 1920) {
+      fail("converter: buffers were not rebuilt for 1080x1920");
+    }
+    CVPixelBufferLockBaseAddress(captured.pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    expectPixel(captured.pixelBuffer, 1079, 1919, "converter 1080x1920");
+    CVPixelBufferUnlockBaseAddress(captured.pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    converter->release(captured);
+    converter->reset();
+    if (converter->convert(portrait, captured)) fail("a reset converter must not hand out a frame");
   }
 
   std::cout << "program_stream_scale_test passed"

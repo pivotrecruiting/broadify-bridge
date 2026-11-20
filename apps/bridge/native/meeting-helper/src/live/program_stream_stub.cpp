@@ -4,8 +4,9 @@
 
 namespace broadify::meeting {
 
-// Platforms without the shared hardware encoder path (Windows until the Media
-// Foundation encoder ships): the stream reports itself unsupported.
+// Platforms without the shared hardware encoder path, and Windows unless the
+// helper is built with the switch BROADIFY_PGM_WINDOWS=1 (ADR-0009): the
+// stream reports itself unsupported.
 struct ProgramStream::Impl {};
 
 ProgramStream::ProgramStream(PreviewFrameStore &, MeetingState &, ProgramStreamConfig) : impl_(nullptr) {}
