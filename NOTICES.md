@@ -159,4 +159,4 @@ npm list --depth=0
 
 This application complies with all applicable open-source licenses. For detailed license information, see the `LICENSE` file.
 
-If you have questions about licensing, please contact: [Your Contact Information]
+If you have questions about licensing, please contact: broadify GmbH, Bahnhofweg 7, 78333 Stockach
