@@ -705,5 +705,19 @@ if(MEETING_HELPER_BUILD_TESTS)
     target_link_libraries(program_stream_scale_test PRIVATE live_stream)
     add_test(NAME program_stream_scale_test COMMAND program_stream_scale_test)
     set_tests_properties(program_stream_scale_test PROPERTIES TIMEOUT 60)
+    # Regression for the worker spinning on a cleared PreviewFrameStore: the
+    # real ProgramStream with a registered viewer, judged by the CPU time of
+    # the process while there is no frame to take.
+    add_executable(program_stream_idle_test
+      tests/program_stream_idle_test.cpp
+      src/live/program_stream.mm
+      src/live/program_stream_frame_copy.mm
+      src/preview/preview_frame_store.cpp
+      src/util/pixel_swizzle.cpp
+    )
+    target_include_directories(program_stream_idle_test PRIVATE src)
+    target_link_libraries(program_stream_idle_test PRIVATE live_stream helper_common)
+    add_test(NAME program_stream_idle_test COMMAND program_stream_idle_test)
+    set_tests_properties(program_stream_idle_test PROPERTIES TIMEOUT 60)
   endif()
 endif()

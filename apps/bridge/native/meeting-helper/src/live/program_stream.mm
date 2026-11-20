@@ -30,6 +30,7 @@ namespace {
 constexpr auto kIdlePoll = std::chrono::milliseconds(100);
 constexpr auto kFrameWait = std::chrono::milliseconds(200);
 constexpr auto kHousekeeping = std::chrono::seconds(1);
+constexpr auto kEmptyStoreWait = std::chrono::milliseconds(20);
 
 }  // namespace
 
@@ -41,7 +42,7 @@ struct ProgramStream::Impl {
   MeetingState &state;
   ProgramStreamConfig config;
 
-  std::unique_ptr<live::WebRtcPublisher> publisher;
+  std::shared_ptr<live::WebRtcPublisher> publisher;
   std::unique_ptr<live::VideoEncoder> encoder;
   live::EncodeTarget target;
   bool encoderConfigured = false;
@@ -93,7 +94,8 @@ struct ProgramStream::Impl {
       lastErrorMessage = "No hardware H.264 encoder on this machine.";
       return false;
     }
-    encoder->onAccessUnit = [this](live::EncodedAccessUnit &&unit) { onAccessUnit(std::move(unit)); };
+    // The encoder's thread gets its own reference to the publisher: it never reads `publisher`, which stop() resets.
+    encoder->onAccessUnit = [this, sink = publisher](live::EncodedAccessUnit &&unit) { onAccessUnit(sink.get(), std::move(unit)); };
     std::string code;
     std::string error;
     if (!encoder->configure(wanted, code, error)) {
@@ -114,11 +116,11 @@ struct ProgramStream::Impl {
     return true;
   }
 
-  void onAccessUnit(live::EncodedAccessUnit &&unit) {
+  void onAccessUnit(live::WebRtcPublisher *sink, live::EncodedAccessUnit &&unit) {
     encodedFrames.fetch_add(1);
     encodedBytes.fetch_add(unit.annexB.size());
-    if (publisher) {
-      publisher->sendVideo(unit);
+    if (sink != nullptr) {
+      sink->sendVideo(unit);
     }
     if (unit.sample != nullptr) {
       CFRelease(unit.sample);  // no passthrough recorder here; the meeting recorder has its own writer
@@ -201,10 +203,17 @@ struct ProgramStream::Impl {
       if (!frames.waitForNewFrame(lastSequence, now + kFrameWait)) {
         continue;
       }
-      frames.visitLatestIfNew(lastSequence, [&](const PreviewFrame &frame) {
+      const bool visited = frames.visitLatestIfNew(lastSequence, [&](const PreviewFrame &frame) {
         lastSequence = frame.sequence;
         encodeFrame(frame);
       });
+      if (!visited) {
+        // A new sequence without a frame: the store was cleared (camera stop, virtual camera stop).
+        // There is nothing to take until the next publish and waitForNewFrame() would return at
+        // once again, so wait here instead of spinning.
+        std::unique_lock<std::mutex> lock(wakeMutex);
+        wake.wait_for(lock, kEmptyStoreWait, [this]() { return !running.load(); });
+      }
     }
     setConsumer(false);
   }
@@ -223,7 +232,7 @@ void ProgramStream::start() {
     return;
   }
   impl_->publisher =
-      std::make_unique<live::WebRtcPublisher>([this]() { impl_->keyframeWanted.store(true); }, "meeting_viewer_state");
+      std::make_shared<live::WebRtcPublisher>([this]() { impl_->keyframeWanted.store(true); }, "meeting_viewer_state");
   impl_->worker = std::thread([this]() { impl_->run(); });
 }
 
