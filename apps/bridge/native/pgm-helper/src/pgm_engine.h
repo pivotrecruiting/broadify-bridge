@@ -4,6 +4,7 @@
 #include "audio/opus_encoder.h"
 #include "capture/frame_holder.h"
 #include "capture/video_source.h"
+#include "common/encoder_retry_backoff.h"
 #include "control/pgm_rpc.h"
 #include "live_stream/video_encoder.h"
 #include "recorder/mp4_recorder.h"
@@ -95,6 +96,8 @@ class PgmEngine final : public PgmEngineApi {
   VideoInputInfo input_;
   bool hasInput_ = false;
   bool encoderConfigured_ = false;
+  /** Keeps a failed setup of encoder_ from being repeated on every frame. */
+  EncoderRetryBackoff encoderRetry_;
   bool audioRunning_ = false;
   std::string lastErrorCode_;
   std::string lastErrorMessage_;

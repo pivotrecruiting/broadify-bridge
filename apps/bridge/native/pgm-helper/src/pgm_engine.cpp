@@ -225,6 +225,7 @@ void PgmEngine::selectSource(const std::string &inputId, const std::string &prof
     lastErrorMessage_.clear();
     tracker_ = VideoSignalTracker();
     encoderConfigured_ = false;
+    encoderRetry_.reset();
     source_ = std::move(source);
     if (!source_->start([this](const CapturedFrame &frame) { onFrame(frame); }, errorCode, error)) {
       source_.reset();
@@ -256,6 +257,7 @@ void PgmEngine::clearSource() {
     stopAudioLocked();
     hasInput_ = false;
     encoderConfigured_ = false;
+    encoderRetry_.reset();
     tracker_ = VideoSignalTracker();
   }
   if (source) {
@@ -315,21 +317,29 @@ bool PgmEngine::ensureEncoderForSignalLocked(std::string &errorCode, std::string
       target.fpsNum == target_.fpsNum && target.fpsDen == target_.fpsDen) {
     return true;
   }
+  if (!encoderRetry_.attemptDue(target, monotonicNowNs())) {
+    // This setup failed a moment ago and the failure is reported; no error code, the caller only drops the frame.
+    return false;
+  }
   if (!encoder_) {
     encoder_ = createHardwareEncoder();
     if (!encoder_) {
       errorCode = "encoder_unavailable";
       error = "No hardware encoder on this platform.";
+      encoderRetry_.onFailure(target, monotonicNowNs());
       return false;
     }
     encoder_->onAccessUnit = [this](EncodedAccessUnit &&unit) { onAccessUnit(std::move(unit)); };
   }
   if (!encoder_->configure(target, errorCode, error)) {
     encoderConfigured_ = false;
+    // The interval counts from the end of the attempt: a setup that fails slowly is not tried again at once.
+    encoderRetry_.onFailure(target, monotonicNowNs());
     return false;
   }
   target_ = target;
   encoderConfigured_ = true;
+  encoderRetry_.reset();
   keyframeWanted_.store(true);
   emitHelperEvent("{\"type\":\"pgm_encoder_configured\",\"width\":" + std::to_string(target.width) + ",\"height\":" +
                   std::to_string(target.height) + ",\"fps_num\":" + std::to_string(target.fpsNum) + ",\"fps_den\":" +
@@ -357,6 +367,8 @@ void PgmEngine::onFrame(const CapturedFrame &frame) {
       emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJsonLocked() + "}");
       std::string code;
       std::string error;
+      // A changed signal is tried at once, whatever failed before.
+      encoderRetry_.reset();
       if (!ensureEncoderForSignalLocked(code, error) && !code.empty()) {
         setErrorLocked(code, error);
       } else if (!lastErrorCode_.empty() && code.empty()) {
@@ -367,6 +379,8 @@ void PgmEngine::onFrame(const CapturedFrame &frame) {
     }
     if (!encoderConfigured_) {
       // Frame rate not measured yet (first frames) or encoder failed: nothing to encode into.
+      // A failed setup is not repeated on every frame: without a signal change it is tried
+      // again once per kEncoderRetryIntervalNs (common/encoder_retry_backoff.h).
       std::string code;
       std::string error;
       if (ensureEncoderForSignalLocked(code, error)) {
