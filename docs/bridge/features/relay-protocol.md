@@ -173,6 +173,10 @@ Bridges, die Studio-Zustand noch selbst beim Start wiederherstellen).
 (`height > width`, z. B. 1080×1920). `true` auf macOS, `false` auf Windows, bis
 der Pfad dort am Gerät geprüft ist. Fehlercodes und `program_format`:
 `docs/bridge/features/meeting-status-contract.md`, Entscheidung: ADR-0007.
+`layer_canvas` – `graphics_send` wertet das optionale `canvas { width, height }`
+aus (Größe der Ebenen-Box, siehe `docs/bridge/features/graphics-commands.md`).
+`true` auf allen Plattformen und unabhängig von `program_portrait`; ohne das
+Flag ist die Box immer 1920×1080.
 
 #### mode_activate
 Die Web-App meldet den gewählten Modus; die Bridge stellt Studio-Verbindungen

@@ -157,13 +157,45 @@ einer Hochformat-Engine (z. B. 1080×1920) rendern die beiden Meeting-Renderer
 deshalb in Programmgröße: der Pre-Warm nach `meeting_engine_start` nimmt die
 Leinwandgröße (Querformat unverändert 1920×1080@30), und
 `meeting_graphics_configure_outputs` ersetzt eine Anfrage in der falschen
-Ausrichtung durch die Engine-Geometrie. Die Basis-Box der Templates bleibt
-1920×1080 (`electron-renderer-dom-runtime.ts`); im Hochformat platziert die
-Web-App sie per Layout. Die Bridge-eigenen Inhalts-Ebenen
+Ausrichtung durch die Engine-Geometrie. Die Bridge-eigenen Inhalts-Ebenen
 (`meeting-content-layers.ts`) bekommen die Bühnengröße als Parameter. Der
 Studio-Renderer ist davon nicht berührt. Das Offscreen-Fenster ist dann
 1080×1920 (mit Supersampling 2160×3840) – unter Windows kann der
 Arbeitsbereich das klemmen (`ensureWindowContentSize`), siehe ADR-0007.
+
+### Ebenen-Box (`canvas`, ADR-0007)
+Jede Template-Ebene ist eine Box: der Ebenen-Host und darin `#graphic-root`,
+in das das Template gerendert wird. Das Layout (`translate` + `scale`,
+Ursprung links oben) positioniert diese Box auf der Ebene. Die Box ist
+1920×1080, solange `graphics_send` kein `canvas { width, height }` mitbringt;
+mit `canvas` hat sie dessen Größe in Ebenen-Pixeln. So füllt ein Template, das
+seine Box prozentual ausfüllt, ein 1080×1920-Programm mit `canvas` 1080×1920
+und Layout `{0,0,1}` ganz – in der festen 1920×1080-Box wären es nur die oberen
+1080×1080.
+
+- Gesetzt wird die Box bei jedem `__createLayer`: ein weiteres `graphics_send`
+  derselben Ebene mit anderem `canvas` ändert sie, ohne `canvas` ist sie wieder
+  1920×1080. `graphics_update_layout` lässt sie stehen.
+- Ohne `canvas` sind Renderer-Payload und DOM unverändert (per Test gepinnt).
+- Supersampling: Die Box bleibt in Ebenen-Pixeln. `applyLayout` multipliziert
+  Verschiebung und Skalierung mit der Render-Stufe, die Box selbst nie – so
+  war es für die 1920×1080-Box schon immer.
+- Beschnitten wird nur an der Ebene (`#graphics-root`, `overflow: hidden`);
+  es gibt keine Bounds- oder Dirty-Rect-Logik pro Ebene. Der Paint-Handler
+  schreibt immer das ganze Fenster.
+- Der Wert läuft durch `GraphicsSendSchema` → `renderPreparedLayer` →
+  `create_layer` → `__createLayer` und liegt im Layer-Cache des Clients und im
+  Snapshot des Renderer-Prozesses, damit ein Replay nach einem Renderer- oder
+  Fenster-Neustart die Box wiederherstellt.
+- Beide HTML-Hosts nutzen `resolveLayerCanvas` aus
+  `renderer/layout-runtime.ts`: der Offscreen-Renderer
+  (`electron-renderer-dom-runtime.ts`) und die vMix-Browser-Input-Seite
+  (`browser-input-page.ts`).
+- Die Bridge-eigenen Inhalts-Ebenen (Videodatei, Browser-Quelle) brauchen kein
+  `canvas`: sie sind in Pixeln der Bühne positioniert, und die Box beschneidet
+  nicht.
+- Die Web-App sendet `canvas` nur, wenn `capabilities.meeting.layer_canvas`
+  gesetzt ist.
 
 ## Output‑Adapter
 - `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`

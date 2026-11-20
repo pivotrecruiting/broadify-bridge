@@ -186,7 +186,7 @@ Engine:
 
 Graphics:
 - graphics_configure_outputs -> { outputKey, targets, format }
-- graphics_send -> { layerId, category, backgroundMode, layout, zIndex, bundle, values, presetId?, durationMs? }
+- graphics_send -> { layerId, category, backgroundMode, layout, canvas?, zIndex, bundle, values, presetId?, durationMs? }
 - graphics_test_pattern -> {}
 - graphics_update_values -> { layerId, values }
 - graphics_update_layout -> { layerId, layout, zIndex? }
