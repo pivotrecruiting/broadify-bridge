@@ -356,6 +356,12 @@ int main() {
     stopServer();
     fail("first camera.start did not open camera 0");
   }
+  // Landscape canvas: the camera is asked for exactly the canvas size.
+  if (camera.lastWidth != options.width || camera.lastHeight != options.height ||
+      camera.lastFps != options.fps) {
+    stopServer();
+    fail("camera.start did not request the landscape canvas size");
+  }
 
   const std::string second =
       rpc("{\"id\":\"2\",\"method\":\"camera.start\","
@@ -790,6 +796,48 @@ int main() {
 
   (void)rpc("{\"id\":\"7\",\"method\":\"control.shutdown\"}");
   stopServer();
+
+  // Portrait canvas (1080x1920): camera and screen capture are still asked
+  // for the landscape equivalent; capture devices have no portrait modes and
+  // the compositor cover-fits the frame.
+  {
+    StubCameraSource portraitCamera;
+    StubScreenCaptureSource portraitScreen;
+    MeetingState portraitState;
+    PreviewFrameStore portraitPreviewFrames;
+    MeetingRecorder portraitRecorder;
+    Options portraitOptions;
+    portraitOptions.width = 1080;
+    portraitOptions.height = 1920;
+    portraitOptions.fps = 30;
+    std::atomic<bool> portraitRunning{true};
+    auto portraitRpc = [&](const std::string &request) {
+      return handleRpc(request, portraitState, portraitCamera, portraitScreen,
+                       portraitPreviewFrames, portraitRecorder, nullptr,
+                       portraitOptions, portraitRunning);
+    };
+    const std::string portraitStart =
+        portraitRpc("{\"id\":\"p1\",\"method\":\"camera.start\","
+                    "\"camera_index\":0}");
+    if (!contains(portraitStart, "\"reopened\":true") ||
+        portraitCamera.lastWidth != 1920u ||
+        portraitCamera.lastHeight != 1080u || portraitCamera.lastFps != 30u) {
+      fail("portrait camera.start did not request a landscape camera mode");
+    }
+    portraitScreen.capabilitiesOverride.supported = true;
+    portraitScreen.capabilitiesOverride.enumeration = true;
+    portraitScreen.capabilitiesOverride.permissionStatus = "authorized";
+    portraitScreen.capabilitiesOverride.unsupportedReason.clear();
+    portraitScreen.knownSourceIds = {"monitor:0x1"};
+    const std::string portraitScreenStart =
+        portraitRpc("{\"id\":\"p2\",\"method\":\"screen.start\","
+                    "\"source_id\":\"monitor:0x1\"}");
+    if (!contains(portraitScreenStart, "\"ok\":true") ||
+        portraitScreen.lastStartOptions.maxWidth != 1920u ||
+        portraitScreen.lastStartOptions.maxHeight != 1080u) {
+      fail("portrait screen.start did not request landscape capture bounds");
+    }
+  }
   std::cout << "control_server_test passed" << std::endl;
   return 0;
 }

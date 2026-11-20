@@ -2178,7 +2178,8 @@ void runFramePipeline(const Options &options,
                 "{\"type\":\"camera_stalled\",\"event\":\"reopen\","
               "\"reopen_count_lifetime\":" +
                 std::to_string(cameraReopenBackoff.reopenCount) + "}");
-            camera.reopen(options.width, options.height, options.fps);
+            const CaptureRequestSize captureSize = captureRequestSize(options);
+            camera.reopen(captureSize.width, captureSize.height, options.fps);
           }
 #endif
         }

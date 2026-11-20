@@ -1,5 +1,7 @@
 #include "preview/vcam_shm_publisher.h"
 
+#include "util/frame_fit.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -214,6 +216,23 @@ void VcamShmPublisher::run() {
     if (ring != nullptr) {
       if (publishDelay.count() > 0) {
         std::this_thread::sleep_for(publishDelay);
+      }
+      // The service ring is a 16:9-only sink (vcam_shm_layout limits): a
+      // portrait program frame is pillarboxed into 1920x1080 here, on the
+      // publisher thread, so the pipeline's submit stays a plain buffer swap.
+      // Landscape frames are published unchanged.
+      const FrameGeometry output = vcamOutputGeometry(width, height);
+      if (output.width != width || output.height != height) {
+        fitScratch_.resize(static_cast<size_t>(output.width) * output.height *
+                           4u);
+        if (fitContainRgba(rgba, width, height,
+                           static_cast<size_t>(width) * 4u, fitScratch_.data(),
+                           output.width, output.height,
+                           static_cast<size_t>(output.width) * 4u)) {
+          rgba = fitScratch_.data();
+          width = output.width;
+          height = output.height;
+        }
       }
       ring->publishRgbaAsBgra(width, height, rgba,
                               static_cast<size_t>(width) * 4u, captureQpc);

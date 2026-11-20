@@ -232,6 +232,15 @@ void testServiceControlValidation() {
   record.width = kMaxServiceWidth;
   record.height = kMaxServiceHeight + 1u;
   CHECK(!validateServiceControl(record));
+  // The service ring stays 16:9-only: a portrait program (1080x1920) is never
+  // a valid control record; the helper pillarboxes it into 1920x1080 before
+  // publishing (util/frame_fit.h).
+  record.width = 1080u;
+  record.height = 1920u;
+  CHECK(!validateServiceControl(record));
+  record.width = kMaxServiceWidth;
+  record.height = kMaxServiceHeight;
+  CHECK(validateServiceControl(record));
 }
 
 void testNamesAndSddl() {

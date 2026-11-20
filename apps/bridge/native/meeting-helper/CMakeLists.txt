@@ -122,6 +122,7 @@ set(MEETING_HELPER_SOURCES
   src/preview/vcam_shm_layout.cpp
   src/preview/vcam_shm_ring_win.cpp
   src/recorder/recorder_frame_mailbox.cpp
+  src/util/frame_fit.cpp
   src/util/sha256.cpp
   src/util/pixel_swizzle.cpp
   src/util/win_qos.cpp
@@ -456,6 +457,16 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/options_test.cpp
     src/common/options.cpp
   )
+  # Portrait program support: the keyed presenter and the camera PiP keep
+  # their 16:9 geometry (numeric parity) and get a defined 9:16 geometry.
+  add_executable(program_geometry_test
+    tests/program_geometry_test.cpp
+  )
+  # Contain-fit (pillarbox) of a portrait program into the 16:9 virtual camera.
+  add_executable(frame_fit_test
+    tests/frame_fit_test.cpp
+    src/util/frame_fit.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -486,6 +497,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/preview/raw_frame_server.cpp
     src/preview/raw_frame_stream_header.cpp
     src/preview/preview_frame_store.cpp
+    src/util/frame_fit.cpp
     src/util/pixel_swizzle.cpp
     src/util/win_qos.cpp
   )
@@ -507,6 +519,7 @@ if(MEETING_HELPER_BUILD_TESTS)
       src/preview/vcam_shm_layout.cpp
       src/preview/vcam_shm_publisher.cpp
       src/preview/vcam_shm_ring_win.cpp
+      src/util/frame_fit.cpp
       src/util/pixel_swizzle.cpp
     )
     target_include_directories(shm_frame_reader_no_frame_test PRIVATE
@@ -515,6 +528,7 @@ if(MEETING_HELPER_BUILD_TESTS)
   endif()
   set(CONTROL_SERVER_TEST_SOURCES
     tests/control_server_test.cpp
+    src/common/options.cpp
     src/control/control_server.cpp
     src/live/program_stream_stub.cpp
     src/capture/camera_source.cpp
@@ -593,6 +607,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     media_page_cache_test
     background_image_cache_test
     options_test
+    program_geometry_test
+    frame_fit_test
     tier_handover_test
     matting_backend_test
     matting_common_test
@@ -614,14 +630,16 @@ if(MEETING_HELPER_BUILD_TESTS)
       elseif(helper_test STREQUAL "control_server_test" OR helper_test STREQUAL "program_stream_rpc_test")
         # Both link control_server.cpp + vcam_controller.cpp: needs the same Win32
         # media/COM libraries as the helper binary (MFStartup, CLSIDs, ...).
-        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp advapi32)
+        # shell32: CommandLineToArgvW in common/options.cpp (captureRequestSize).
+        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi shell32 d3d11 d3dcompiler dbghelp advapi32)
       elseif(helper_test STREQUAL "d3d_adapter_select_test")
         target_link_libraries(${helper_test} PRIVATE dxgi)
       elseif(helper_test STREQUAL "options_test")
         # CommandLineToArgvW lives in shell32.
         target_link_libraries(${helper_test} PRIVATE shell32)
       endif()
-    elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")
+    elseif(APPLE AND (helper_test STREQUAL "raw_frame_server_test" OR
+                      helper_test STREQUAL "frame_fit_test"))
       target_link_libraries(${helper_test} PRIVATE "-framework Accelerate")
     endif()
     if(NOT WIN32 AND (helper_test STREQUAL "liveness_watchdog_test" OR
