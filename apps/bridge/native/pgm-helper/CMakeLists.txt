@@ -46,6 +46,7 @@ add_library(pgm_core STATIC
   src/signal/video_signal_tracker.cpp
   src/control/pgm_rpc.cpp
   src/common/pgm_options.cpp
+  src/common/encoder_info_json.cpp
   src/capture/uvc_format_select.cpp
   src/capture/snapshot_portable.cpp
   src/audio/audio_pairing.cpp
@@ -127,7 +128,8 @@ endif()
 
 if(PGM_HELPER_BUILD_TESTS)
   foreach(pgm_test IN ITEMS video_signal_tracker_test pgm_rpc_dispatch_test recording_signal_gate_test pgm_options_test
-      uvc_format_select_test audio_pairing_test snapshot_portable_test portable_sources_test encoder_retry_backoff_test)
+      uvc_format_select_test audio_pairing_test snapshot_portable_test portable_sources_test encoder_retry_backoff_test
+      encoder_info_json_test)
     add_executable(${pgm_test} tests/${pgm_test}.cpp)
     target_link_libraries(${pgm_test} PRIVATE pgm_core)
     if(WIN32)

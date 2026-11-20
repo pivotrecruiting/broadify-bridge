@@ -2,6 +2,7 @@
 
 #include "capture/snapshot.h"
 #include "live_stream/monotonic_clock.h"
+#include "common/encoder_info_json.h"
 #include "common/pgm_options.h"
 #include "helper_common/helper_event_log.h"
 #include "helper_common/json_utils.h"
@@ -125,8 +126,10 @@ std::string PgmEngine::statusJsonLocked() const {
       << ",\"signal\":" << (hasInput_ ? signalJsonLocked() : "null") << ",\"encoder\":";
   if (encoderConfigured_ && encoder_) {
     const EncoderInfo info = encoder_->info();
+    // The encoder's identity (name, vendor, settings that took effect) follows the keys that were always there.
     out << "{\"backend\":\"" << jsonEscape(info.backend) << "\",\"hardware\":" << (info.hardware ? "true" : "false")
-        << ",\"bitrate_kbps\":" << target_.bitrateKbps << ",\"profile\":\"" << jsonEscape(target_.profileName) << "\"}";
+        << ",\"bitrate_kbps\":" << target_.bitrateKbps << ",\"profile\":\"" << jsonEscape(target_.profileName) << "\""
+        << encoderDetailJsonMembers(info) << "}";
   } else {
     out << "null";
   }
@@ -344,9 +347,13 @@ bool PgmEngine::ensureEncoderForSignalLocked(std::string &errorCode, std::string
   encoderConfigured_ = true;
   encoderRetry_.reset();
   keyframeWanted_.store(true);
+  // Says which encoder was picked; on Windows that is the encoder MFT the search ended up with.
+  const EncoderInfo info = encoder_->info();
   emitHelperEvent("{\"type\":\"pgm_encoder_configured\",\"width\":" + std::to_string(target.width) + ",\"height\":" +
                   std::to_string(target.height) + ",\"fps_num\":" + std::to_string(target.fpsNum) + ",\"fps_den\":" +
-                  std::to_string(target.fpsDen) + ",\"bitrate_kbps\":" + std::to_string(target.bitrateKbps) + "}");
+                  std::to_string(target.fpsDen) + ",\"bitrate_kbps\":" + std::to_string(target.bitrateKbps) +
+                  ",\"backend\":\"" + jsonEscape(info.backend) + "\",\"hardware\":" + (info.hardware ? "true" : "false") +
+                  encoderDetailJsonMembers(info) + "}");
   return true;
 }
 
