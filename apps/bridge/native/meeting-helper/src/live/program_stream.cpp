@@ -1,6 +1,6 @@
 #include "live/program_stream.h"
 
-#include "live/program_stream_frame_copy.h"
+#include "live/program_frame_converter.h"
 #include "live_stream/bitrate_ladder.h"
 #include "live_stream/monotonic_clock.h"
 #include "live_stream/publisher.h"
@@ -9,9 +9,6 @@
 #include "state/meeting_state.h"
 #include "helper_common/helper_event_log.h"
 #include "helper_common/json_utils.h"
-
-#import <CoreVideo/CoreVideo.h>
-#import <Foundation/Foundation.h>
 
 #include <atomic>
 #include <chrono>
@@ -48,12 +45,12 @@ struct ProgramStream::Impl {
   std::string profile = "auto";
   std::string lastErrorCode;
   std::string lastErrorMessage;
-  ProgramFramePool pool;
+  std::unique_ptr<ProgramFrameConverter> converter = createProgramFrameConverter();
 
   std::thread worker;
   std::atomic<bool> running{false};
   std::atomic<bool> keyframeWanted{false};
-  std::mutex mutex;              // encoder/pool/profile/error
+  std::mutex mutex;              // encoder/profile/error; the converter is the worker's (stop() touches it after the join)
   std::mutex wakeMutex;
   std::condition_variable wake;  // stop() wakes an idle worker
   bool consumerRegistered = false;
@@ -120,62 +117,48 @@ struct ProgramStream::Impl {
     if (publisher) {
       publisher->sendVideo(unit);
     }
-    if (unit.sample != nullptr) {
-      CFRelease(unit.sample);  // no passthrough recorder here; the meeting recorder has its own writer
-      unit.sample = nullptr;
-    }
+    live::releaseEncodedSample(unit);  // no passthrough recorder here; the meeting recorder has its own writer
   }
 
-  // Pool at the size of the program frame, not of the encode target: the copy
-  // below writes frame-size rows and VideoToolbox scales to the session size.
-  // Independent of the encoder: a profile change keeps it, a frame size change
-  // recreates it even when the encode target stays the same.
-  bool ensurePoolLocked(uint32_t width, uint32_t height) {
-    if (pool.ensure(width, height)) {
+  // Converter buffers at the size of the program frame, not of the encode
+  // target: the conversion writes frame-size rows and the encoder scales to
+  // its session size. Independent of the encoder: a profile change keeps them,
+  // a frame size change rebuilds them even when the encode target stays the same.
+  bool prepareConverterLocked(uint32_t width, uint32_t height) {
+    if (converter->prepare(width, height)) {
       return true;
     }
-    teardownEncoderLocked();  // a later frame reconfigures and clears the error once the pool exists
+    teardownEncoderLocked();  // a later frame reconfigures and clears the error once the buffers exist
     lastErrorCode = "encoder_unavailable";
-    lastErrorMessage = "CVPixelBufferPool for the program stream could not be created.";
+    lastErrorMessage = converter->failure();
     return false;
   }
 
-  // Runs under the PreviewFrameStore lock: one RGBA→BGRA pass straight into the pooled buffer.
+  // Runs under the PreviewFrameStore lock: one conversion pass straight into the converter's buffer.
   void encodeFrame(const PreviewFrame &frame) {
     if (frame.width == 0 || frame.height == 0) {
       droppedFrames.fetch_add(1);
       return;
     }
     live::VideoEncoder *activeEncoder = nullptr;
-    CVPixelBufferRef pixelBuffer = nullptr;
     {
       std::lock_guard<std::mutex> lock(mutex);
-      if (!ensurePoolLocked(frame.width, frame.height) || !ensureEncoderLocked(frame.width, frame.height)) {
+      if (!prepareConverterLocked(frame.width, frame.height) || !ensureEncoderLocked(frame.width, frame.height)) {
         droppedFrames.fetch_add(1);
-        return;
-      }
-      pixelBuffer = pool.createBuffer();
-      if (pixelBuffer == nullptr) {
-        droppedFrames.fetch_add(1);  // every pooled buffer still sits in the encoder: drop, never block
         return;
       }
       activeEncoder = encoder.get();
     }
-    if (!copyRgbaFrameToPixelBuffer(frame.rgba.data(), frame.rgba.size(), frame.width, frame.height, pixelBuffer)) {
-      droppedFrames.fetch_add(1);  // buffer and frame geometry disagree: drop, never write past the buffer
-      CVPixelBufferRelease(pixelBuffer);
+    live::CapturedFrame captured;
+    if (!converter->convert(frame, captured)) {
+      droppedFrames.fetch_add(1);  // no free buffer, or buffer and frame geometry disagree: drop, never block
       return;
     }
-    live::CapturedFrame captured;
-    captured.pixelBuffer = pixelBuffer;
-    captured.width = frame.width;
-    captured.height = frame.height;
-    captured.pixelFormat = "bgra";
     captured.captureNs = live::monotonicNowNs();
     if (!activeEncoder->encode(captured, keyframeWanted.exchange(false))) {
       droppedFrames.fetch_add(1);
     }
-    CVPixelBufferRelease(pixelBuffer);  // VideoToolbox retains it for the encode
+    converter->release(captured);
   }
 
   void run() {
@@ -246,7 +229,7 @@ void ProgramStream::stop() {
     impl_->encoder->flush();
   }
   impl_->teardownEncoderLocked();
-  impl_->pool.reset();
+  impl_->converter->reset();
   impl_->publisher.reset();
 }
 

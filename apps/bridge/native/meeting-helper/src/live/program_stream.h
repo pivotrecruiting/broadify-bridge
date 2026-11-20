@@ -26,12 +26,14 @@ struct ProgramStreamConfig {
  * Runs on its own thread and pulls frames from PreviewFrameStore, so the
  * frame pipeline (and with it the virtual camera and the recording) never
  * waits for the encoder: without viewers nothing is copied or encoded; with
- * viewers each new program frame is converted RGBA→BGRA into a pooled,
- * IOSurface-backed CVPixelBuffer in one pass and handed to VideoToolbox,
- * which encodes asynchronously. A frame the encoder cannot take is dropped,
- * never queued. Viewer state changes are emitted as `meeting_viewer_state`
- * helper events. Unsupported (stub) on platforms without the hardware
- * encoder path: every offer fails with `program_stream_unavailable`.
+ * viewers each new program frame goes through the platform's frame converter
+ * (program_frame_converter.h; macOS: RGBA→BGRA into a pooled,
+ * IOSurface-backed CVPixelBuffer in one pass) and is handed to the hardware
+ * encoder, which encodes asynchronously. A frame the encoder cannot take is
+ * dropped, never queued. Viewer state changes are emitted as
+ * `meeting_viewer_state` helper events. Unsupported (stub) on platforms
+ * without the hardware encoder path: every offer fails with
+ * `program_stream_unavailable`.
  */
 class ProgramStream {
  public:

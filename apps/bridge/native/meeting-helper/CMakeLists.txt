@@ -196,8 +196,9 @@ add_subdirectory(../helper-common helper-common)
 add_subdirectory(../live-stream live-stream)
 
 if(APPLE)
-  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.mm src/live/program_stream_frame_copy.mm)
-  set_source_files_properties(src/live/program_stream.mm src/live/program_stream_frame_copy.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  # Program stream: portable worker + the VideoToolbox frame converter.
+  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.cpp src/live/program_frame_converter_vt.mm)
+  set_source_files_properties(src/live/program_frame_converter_vt.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   add_executable(meeting-helper MACOSX_BUNDLE ${MEETING_HELPER_SOURCES})
   target_link_libraries(meeting-helper PRIVATE live_stream)
 else()
@@ -654,7 +655,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     # -fsanitize=address to see the pre-fix write past the buffer).
     add_executable(program_stream_scale_test
       tests/program_stream_scale_test.mm
-      src/live/program_stream_frame_copy.mm
+      src/live/program_frame_converter_vt.mm
       src/util/pixel_swizzle.cpp
     )
     set_source_files_properties(tests/program_stream_scale_test.mm PROPERTIES
