@@ -23,6 +23,7 @@ $vcamInprocServerKey = "HKLM:\SOFTWARE\Classes\CLSID\$vcamClsid\InprocServer32"
 $vcamClsidKey = "HKLM:\SOFTWARE\Classes\CLSID\$vcamClsid"
 $displayHelperTestScript = Join-Path $PSScriptRoot "test-windows-display-helper.ps1"
 $meetingHelperTestScript = Join-Path $PSScriptRoot "test-windows-meeting-helper.ps1"
+$pgmHelperTestScript = Join-Path $PSScriptRoot "test-windows-pgm-helper.ps1"
 # Microsoft Visual C++ runtime packaged next to both helpers; list from the
 # Node single source of truth (scripts/lib/windows-vc-runtime.cjs).
 $vcRuntimeListScript = Join-Path $PSScriptRoot "list-windows-vc-runtime-paths.cjs"
@@ -116,6 +117,11 @@ try {
   $meetingHelperPath = Join-Path $installDir "resources\native\meeting-helper\meeting-helper.exe"
   $meetingModelsDir = Join-Path $installDir "resources\native\meeting-helper\models"
   & $meetingHelperTestScript -HelperPath $meetingHelperPath -ModelsDir $meetingModelsDir
+
+  # PGM helper (live program preview, ADR-0009): packaged only behind the build
+  # switch BROADIFY_PGM_WINDOWS=1. The script asserts the file and runs
+  # `--probe` then, and does nothing in a build without the switch.
+  & $pgmHelperTestScript -ResourcesDir (Join-Path $installDir "resources")
 
   Write-Host "NSIS native helper smoke tests passed in $installDir"
 } finally {

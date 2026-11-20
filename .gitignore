@@ -98,3 +98,6 @@ apps/bridge/native/pgm-helper/Broadify Bridge PGM Helper.app
 
 # TLS-inspection replica: throwaway CA and keys
 scripts/tls-inspection-replica/out/
+
+# Windows live program deps (static OpenSSL via scripts/prepare-windows-pgm-deps.ps1)
+apps/bridge/native/live-stream/deps/

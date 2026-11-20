@@ -1,10 +1,13 @@
 # Live-PGM-Vorschau (Studio)
 
-Status: Phase 0 (Gerüst). Feature-Gate `BRIDGE_PGM_PREVIEW=1`, Web-App zusätzlich Entitlement `feature_live_program`.
+Status: Phase 1 (macOS) umgesetzt und standardmäßig an; `BRIDGE_PGM_PREVIEW=0` ist der Notaus je Rechner (siehe
+„Betrieb“), die Web-App schaltet zusätzlich über das Entitlement `feature_live_program` frei. Windows ist in
+Vorbereitung: `docs/bridge/features/pgm-live-preview-windows.md` (ADR-0009).
 
 ## Ziel
 Programmbild des Mischers (UVC: ATEM Mini, RØDECaster Video, Elgato; DeckLink-Eingänge) live in broadifyStudio,
-per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Entscheidungen: ADR-0002 bis 0004.
+per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Entscheidungen: ADR-0002 bis 0006,
+für Windows ADR-0009.
 
 ## Verträge
 - Typen: `packages/protocol/src/index.ts` (`VideoSignalT`, `VideoInputDescriptorT`, `PgmStatusT`,
@@ -80,7 +83,7 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
   Schreiben in geschützte Zielordner einen Freigabedialog zeigt statt still mit einem Berechtigungsfehler abzubrechen.
 - Standbild: `pgm_snapshot {quality?}` liefert JPEG als Base64 (Relay-Grenze 2 MB beachtet), Download im Browser.
 - Noch offen in Phase 1: Browser-Test mit echtem ATEM/RØDECaster (Ton, TURN von außerhalb), Latenzmessung.
-- Phase 2: Windows UVC. Phase 3/4: DeckLink macOS/Windows. Phase 5: Ausbau. Phase 6: PGM-Aufzeichnung.
+- Phase 2: Windows UVC (Vorbereitung hinter Schaltern, Runbook: `pgm-live-preview-windows.md`). Phase 3/4: DeckLink macOS/Windows. Phase 5: Ausbau. Phase 6: PGM-Aufzeichnung.
 
 ## Betrieb
 - Standardmäßig an (der Helper startet erst bei Quelle oder Zuschauer); `BRIDGE_PGM_PREVIEW=0` ist der Notaus je Rechner, `BRIDGE_PGM_MAX_VIEWERS` (Standard 4, höchstens 16) begrenzt Zuschauer. Wer das Programm sehen darf, entscheidet die Web-App über `feature_live_program`; `capabilities.live_program.enabled` spiegelt den Notaus, `supported` die Bridge-Version.
@@ -95,6 +98,13 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
 `pgm.snapshot {quality}` → `{jpeg_base64,width,height,captured_at_ms}`. Ereignisse: `ready`, `pgm_status`, `pgm_signal`, `pgm_error`,
 `pgm_encoder_configured`, `pgm_recording`, `pgm_recording_signal_mismatch`, `pgm_recording_fps_changed`, `pgm_inputs_changed`,
 `pgm_viewer_state`, `pgm_audio_unavailable`, `pgm_perf`, `shutdown`.
+Nur der Windows-Helper (vorbereitet, `pgm-live-preview-windows.md`): das Signal trägt `"decode":"mjpg"`, wenn das
+Gerät MJPG liefert und vor dem Encoder dekodiert wird; `pgm.recording.start` antwortet `recording_unsupported`; dazu
+die Ereignisse `pgm_uvc_modes`, `pgm_uvc_mode_selected`, `pgm_uvc_mode_rejected`, `pgm_capture_error`,
+`pgm_audio_paired`. `pgm_encoder_configured` nennt dort außerdem den gewählten Encoder (`name`, `vendor_id`, `vendor`,
+`settings`; ebenso `pgm_status` unter `encoder`), und `--probe` listet `encoder_candidates`. Auf macOS ändert sich an
+Signal, Antworten und Ereignissen nichts, bis auf zwei Schlüssel in `pgm_encoder_configured`, die es auf beiden
+Plattformen gibt: `backend` und `hardware`.
 
 ## Build
 - `npm run build:pgm-helper` (macOS): CMake, libdatachannel v0.22.6 und libopus 1.5.2 per FetchContent (fester Tag),

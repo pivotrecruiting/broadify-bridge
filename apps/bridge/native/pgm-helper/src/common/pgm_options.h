@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace broadify::pgm {
 
@@ -19,6 +20,8 @@ struct PgmOptions {
   bool probe = false;
 };
 
+/** `args` are the process arguments in UTF-8, args[0] being the program name. */
+PgmOptions parsePgmOptions(const std::vector<std::string> &args);
 PgmOptions parsePgmOptions(int argc, char **argv);
 
 /** Parses "WxH@fps" (fps may be fractional like 59.94). Returns false when malformed. */

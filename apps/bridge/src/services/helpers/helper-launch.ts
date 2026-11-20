@@ -132,12 +132,17 @@ export type LaunchedHelperT = {
   viaLaunchServices: boolean;
 };
 
-/** Spawns the helper; on macOS with an app bundle through Launch Services so TCC attributes prompts to it. */
+/**
+ * Spawns the helper; on macOS with an app bundle through Launch Services so TCC attributes prompts to it.
+ * `windowsHide` keeps the console helper from opening a console window on Windows (Node ignores it
+ * elsewhere). Only the PGM helper launches through here (helper-launch.test.ts pins that), so no
+ * existing Windows helper changes how it starts.
+ */
 export function launchHelper(identity: HelperIdentityT, args: string[], env: NodeJS.ProcessEnv): LaunchedHelperT {
   const viaLaunchServices = platform() === "darwin" && identity.appPath !== null;
   const launchPath = viaLaunchServices ? "/usr/bin/open" : identity.path;
   const launchArgs = viaLaunchServices ? ["-W", "-n", identity.appPath as string, "--args", ...args] : args;
-  const child = spawn(launchPath, launchArgs, { env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(launchPath, launchArgs, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   return { child, viaLaunchServices };
 }
 

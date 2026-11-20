@@ -20,7 +20,7 @@ Diese Dokumente beschreiben den kompletten Realtime-Refactor der Graphics-Pipeli
 - Display-Output Helper: `apps/bridge/src/services/graphics/display/display-output-entry.ts`
 
 ## Entscheidungen (ADR)
-- Index: `docs/bridge/architecture/adr/README.md` (Prozess, PGM-Helper, FrameBus v2, libdatachannel)
+- Index: `docs/bridge/architecture/adr/README.md` (Prozess, PGM-Helper, FrameBus v2, libdatachannel, `live_stream`, PGM-Aufnahme, Live-PGM unter Windows)
 
 ## Dokumente
 - Relay Enterprise Architektur (aktuell): `docs/bridge/architecture/relay-enterprise-architecture.md`

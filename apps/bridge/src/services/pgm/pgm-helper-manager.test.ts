@@ -41,6 +41,43 @@ describe("applyHelperEvent", () => {
   });
 });
 
+describe("encoder identity from the helper", () => {
+  const base = idlePgmStatus(true);
+  // What the helper adds on Windows: which encoder MFT was picked and the settings that took effect.
+  const settings = { codec_api: true, rate_control: "peak_vbr", low_latency: true, gop_frames: 60, b_frames_off: true, cabac: true, quality_vs_speed: true, force_keyframe: true, color_signalled: true };
+  // A line exactly as the helper writes it (Media Foundation; VideoToolbox stops after "hardware").
+  const configuredLine =
+    '{"type":"pgm_encoder_configured","width":1280,"height":720,"fps_num":30000,"fps_den":1001,"bitrate_kbps":2500,"backend":"mediafoundation","hardware":true,' +
+    '"name":"NVIDIA H.264 Encoder MFT","vendor_id":"VEN_10DE","vendor":"nvidia","settings":{"codec_api":true,"rate_control":"peak_vbr","low_latency":true,' +
+    '"gop_frames":60,"b_frames_off":true,"cabac":true,"quality_vs_speed":true,"force_keyframe":true,"color_signalled":true}}';
+
+  it("leaves the status alone on pgm_encoder_configured, with or without the identity keys", () => {
+    const applied = applyHelperEvent(base, configuredLine);
+    expect(applied).toMatchObject({ kind: "pgm_encoder_configured", event: { backend: "mediafoundation", name: "NVIDIA H.264 Encoder MFT", vendor_id: "VEN_10DE", vendor: "nvidia", settings } });
+    expect(applied!.status).toBe(base);
+    const mac = applyHelperEvent(base, '{"type":"pgm_encoder_configured","width":1280,"height":720,"fps_num":30,"fps_den":1,"bitrate_kbps":2500,"backend":"videotoolbox","hardware":true}');
+    expect(mac).toMatchObject({ kind: "pgm_encoder_configured", event: { backend: "videotoolbox", hardware: true } });
+    expect(mac!.status).toBe(base);
+  });
+
+  it("keeps the known encoder fields and passes the identity keys of a status snapshot through unfiltered", () => {
+    const encoder = { backend: "mediafoundation", hardware: true, bitrate_kbps: 2500, profile: "lan", name: "Intel® Quick Sync Video H.264 Encoder MFT", vendor_id: "VEN_8086", vendor: "intel", settings: { ...settings, rate_control: "cbr", force_keyframe: false } };
+    const line = JSON.stringify({ type: "pgm_status", status: { ...base, state: "running", encoder } });
+    expect(applyHelperEvent(base, line)).toMatchObject({ kind: "pgm_status", status: { state: "running", encoder: { backend: "mediafoundation", hardware: true, bitrate_kbps: 2500, profile: "lan" } } });
+
+    // Through the manager, the way stdout delivers it on Windows (split mid-line, UTF-8 name): what
+    // pgm_get_status returns and bridge_event pgm_status publishes carries the extra keys as they came.
+    const manager = new PgmHelperManager({ env: { BRIDGE_PGM_PREVIEW: "1" } as NodeJS.ProcessEnv, platform: "win32", userDataDir: () => "/tmp/broadify-pgm-test-encoder", createClient: () => ({}) as never });
+    const stdout = Buffer.from(`${configuredLine}\n${line}\n`, "utf8");
+    const feed = (chunk: Buffer) => (manager as unknown as { handleStdoutChunk: (chunk: Buffer) => void }).handleStdoutChunk(chunk);
+    feed(stdout.subarray(0, 400));
+    expect(manager.getStatus().encoder).toBeNull();
+    feed(stdout.subarray(400));
+    expect(manager.getStatus()).toMatchObject({ enabled: true, state: "running" });
+    expect(manager.getStatus().encoder).toEqual(encoder);
+  });
+});
+
 describe("viewer session cleanup", () => {
   const offer = (id: string) => ({ session_id: id, viewer_user_id: "u1", sdp: "v=0", ice_servers: [], label: null }) as never;
   const env = { BRIDGE_PGM_PREVIEW: "1", BRIDGE_PGM_MAX_VIEWERS: "2" } as NodeJS.ProcessEnv;

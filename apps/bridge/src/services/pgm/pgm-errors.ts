@@ -18,6 +18,8 @@ export const PGM_ERROR_CODES = [
   "helper_not_reachable",
   "recording_failed",
   "snapshot_failed",
+  // Windows bridges stream but do not record yet (ADR-0009, point 7).
+  "recording_unsupported",
 ] as const;
 
 export type PgmErrorCodeT = (typeof PGM_ERROR_CODES)[number];

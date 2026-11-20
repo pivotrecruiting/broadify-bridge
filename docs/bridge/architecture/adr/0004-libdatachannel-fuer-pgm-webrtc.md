@@ -1,6 +1,7 @@
 # ADR-0004: libdatachannel als WebRTC-Stack des PGM-Helpers
 
-- Status: akzeptiert
+- Status: akzeptiert; in Teilen abgelöst durch ADR-0009 (TLS-Backend: OpenSSL statisch statt MbedTLS, auf macOS und
+  Windows; alles Übrige gilt unverändert)
 - Datum: 2026-10-24
 
 ## Kontext

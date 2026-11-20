@@ -15,7 +15,16 @@
  * source of truth for electron-builder.config.cjs (packaging), the release
  * contract tests and, via scripts/list-windows-vc-runtime-paths.cjs, for
  * scripts/verify-release-artifacts.sh and the Windows PowerShell scripts.
+ *
+ * The only input besides the arguments is the build switch
+ * BROADIFY_PGM_WINDOWS (scripts/lib/windows-pgm-helper.cjs): with it the PGM
+ * helper folder gets the same CRT set; without it the folders are the two
+ * below, as before.
  */
+
+const {
+  getWindowsPgmHelperVcRuntimeDirs,
+} = require("./windows-pgm-helper.cjs");
 
 /**
  * Complete contents of <VCToolsRedistDir>\x64\Microsoft.VC143.CRT in the
@@ -49,13 +58,31 @@ const WINDOWS_VC_RUNTIME_HELPER_DIRS = Object.freeze([
 const WINDOWS_VC_RUNTIME_STAGING_DIR = "build/windows-vc-runtime";
 
 /**
+ * Helper folders that get the CRT set in this build:
+ * WINDOWS_VC_RUNTIME_HELPER_DIRS, plus the PGM helper folder when the build
+ * switch BROADIFY_PGM_WINDOWS=1 packages pgm-helper.exe (an /MD build like
+ * the other two). Also the folders the dependency gate
+ * (scripts/verify-windows-native-dependencies.cjs) inspects.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {string[]}
+ */
+function getWindowsVcRuntimeHelperDirs(env = process.env) {
+  return [
+    ...WINDOWS_VC_RUNTIME_HELPER_DIRS,
+    ...getWindowsPgmHelperVcRuntimeDirs(env),
+  ];
+}
+
+/**
  * electron-builder `extraResources` entries: one per helper folder, copying
  * exactly the CRT set from the staging folder.
  *
+ * @param {Record<string, string | undefined>} [env]
  * @returns {Array<{ from: string, to: string, filter: string[] }>}
  */
-function getWindowsVcRuntimeResourceEntries() {
-  return WINDOWS_VC_RUNTIME_HELPER_DIRS.map((helperDir) => ({
+function getWindowsVcRuntimeResourceEntries(env = process.env) {
+  return getWindowsVcRuntimeHelperDirs(env).map((helperDir) => ({
     from: WINDOWS_VC_RUNTIME_STAGING_DIR,
     to: helperDir,
     filter: [...WINDOWS_VC_RUNTIME_DLLS],
@@ -66,10 +93,11 @@ function getWindowsVcRuntimeResourceEntries() {
  * Packaged DLL paths relative to `resources/` (forward slashes), for the
  * smoke tests and signature verification.
  *
+ * @param {Record<string, string | undefined>} [env]
  * @returns {string[]}
  */
-function getWindowsVcRuntimePackagedPaths() {
-  return WINDOWS_VC_RUNTIME_HELPER_DIRS.flatMap((helperDir) =>
+function getWindowsVcRuntimePackagedPaths(env = process.env) {
+  return getWindowsVcRuntimeHelperDirs(env).flatMap((helperDir) =>
     WINDOWS_VC_RUNTIME_DLLS.map((dll) => `${helperDir}/${dll}`),
   );
 }
@@ -90,6 +118,7 @@ module.exports = {
   WINDOWS_VC_RUNTIME_DLLS,
   WINDOWS_VC_RUNTIME_HELPER_DIRS,
   WINDOWS_VC_RUNTIME_STAGING_DIR,
+  getWindowsVcRuntimeHelperDirs,
   getWindowsVcRuntimeResourceEntries,
   getWindowsVcRuntimePackagedPaths,
   getWindowsVcRuntimeStagedPaths,

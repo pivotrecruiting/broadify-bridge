@@ -39,6 +39,8 @@ struct Mp4Recorder::Impl {
   }
 };
 
+bool Mp4Recorder::supported() { return true; }
+
 Mp4Recorder::Mp4Recorder() : impl_(new Impl) {}
 
 Mp4Recorder::~Mp4Recorder() {
@@ -90,6 +92,10 @@ bool Mp4Recorder::start(const std::string &filePath, bool withAudio, std::string
     return true;
   }
 }
+
+void Mp4Recorder::appendVideo(const EncodedAccessUnit &unit) { appendVideo(unit.sample, unit.keyframe); }
+
+void Mp4Recorder::appendAudio(const AudioChunk &chunk) { appendAudio(chunk.sample); }
 
 void Mp4Recorder::appendVideo(CMSampleBufferRef sample, bool keyframe) {
   @autoreleasepool {

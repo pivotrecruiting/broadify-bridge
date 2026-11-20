@@ -1,5 +1,9 @@
 #pragma once
 
+#include "audio/audio_source.h"
+#include "common/live_types.h"
+#include "live_stream/video_encoder.h"
+
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -34,10 +38,18 @@ class Mp4Recorder {
   Mp4Recorder(const Mp4Recorder &) = delete;
   Mp4Recorder &operator=(const Mp4Recorder &) = delete;
 
+  /** False where the platform has no recording backend (mp4_recorder_stub.cpp); `start` then always fails. */
+  static bool supported();
+
   bool start(const std::string &filePath, bool withAudio, std::string &error);
   bool stop(std::string &error);
   bool isActive() const;
   RecordingStatus status() const;
+
+  /** One access unit of the recording encoder; called on the encoder's thread. The unit stays owned by the caller. */
+  void appendVideo(const EncodedAccessUnit &unit);
+  /** One captured PCM chunk; called on the audio capture thread. */
+  void appendAudio(const AudioChunk &chunk);
 
 #if defined(__APPLE__)
   void appendVideo(CMSampleBufferRef encodedSample, bool keyframe);

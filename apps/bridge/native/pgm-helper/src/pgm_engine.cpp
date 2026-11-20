@@ -2,6 +2,7 @@
 
 #include "capture/snapshot.h"
 #include "live_stream/monotonic_clock.h"
+#include "common/encoder_info_json.h"
 #include "common/pgm_options.h"
 #include "helper_common/helper_event_log.h"
 #include "helper_common/json_utils.h"
@@ -25,11 +26,16 @@ std::string inputJson(const VideoInputInfo &info) {
   return out.str();
 }
 
-std::string signalJson(const VideoSignal &signal) {
+/** `decode` names the codec the capture backend decodes before delivery ("mjpg"); empty leaves the field out. */
+std::string signalJson(const VideoSignal &signal, const std::string &decode) {
   std::ostringstream out;
   out << "{\"width\":" << signal.width << ",\"height\":" << signal.height << ",\"fps_num\":" << signal.fpsNum
       << ",\"fps_den\":" << signal.fpsDen << ",\"scan\":\"progressive\",\"pixel_format\":\"" << jsonEscape(signal.pixelFormat)
-      << "\",\"no_signal\":" << (signal.noSignal ? "true" : "false") << "}";
+      << "\",\"no_signal\":" << (signal.noSignal ? "true" : "false");
+  if (!decode.empty()) {
+    out << ",\"decode\":\"" << jsonEscape(decode) << "\"";
+  }
+  out << "}";
   return out.str();
 }
 
@@ -37,8 +43,10 @@ std::string signalJson(const VideoSignal &signal) {
 
 PgmEngine::PgmEngine(PgmEngineConfig config) : config_(std::move(config)) {
   publisher_ = std::make_unique<WebRtcPublisher>([this]() { keyframeWanted_.store(true); });
-#if defined(__APPLE__)
   enumerator_ = createUvcEnumerator();
+  if (!enumerator_) {
+    return;
+  }
   enumerator_->setChangeHandler([this]() {
     emitHelperEvent("{\"type\":\"pgm_inputs_changed\"}");
     std::lock_guard<std::mutex> lock(mutex_);
@@ -50,11 +58,10 @@ PgmEngine::PgmEngine(PgmEngineConfig config) : config_(std::move(config)) {
         }
       }
       if (!present && tracker_.markNoSignal()) {
-        emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJson(tracker_.signal()) + "}");
+        emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJsonLocked() + "}");
       }
     }
   });
-#endif
 }
 
 PgmEngine::~PgmEngine() { stop(); }
@@ -78,13 +85,8 @@ void PgmEngine::stop() {
   }
   clearSource();
   publisher_->closeAll();
-#if defined(__APPLE__)
   std::lock_guard<std::mutex> lock(mutex_);
-  if (latestFrame_ != nullptr) {
-    CFRelease(latestFrame_);
-    latestFrame_ = nullptr;
-  }
-#endif
+  latestFrame_.reset();
 }
 
 std::string PgmEngine::inputsListJson() {
@@ -99,6 +101,10 @@ std::string PgmEngine::inputsListJson() {
   json += "],\"camera_permission\":\"";
   json += enumerator_ ? jsonEscape(enumerator_->ensureCameraAuthorization()) : "unavailable";
   return json + "\"}";
+}
+
+std::string PgmEngine::signalJsonLocked() const {
+  return signalJson(tracker_.signal(), source_ ? source_->decode() : std::string());
 }
 
 std::string PgmEngine::stateLocked() const {
@@ -117,11 +123,13 @@ std::string PgmEngine::stateLocked() const {
 std::string PgmEngine::statusJsonLocked() const {
   std::ostringstream out;
   out << "{\"enabled\":true,\"state\":\"" << stateLocked() << "\",\"input\":" << (hasInput_ ? inputJson(input_) : "null")
-      << ",\"signal\":" << (hasInput_ ? signalJson(tracker_.signal()) : "null") << ",\"encoder\":";
+      << ",\"signal\":" << (hasInput_ ? signalJsonLocked() : "null") << ",\"encoder\":";
   if (encoderConfigured_ && encoder_) {
     const EncoderInfo info = encoder_->info();
+    // The encoder's identity (name, vendor, settings that took effect) follows the keys that were always there.
     out << "{\"backend\":\"" << jsonEscape(info.backend) << "\",\"hardware\":" << (info.hardware ? "true" : "false")
-        << ",\"bitrate_kbps\":" << target_.bitrateKbps << ",\"profile\":\"" << jsonEscape(target_.profileName) << "\"}";
+        << ",\"bitrate_kbps\":" << target_.bitrateKbps << ",\"profile\":\"" << jsonEscape(target_.profileName) << "\""
+        << encoderDetailJsonMembers(info) << "}";
   } else {
     out << "null";
   }
@@ -179,9 +187,10 @@ void PgmEngine::selectSource(const std::string &inputId, const std::string &prof
     if (!parseSyntheticSpec(inputId.substr(10), width, height, fps)) {
       throw RpcFailure{"input_not_found", "Synthetic source spec must be WxH@fps."};
     }
-#if defined(__APPLE__)
     source = createSyntheticSource(width, height, fps);
-#endif
+    if (!source) {
+      throw RpcFailure{"input_not_found", "No synthetic source on this platform."};
+    }
     info.id = inputId;
     info.kind = "uvc";
     info.displayName = "Synthetic " + inputId.substr(10);
@@ -219,13 +228,14 @@ void PgmEngine::selectSource(const std::string &inputId, const std::string &prof
     lastErrorMessage_.clear();
     tracker_ = VideoSignalTracker();
     encoderConfigured_ = false;
+    encoderRetry_.reset();
     source_ = std::move(source);
     if (!source_->start([this](const CapturedFrame &frame) { onFrame(frame); }, errorCode, error)) {
       source_.reset();
       hasInput_ = false;
       setErrorLocked(errorCode, error);
     } else if (inputId.rfind("synthetic:", 0) != 0) {
-      startAudioLocked(info.displayName);
+      startAudioLocked(info);
     }
   }
   if (!errorCode.empty()) {
@@ -243,14 +253,21 @@ void PgmEngine::clearSource() {
   }
   std::unique_ptr<VideoSource> source;
   std::unique_ptr<VideoEncoder> encoder;
+  std::unique_ptr<AudioSource> audio;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     source = std::move(source_);
     encoder = std::move(encoder_);
-    stopAudioLocked();
+    audio = detachAudioLocked();
     hasInput_ = false;
     encoderConfigured_ = false;
+    encoderRetry_.reset();
     tracker_ = VideoSignalTracker();
+  }
+  if (audio) {
+    // Outside mutex_, like the video source: stop() may wait for a sink call
+    // in flight, and that call takes the mutex.
+    audio->stop();
   }
   if (source) {
     source->stop();
@@ -261,9 +278,8 @@ void PgmEngine::clearSource() {
   emitStatus();
 }
 
-void PgmEngine::startAudioLocked(const std::string &displayName) {
-#if defined(__APPLE__)
-  audioSource_ = createPairedAudioSource(displayName);
+void PgmEngine::startAudioLocked(const VideoInputInfo &video) {
+  audioSource_ = createPairedAudioSource(video.displayName, video.deviceId);
   if (!audioSource_) {
     return;
   }
@@ -277,9 +293,7 @@ void PgmEngine::startAudioLocked(const std::string &displayName) {
   std::string code;
   std::string error;
   if (!audioSource_->start([this](const AudioChunk &chunk) {
-#if defined(__APPLE__)
-        recorder_.appendAudio(chunk.sample);
-#endif
+        recorder_.appendAudio(chunk);
         std::lock_guard<std::mutex> lock(mutex_);
         if (opus_) {
           opus_->push(chunk);
@@ -291,18 +305,12 @@ void PgmEngine::startAudioLocked(const std::string &displayName) {
     return;
   }
   audioRunning_ = true;
-#else
-  (void)displayName;
-#endif
 }
 
-void PgmEngine::stopAudioLocked() {
-  if (audioSource_) {
-    audioSource_->stop();
-    audioSource_.reset();
-  }
+std::unique_ptr<AudioSource> PgmEngine::detachAudioLocked() {
   opus_.reset();
   audioRunning_ = false;
+  return std::move(audioSource_);
 }
 
 bool PgmEngine::ensureEncoderForSignalLocked(std::string &errorCode, std::string &error) {
@@ -315,27 +323,37 @@ bool PgmEngine::ensureEncoderForSignalLocked(std::string &errorCode, std::string
       target.fpsNum == target_.fpsNum && target.fpsDen == target_.fpsDen) {
     return true;
   }
+  if (!encoderRetry_.attemptDue(target, monotonicNowNs())) {
+    // This setup failed a moment ago and the failure is reported; no error code, the caller only drops the frame.
+    return false;
+  }
   if (!encoder_) {
-#if defined(__APPLE__)
-    encoder_ = createVideoToolboxEncoder();
-#endif
+    encoder_ = createHardwareEncoder();
     if (!encoder_) {
       errorCode = "encoder_unavailable";
       error = "No hardware encoder on this platform.";
+      encoderRetry_.onFailure(target, monotonicNowNs());
       return false;
     }
     encoder_->onAccessUnit = [this](EncodedAccessUnit &&unit) { onAccessUnit(std::move(unit)); };
   }
   if (!encoder_->configure(target, errorCode, error)) {
     encoderConfigured_ = false;
+    // The interval counts from the end of the attempt: a setup that fails slowly is not tried again at once.
+    encoderRetry_.onFailure(target, monotonicNowNs());
     return false;
   }
   target_ = target;
   encoderConfigured_ = true;
+  encoderRetry_.reset();
   keyframeWanted_.store(true);
+  // Says which encoder was picked; on Windows that is the encoder MFT the search ended up with.
+  const EncoderInfo info = encoder_->info();
   emitHelperEvent("{\"type\":\"pgm_encoder_configured\",\"width\":" + std::to_string(target.width) + ",\"height\":" +
                   std::to_string(target.height) + ",\"fps_num\":" + std::to_string(target.fpsNum) + ",\"fps_den\":" +
-                  std::to_string(target.fpsDen) + ",\"bitrate_kbps\":" + std::to_string(target.bitrateKbps) + "}");
+                  std::to_string(target.fpsDen) + ",\"bitrate_kbps\":" + std::to_string(target.bitrateKbps) +
+                  ",\"backend\":\"" + jsonEscape(info.backend) + "\",\"hardware\":" + (info.hardware ? "true" : "false") +
+                  encoderDetailJsonMembers(info) + "}");
   return true;
 }
 
@@ -356,9 +374,11 @@ void PgmEngine::onFrame(const CapturedFrame &frame) {
     }
     const bool signalChanged = tracker_.onFrame(frame.width, frame.height, frame.pixelFormat, frame.captureNs);
     if (signalChanged) {
-      emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJson(tracker_.signal()) + "}");
+      emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJsonLocked() + "}");
       std::string code;
       std::string error;
+      // A changed signal is tried at once, whatever failed before.
+      encoderRetry_.reset();
       if (!ensureEncoderForSignalLocked(code, error) && !code.empty()) {
         setErrorLocked(code, error);
       } else if (!lastErrorCode_.empty() && code.empty()) {
@@ -369,6 +389,8 @@ void PgmEngine::onFrame(const CapturedFrame &frame) {
     }
     if (!encoderConfigured_) {
       // Frame rate not measured yet (first frames) or encoder failed: nothing to encode into.
+      // A failed setup is not repeated on every frame: without a signal change it is tried
+      // again once per kEncoderRetryIntervalNs (common/encoder_retry_backoff.h).
       std::string code;
       std::string error;
       if (ensureEncoderForSignalLocked(code, error)) {
@@ -396,7 +418,7 @@ void PgmEngine::onFrame(const CapturedFrame &frame) {
         recordingEncoder = recordingEncoder_;
       }
       if (recording.mismatchStarted || recording.mismatchEnded || recordingFpsChanged) {
-        signalForEvent = signalJson(tracker_.signal());
+        signalForEvent = signalJsonLocked();
         // The geometry the recording is bound to, including the pixel format the gate compares against.
         recordingForEvent = recordingEncoderJsonLocked();
         recordingForEvent.back() = ',';
@@ -433,40 +455,21 @@ void PgmEngine::onAccessUnit(EncodedAccessUnit &&unit) {
   encodedFrames_.fetch_add(1);
   encodedBytes_.fetch_add(unit.annexB.size());
   publisher_->sendVideo(unit);
-#if defined(__APPLE__)
-  if (unit.sample != nullptr) {
-    CFRelease(unit.sample);
-    unit.sample = nullptr;
-  }
-#endif
+  releaseEncodedSample(unit);
 }
 
 void PgmEngine::onRecordingAccessUnit(EncodedAccessUnit &&unit) {
   recordingFrames_.fetch_add(1);
   recordingBytes_.fetch_add(unit.annexB.size());
-#if defined(__APPLE__)
-  if (unit.sample != nullptr) {
-    recorder_.appendVideo(unit.sample, unit.keyframe);
-    CFRelease(unit.sample);
-    unit.sample = nullptr;
-  }
-#endif
+  recorder_.appendVideo(unit);
+  releaseEncodedSample(unit);
 }
 
 void PgmEngine::keepLatestFrameLocked(const CapturedFrame &frame) {
-#if defined(__APPLE__)
-  if (frame.pixelBuffer == nullptr) {
-    return;
+  // A frame that cannot be retained leaves the previous snapshot frame in place.
+  if (std::shared_ptr<const RetainedFrame> retained = retainFrame(frame)) {
+    latestFrame_ = std::move(retained);
   }
-  CVPixelBufferRef previous = latestFrame_;
-  CFRetain(frame.pixelBuffer);
-  latestFrame_ = frame.pixelBuffer;
-  if (previous != nullptr) {
-    CFRelease(previous);
-  }
-#else
-  (void)frame;
-#endif
 }
 
 std::string PgmEngine::recordingEncoderJsonLocked() const {
@@ -495,6 +498,9 @@ std::string PgmEngine::recordingJsonLocked() const {
 }
 
 std::string PgmEngine::recordingStart(const std::string &filePath) {
+  if (!Mp4Recorder::supported()) {
+    throw RpcFailure{"recording_unsupported", "Recording the program is not supported on this platform yet."};
+  }
   bool audio = false;
   VideoSignal signal;
   {
@@ -517,9 +523,7 @@ std::string PgmEngine::recordingStart(const std::string &filePath) {
   // the capture queue; hardware only, failure surfaces as encoder_unavailable.
   const EncodeTarget target = selectRecordingTarget(signal.width, signal.height, signal.fpsNum, signal.fpsDen);
   std::shared_ptr<VideoEncoder> encoder;
-#if defined(__APPLE__)
-  encoder = createVideoToolboxEncoder();
-#endif
+  encoder = createHardwareEncoder();
   if (!encoder) {
     throw RpcFailure{"encoder_unavailable", "No hardware encoder on this platform."};
   }
@@ -597,32 +601,24 @@ std::string PgmEngine::recordingStatusJson() {
 }
 
 std::string PgmEngine::snapshotJson(double quality) {
-#if defined(__APPLE__)
-  CVPixelBufferRef frame = nullptr;
+  std::shared_ptr<const RetainedFrame> frame;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (latestFrame_ != nullptr) {
-      CFRetain(latestFrame_);
-      frame = latestFrame_;
-    }
+    frame = latestFrame_;
   }
-  if (frame == nullptr) {
+  if (!frame) {
     throw RpcFailure{"pgm_no_signal", "No frame has arrived yet."};
   }
   uint32_t width = 0;
   uint32_t height = 0;
   const double clamped = quality < 0.3 ? 0.3 : (quality > 0.95 ? 0.95 : quality);
-  const std::string base64 = jpegBase64FromPixelBuffer(frame, clamped, width, height);
-  CFRelease(frame);
+  const std::string base64 = jpegBase64FromFrame(frame->frame(), clamped, width, height);
+  frame.reset();
   if (base64.empty()) {
     throw RpcFailure{"snapshot_failed", "The frame could not be encoded as JPEG."};
   }
   return "{\"jpeg_base64\":\"" + base64 + "\",\"width\":" + std::to_string(width) + ",\"height\":" + std::to_string(height) +
          ",\"captured_at_ms\":" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) + "}";
-#else
-  (void)quality;
-  throw RpcFailure{"snapshot_failed", "Snapshots are not available on this platform."};
-#endif
 }
 
 void PgmEngine::housekeeping() {
@@ -638,7 +634,7 @@ void PgmEngine::housekeeping() {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (hasInput_ && tracker_.onTick(monotonicNowNs())) {
-        emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJson(tracker_.signal()) + "}");
+        emitHelperEvent("{\"type\":\"pgm_signal\",\"signal\":" + signalJsonLocked() + "}");
         changed = true;
       }
     }

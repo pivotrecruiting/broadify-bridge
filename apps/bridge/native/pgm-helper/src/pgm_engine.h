@@ -2,7 +2,9 @@
 
 #include "audio/audio_source.h"
 #include "audio/opus_encoder.h"
+#include "capture/frame_holder.h"
 #include "capture/video_source.h"
+#include "common/encoder_retry_backoff.h"
 #include "control/pgm_rpc.h"
 #include "live_stream/video_encoder.h"
 #include "recorder/mp4_recorder.h"
@@ -27,8 +29,8 @@ struct PgmEngineConfig {
  * Owns capture → signal tracker → hardware encoder → WebRTC publisher (+ audio)
  * and, while recording, a second hardware encoder (H.264 High archive target,
  * ADR-0006) → MP4 passthrough recorder. Implements the RPC surface. Threads:
- * capture callbacks (AVFoundation queue / synthetic thread), encoder output
- * (VideoToolbox, one thread per session), a 500 ms housekeeping thread
+ * capture callbacks (capture backend queue / synthetic thread), encoder output
+ * (one thread per encoder session), a 500 ms housekeeping thread
  * (no-signal, dead viewers, perf events). State changes emit helper events so
  * the bridge can publish `pgm_status` without polling.
  */
@@ -61,11 +63,13 @@ class PgmEngine final : public PgmEngineApi {
   void housekeeping();
   bool ensureEncoderForSignalLocked(std::string &errorCode, std::string &error);
   void setErrorLocked(const std::string &code, const std::string &message);
+  std::string signalJsonLocked() const;
   std::string stateLocked() const;
   std::string statusJsonLocked() const;
   void emitStatus();
-  void startAudioLocked(const std::string &displayName);
-  void stopAudioLocked();
+  void startAudioLocked(const VideoInputInfo &video);
+  /** Ends the audio path and hands the source back: the caller stops it after releasing mutex_ (see clearSource). */
+  std::unique_ptr<AudioSource> detachAudioLocked();
   std::string recordingJsonLocked() const;
   std::string recordingEncoderJsonLocked() const;
   /** Flushes the recording encoder into the recorder, stops the recorder, destroys the encoder. */
@@ -83,9 +87,7 @@ class PgmEngine final : public PgmEngineApi {
   std::unique_ptr<OpusAudioEncoder> opus_;
   std::unique_ptr<WebRtcPublisher> publisher_;
   Mp4Recorder recorder_;
-#if defined(__APPLE__)
-  CVPixelBufferRef latestFrame_ = nullptr;  // retained; snapshots
-#endif
+  std::shared_ptr<const RetainedFrame> latestFrame_;  // snapshots
   VideoSignalTracker tracker_;
   EncodeTarget target_;
   EncodeTarget recordingTarget_;
@@ -95,6 +97,8 @@ class PgmEngine final : public PgmEngineApi {
   VideoInputInfo input_;
   bool hasInput_ = false;
   bool encoderConfigured_ = false;
+  /** Keeps a failed setup of encoder_ from being repeated on every frame. */
+  EncoderRetryBackoff encoderRetry_;
   bool audioRunning_ = false;
   std::string lastErrorCode_;
   std::string lastErrorMessage_;
