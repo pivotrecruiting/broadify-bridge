@@ -27,6 +27,7 @@ namespace {
 constexpr auto kIdlePoll = std::chrono::milliseconds(100);
 constexpr auto kFrameWait = std::chrono::milliseconds(200);
 constexpr auto kHousekeeping = std::chrono::seconds(1);
+constexpr auto kEmptyStoreWait = std::chrono::milliseconds(20);
 
 }  // namespace
 
@@ -46,6 +47,10 @@ struct ProgramStream::Impl {
   std::string lastErrorCode;
   std::string lastErrorMessage;
   std::unique_ptr<ProgramFrameConverter> converter = createProgramFrameConverter();
+  // After a failed encoder set-up: no new attempt before this time (never in the future with a zero retry interval).
+  std::chrono::steady_clock::time_point encoderRetryAt{};
+  // Worker only: the frame taken out of the store for a converter that must not run under the store lock.
+  PreviewFrame frameCopy;
 
   std::thread worker;
   std::atomic<bool> running{false};
@@ -76,6 +81,13 @@ struct ProgramStream::Impl {
     encoderConfigured = false;
   }
 
+  // A converter with a retry interval spaces out encoder set-ups after a failure; without one every frame asks again.
+  bool encoderRetryPausedLocked() const {
+    return converter->encoderRetryInterval().count() > 0 && std::chrono::steady_clock::now() < encoderRetryAt;
+  }
+
+  void noteEncoderFailureLocked() { encoderRetryAt = std::chrono::steady_clock::now() + converter->encoderRetryInterval(); }
+
   bool ensureEncoderLocked(uint32_t width, uint32_t height) {
     const live::EncodeTarget wanted =
         live::selectEncodeTarget(width, height, config.fps == 0 ? 30u : config.fps, 1, live::parseEncodeProfile(profile));
@@ -83,11 +95,15 @@ struct ProgramStream::Impl {
         wanted.bitrateKbps == target.bitrateKbps) {
       return true;
     }
+    if (encoderRetryPausedLocked()) {
+      return false;  // last_error still names the failed attempt
+    }
     teardownEncoderLocked();
     encoder = live::createHardwareEncoder();
     if (!encoder) {
       lastErrorCode = "encoder_unavailable";
       lastErrorMessage = "No hardware H.264 encoder on this machine.";
+      noteEncoderFailureLocked();
       return false;
     }
     encoder->onAccessUnit = [this](live::EncodedAccessUnit &&unit) { onAccessUnit(std::move(unit)); };
@@ -97,6 +113,7 @@ struct ProgramStream::Impl {
       lastErrorCode = code;
       lastErrorMessage = error;
       encoder.reset();
+      noteEncoderFailureLocked();
       return false;
     }
     target = wanted;
@@ -134,7 +151,8 @@ struct ProgramStream::Impl {
     return false;
   }
 
-  // Runs under the PreviewFrameStore lock: one conversion pass straight into the converter's buffer.
+  // One conversion pass into the converter's buffer, then the encoder. `frame` is the store's own frame
+  // (the PreviewFrameStore lock is held) or the worker's copy of it, as the converter asks for.
   void encodeFrame(const PreviewFrame &frame) {
     if (frame.width == 0 || frame.height == 0) {
       droppedFrames.fetch_add(1);
@@ -184,10 +202,21 @@ struct ProgramStream::Impl {
       if (!frames.waitForNewFrame(lastSequence, now + kFrameWait)) {
         continue;
       }
-      frames.visitLatestIfNew(lastSequence, [&](const PreviewFrame &frame) {
-        lastSequence = frame.sequence;
-        encodeFrame(frame);
-      });
+      if (converter->runsUnderStoreLock()) {
+        frames.visitLatestIfNew(lastSequence, [&](const PreviewFrame &frame) {
+          lastSequence = frame.sequence;
+          encodeFrame(frame);
+        });
+      } else if (frames.copyLatestIfNew(lastSequence, frameCopy)) {
+        // The store lock was held for this copy only: conversion and encoder calls run without it.
+        lastSequence = frameCopy.sequence;
+        encodeFrame(frameCopy);
+      } else {
+        // A new sequence without a frame (the store was cleared, e.g. camera stop): nothing to take
+        // until the next publish, and waitForNewFrame() would return at once again.
+        std::unique_lock<std::mutex> lock(wakeMutex);
+        wake.wait_for(lock, kEmptyStoreWait, [this]() { return !running.load(); });
+      }
     }
     setConsumer(false);
   }
@@ -229,6 +258,7 @@ void ProgramStream::stop() {
     impl_->encoder->flush();
   }
   impl_->teardownEncoderLocked();
+  impl_->encoderRetryAt = {};
   impl_->converter->reset();
   impl_->publisher.reset();
 }

@@ -117,6 +117,10 @@ class VideoToolboxProgramFrameConverter final : public ProgramFrameConverter {
 
   void reset() override { pool_.reset(); }
 
+  // As before the converter existed: straight from the store's frame, and an encoder is asked for with every frame.
+  bool runsUnderStoreLock() const override { return true; }
+  std::chrono::milliseconds encoderRetryInterval() const override { return std::chrono::milliseconds(0); }
+
  private:
   ProgramFramePool pool_;
 };

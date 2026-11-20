@@ -2,6 +2,7 @@
 
 #include "live_stream/video_frame.h"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -13,8 +14,10 @@ struct PreviewFrame;
 /**
  * Platform half of the program stream: turns an RGBA program frame from
  * PreviewFrameStore into the frame the platform's hardware encoder takes
- * (macOS: a pooled BGRA CVPixelBuffer for VideoToolbox). The portable worker
- * in program_stream.cpp owns one converter and serialises every call; a
+ * (macOS: a pooled BGRA CVPixelBuffer for VideoToolbox, Windows: NV12 planes
+ * in system memory for the Media Foundation encoder), and tells the worker
+ * how that encoder wants to be driven. The portable worker in
+ * program_stream.cpp owns one converter and serialises every call; a
  * converter is not thread-safe.
  */
 class ProgramFrameConverter {
@@ -43,6 +46,24 @@ class ProgramFrameConverter {
   virtual void release(live::CapturedFrame &frame) = 0;
   /** Drops every buffer; prepare() builds them again. */
   virtual void reset() = 0;
+
+  /**
+   * Whether convert() and the encoder calls around it may run while the
+   * PreviewFrameStore lock is held. True (VideoToolbox): one short pass
+   * straight from the store's frame, the encode itself is asynchronous.
+   * False (Media Foundation): the worker copies the frame out and holds the
+   * store lock for that copy only, so the pipeline's publish() never waits
+   * on the conversion or on a Media Foundation call.
+   */
+  virtual bool runsUnderStoreLock() const = 0;
+
+  /**
+   * Pause before the worker asks the platform for an encoder again after a
+   * failed set-up. Zero asks again with every frame (VideoToolbox answers at
+   * once); Media Foundation enumerates and activates driver MFTs on a new
+   * thread for every attempt.
+   */
+  virtual std::chrono::milliseconds encoderRetryInterval() const = 0;
 };
 
 /** The converter of this platform (defined in the platform's converter source). */

@@ -27,13 +27,17 @@ struct ProgramStreamConfig {
  * frame pipeline (and with it the virtual camera and the recording) never
  * waits for the encoder: without viewers nothing is copied or encoded; with
  * viewers each new program frame goes through the platform's frame converter
- * (program_frame_converter.h; macOS: RGBA→BGRA into a pooled,
- * IOSurface-backed CVPixelBuffer in one pass) and is handed to the hardware
- * encoder, which encodes asynchronously. A frame the encoder cannot take is
- * dropped, never queued. Viewer state changes are emitted as
- * `meeting_viewer_state` helper events. Unsupported (stub) on platforms
- * without the hardware encoder path: every offer fails with
- * `program_stream_unavailable`.
+ * (program_frame_converter.h) and is handed to the hardware encoder, which
+ * encodes asynchronously. macOS: RGBA→BGRA into a pooled, IOSurface-backed
+ * CVPixelBuffer in one pass under the store lock, VideoToolbox scales.
+ * Windows (build switch BROADIFY_PGM_WINDOWS=1, ADR-0009): the frame is
+ * copied out of the store, converted to NV12 on the CPU and scaled by the
+ * Media Foundation encoder's input stage; no Media Foundation call happens
+ * while the store lock is held. A frame the encoder cannot take is dropped,
+ * never queued. Viewer state changes are emitted as `meeting_viewer_state`
+ * helper events. Unsupported (stub) on platforms without the hardware
+ * encoder path, i.e. Windows without the build switch: every offer fails
+ * with `program_stream_unavailable`.
  */
 class ProgramStream {
  public:

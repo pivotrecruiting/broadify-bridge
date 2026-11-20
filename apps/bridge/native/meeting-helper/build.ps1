@@ -26,7 +26,40 @@ if (Test-Path $outputExe) {
   Remove-Item -Force $outputExe
 }
 
-Invoke-NativeCommand cmake -S $rootDir -B $buildDir -DCMAKE_BUILD_TYPE=$Config
+if ($env:BROADIFY_PGM_WINDOWS -eq "1") {
+  # Build switch of the live program on Windows (ADR-0009): the helper gets the
+  # WebRTC program stream (program_stream.cpp + NV12 frame converter) instead
+  # of the stub. Only this branch passes the WebRTC arguments; it needs the
+  # static OpenSSL from scripts/prepare-windows-pgm-deps.ps1 (live-stream reads
+  # it from its deps directory, or from LIVE_STREAM_OPENSSL_ROOT) and network
+  # access for FetchContent (libdatachannel).
+  #   MEETING_HELPER_CMAKE_EXTRA_ARGS   extra configure arguments, separated by
+  #                                     whitespace (e.g. FETCHCONTENT_SOURCE_DIR_*)
+  $pgmConfigureArguments = @(
+    "-S", $rootDir,
+    "-B", $buildDir,
+    "-DCMAKE_BUILD_TYPE=$Config",
+    "-DLIVE_STREAM_WITH_WEBRTC=ON",
+    "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+  )
+  if (-not [string]::IsNullOrWhiteSpace($env:MEETING_HELPER_CMAKE_EXTRA_ARGS)) {
+    $pgmConfigureArguments += @($env:MEETING_HELPER_CMAKE_EXTRA_ARGS -split '\s+' | Where-Object { $_ })
+  }
+  & cmake @pgmConfigureArguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "cmake $($pgmConfigureArguments -join ' ') failed with exit code $LASTEXITCODE"
+  }
+} else {
+  # Without the switch nothing of the live program is built. A build directory
+  # left over from a build with the switch keeps the WebRTC part switched on
+  # through its CMake cache: refuse it instead of silently building the stream.
+  $cmakeCache = Join-Path $buildDir "CMakeCache.txt"
+  if ((Test-Path $cmakeCache) -and
+      (Select-String -Path $cmakeCache -Pattern '^LIVE_STREAM_WITH_WEBRTC(:[A-Z]+)?=(ON|1|TRUE|YES)\s*$' -Quiet)) {
+    throw "The build directory $buildDir was configured with BROADIFY_PGM_WINDOWS=1 (LIVE_STREAM_WITH_WEBRTC is ON in its CMake cache). Delete it before building without the switch."
+  }
+  Invoke-NativeCommand cmake -S $rootDir -B $buildDir -DCMAKE_BUILD_TYPE=$Config
+}
 Invoke-NativeCommand cmake --build $buildDir --target meeting-helper --config $Config --verbose
 
 $candidates = @(

@@ -201,6 +201,14 @@ if(APPLE)
   set_source_files_properties(src/live/program_frame_converter_vt.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   add_executable(meeting-helper MACOSX_BUNDLE ${MEETING_HELPER_SOURCES})
   target_link_libraries(meeting-helper PRIVATE live_stream)
+elseif(WIN32 AND TARGET live_stream)
+  # Windows behind the build switch (ADR-0009): `live_stream` only exists when
+  # live-stream was configured with its WebRTC part (BROADIFY_PGM_WINDOWS=1 or
+  # -DLIVE_STREAM_WITH_WEBRTC=ON, see build.ps1). Same worker, NV12 frame
+  # converter, Media Foundation encoder and libdatachannel from live_stream.
+  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.cpp src/live/program_frame_converter_nv12.cpp)
+  add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
+  target_link_libraries(meeting-helper PRIVATE live_stream)
 else()
   list(APPEND MEETING_HELPER_SOURCES src/live/program_stream_stub.cpp)
   add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
@@ -665,5 +673,20 @@ if(MEETING_HELPER_BUILD_TESTS)
     target_link_libraries(program_stream_scale_test PRIVATE live_stream)
     add_test(NAME program_stream_scale_test COMMAND program_stream_scale_test)
     set_tests_properties(program_stream_scale_test PROPERTIES TIMEOUT 60)
+  endif()
+
+  # Tests of the real program stream: wherever it is built, i.e. macOS and
+  # Windows behind the build switch. A Windows build without the switch has no
+  # `live_stream` target and none of these.
+  if(TARGET live_stream)
+    # The NV12 frame converter (the Windows one) is pure C++: converted pixels,
+    # plane layout and the way through the encoder's NV12 input stage.
+    add_executable(program_frame_converter_nv12_test
+      tests/program_frame_converter_nv12_test.cpp
+      src/live/program_frame_converter_nv12.cpp
+    )
+    target_include_directories(program_frame_converter_nv12_test PRIVATE src)
+    target_link_libraries(program_frame_converter_nv12_test PRIVATE live_stream_core helper_common)
+    add_test(NAME program_frame_converter_nv12_test COMMAND program_frame_converter_nv12_test)
   endif()
 endif()
