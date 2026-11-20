@@ -688,5 +688,39 @@ if(MEETING_HELPER_BUILD_TESTS)
     target_include_directories(program_frame_converter_nv12_test PRIVATE src)
     target_link_libraries(program_frame_converter_nv12_test PRIVATE live_stream_core helper_common)
     add_test(NAME program_frame_converter_nv12_test COMMAND program_frame_converter_nv12_test)
+
+    # The worker end to end against a libdatachannel viewer in the same
+    # process, with the platform's frame converter and hardware encoder.
+    set(PROGRAM_STREAM_LOOPBACK_TEST_SOURCES
+      tests/program_stream_loopback_test.cpp
+      src/live/program_stream.cpp
+      src/preview/preview_frame_store.cpp
+    )
+    if(APPLE)
+      list(APPEND PROGRAM_STREAM_LOOPBACK_TEST_SOURCES
+        src/live/program_frame_converter_vt.mm
+        src/util/pixel_swizzle.cpp
+      )
+    else()
+      list(APPEND PROGRAM_STREAM_LOOPBACK_TEST_SOURCES src/live/program_frame_converter_nv12.cpp)
+    endif()
+    add_executable(program_stream_loopback_test ${PROGRAM_STREAM_LOOPBACK_TEST_SOURCES})
+    # The same test on top of the NV12 converter and an encoder defined in the
+    # test (it replaces createHardwareEncoder(); the platform encoder object in
+    # the live_stream archive is then never pulled in). Runs without hardware,
+    # also on macOS: the Windows frame hand-over of the worker.
+    add_executable(program_stream_nv12_loopback_test
+      tests/program_stream_loopback_test.cpp
+      src/live/program_stream.cpp
+      src/live/program_frame_converter_nv12.cpp
+      src/preview/preview_frame_store.cpp
+    )
+    target_compile_definitions(program_stream_nv12_loopback_test PRIVATE PROGRAM_STREAM_TEST_ENCODER=1)
+    foreach(stream_test program_stream_loopback_test program_stream_nv12_loopback_test)
+      target_include_directories(${stream_test} PRIVATE src)
+      target_link_libraries(${stream_test} PRIVATE live_stream helper_common)
+      add_test(NAME ${stream_test} COMMAND ${stream_test})
+      set_tests_properties(${stream_test} PROPERTIES TIMEOUT 120)
+    endforeach()
   endif()
 endif()
