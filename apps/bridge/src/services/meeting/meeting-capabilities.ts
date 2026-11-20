@@ -26,11 +26,15 @@ const defaultDeps: MeetingCapabilityDepsT = { platform: process.platform };
  * meeting program on a portrait canvas (ADR-0007). macOS only for now: the
  * Windows helper carries the same code, but it has not been verified on a
  * device yet, so the flag stays false there until it has.
+ *
+ * `layer_canvas` says that `graphics_send` honours the per-layer `canvas`
+ * (ADR-0007). It is a feature of the graphics renderer, which is the same on
+ * every platform, so it does not depend on `program_portrait`.
  */
 export function getMeetingCapabilities(
   deps: MeetingCapabilityDepsT = defaultDeps,
 ): MeetingCapabilitiesT {
-  return { program_portrait: deps.platform === "darwin" };
+  return { program_portrait: deps.platform === "darwin", layer_canvas: true };
 }
 
 /** Fills the engine defaults into a (partial) start payload. */
