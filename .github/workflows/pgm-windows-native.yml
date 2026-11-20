@@ -727,7 +727,7 @@ jobs:
           if ($cache -match '(?m)^LIVE_STREAM_WITH_(WEBRTC|MF)\b') { throw "the default build has a live-stream switch in its CMake cache" }
           $objects = @(Get-ChildItem -Path $build -Recurse -File -Filter '*.obj' | ForEach-Object { $_.Name })
           Write-Host "$($objects.Count) object files"
-          foreach ($forbidden in @('program_stream.obj', 'program_frame_converter_nv12.obj', 'publisher.obj', 'mf_encoder.obj')) {
+          foreach ($forbidden in @('program_stream.obj', 'program_frame_converter_nv12.obj', 'encoder_info_json.obj', 'publisher.obj', 'mf_encoder.obj')) {
             if ($objects -contains $forbidden) { throw "$forbidden was compiled without the build switch" }
           }
           $helperObjects = @(Get-ChildItem -Path (Join-Path $build 'meeting-helper.dir') -Recurse -File -Filter '*.obj' | ForEach-Object { $_.Name })

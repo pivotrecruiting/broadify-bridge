@@ -140,6 +140,21 @@ Ohne Hardware-Encoder meldet `program.stream.status` `encoder: null` und `last_e
 Meldung des Encoders (versuchte MFTs mit Schritt und HRESULT). Bilder werden verworfen und gezählt; einen Software-Weg
 gibt es nicht.
 
+Welcher Encoder gewählt wurde, steht im Ereignis `meeting_program_stream` / `encoder_configured` und in
+`program.stream.status.encoder`, mit den Schlüsseln des PGM-Helpers:
+
+| Schlüssel | Inhalt | macOS (VideoToolbox) |
+|---|---|---|
+| `backend`, `hardware` | `mediafoundation` bzw. `videotoolbox`, Hardware-Encoder ja/nein | ja |
+| `name` | Anzeigename des gewählten Encoder-MFT | – |
+| `vendor_id`, `vendor` | z. B. `VEN_10DE`; daraus `nvidia`, `amd`, `intel` oder `unknown` | – |
+| `settings` | Objekt mit den Einstellungen, die der Encoder angenommen hat (als Text in `settings_text`, falls es kein JSON-Objekt in einer Zeile ist) | – |
+
+`name`, `vendor_id`, `vendor` und `settings` erscheinen nur, wenn der Encoder sie meldet. Gebaut werden sie vom Modul
+des PGM-Helpers (`pgm-helper/src/common/encoder_info_json.cpp`); der Meeting-Helper kompiliert diese Datei von dort
+(`program_stream_encoder_info` in `meeting-helper/CMakeLists.txt`, nur wo der echte Stream gebaut wird) und hat keine
+eigene Fassung. Die Bridge reicht den Status ohne Schema durch (`meeting_program_status`).
+
 Build:
 - `meeting-helper/CMakeLists.txt`: macOS → Worker + VideoToolbox-Konverter. `WIN32 AND TARGET live_stream` → Worker +
   NV12-Konverter + `live_stream`. Sonst der Stub, Zeile für Zeile wie bisher. Das Target `live_stream` gibt es unter
@@ -470,6 +485,8 @@ Hintergrund: Meeting-Aufnahme (Media Foundation) und Programm-Stream laufen glei
 PGM-Aufnahme als zweiter Encoder im PGM-Helper dazu (ADR-0006).
 - [ ] Meeting-Engine starten, Aufnahme starten, dann Zuschauer auf das Meeting-Programm: beide laufen, die
       Aufnahme bleibt ruckelfrei (Datei danach prüfen), `program.stream.status` ohne wachsende `dropped_frames`.
+- [ ] `encoder` aus `program.stream.status` notieren (`name`, `vendor_id`, `vendor`, `settings`): welchen Hardware-MFT
+      das Meeting-Programm gewählt hat. Mit dem des PGM-Helpers (`pgm_encoder_configured`) vergleichen.
 - [ ] Zusätzlich im Studio-Modus PGM-Vorschau mit Zuschauer (zweiter Prozess, zweite Session).
 - [ ] NVIDIA-Consumer-Karten begrenzen parallele Sessions treiberseitig: Zahl gleichzeitig möglicher Sessions
       notieren, Fehlerbild der überzähligen Session notieren (soll `encoder_unavailable` sein, kein Hänger).

@@ -195,12 +195,22 @@ add_subdirectory(../helper-common helper-common)
 # Shared hardware encoder + WebRTC publisher (apps/bridge/native/live-stream), also used by the PGM helper.
 add_subdirectory(../live-stream live-stream)
 
+if(TARGET live_stream)
+  # Where the real program stream is built (macOS, Windows behind the build
+  # switch): the picked encoder's identity for the stream's event and status.
+  # The PGM helper's module, compiled from its sources, so that both helpers
+  # report the encoder through one implementation.
+  add_library(program_stream_encoder_info STATIC ../pgm-helper/src/common/encoder_info_json.cpp)
+  target_include_directories(program_stream_encoder_info PUBLIC ../pgm-helper/src)
+  target_link_libraries(program_stream_encoder_info PUBLIC live_stream_core helper_common)
+endif()
+
 if(APPLE)
   # Program stream: portable worker + the VideoToolbox frame converter.
   list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.cpp src/live/program_frame_converter_vt.mm)
   set_source_files_properties(src/live/program_frame_converter_vt.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   add_executable(meeting-helper MACOSX_BUNDLE ${MEETING_HELPER_SOURCES})
-  target_link_libraries(meeting-helper PRIVATE live_stream)
+  target_link_libraries(meeting-helper PRIVATE live_stream program_stream_encoder_info)
 elseif(WIN32 AND TARGET live_stream)
   # Windows behind the build switch (ADR-0009): `live_stream` only exists when
   # live-stream was configured with its WebRTC part (BROADIFY_PGM_WINDOWS=1 or
@@ -208,7 +218,7 @@ elseif(WIN32 AND TARGET live_stream)
   # converter, Media Foundation encoder and libdatachannel from live_stream.
   list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.cpp src/live/program_frame_converter_nv12.cpp)
   add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
-  target_link_libraries(meeting-helper PRIVATE live_stream)
+  target_link_libraries(meeting-helper PRIVATE live_stream program_stream_encoder_info)
 else()
   list(APPEND MEETING_HELPER_SOURCES src/live/program_stream_stub.cpp)
   add_executable(meeting-helper ${MEETING_HELPER_SOURCES})
@@ -718,7 +728,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     target_compile_definitions(program_stream_nv12_loopback_test PRIVATE PROGRAM_STREAM_TEST_ENCODER=1)
     foreach(stream_test program_stream_loopback_test program_stream_nv12_loopback_test)
       target_include_directories(${stream_test} PRIVATE src)
-      target_link_libraries(${stream_test} PRIVATE live_stream helper_common)
+      target_link_libraries(${stream_test} PRIVATE live_stream program_stream_encoder_info helper_common)
       add_test(NAME ${stream_test} COMMAND ${stream_test})
       set_tests_properties(${stream_test} PROPERTIES TIMEOUT 120)
     endforeach()
@@ -735,7 +745,7 @@ if(MEETING_HELPER_BUILD_TESTS)
         src/util/pixel_swizzle.cpp
       )
       target_include_directories(program_stream_idle_test PRIVATE src)
-      target_link_libraries(program_stream_idle_test PRIVATE live_stream helper_common)
+      target_link_libraries(program_stream_idle_test PRIVATE live_stream program_stream_encoder_info helper_common)
       add_test(NAME program_stream_idle_test COMMAND program_stream_idle_test)
       set_tests_properties(program_stream_idle_test PROPERTIES TIMEOUT 60)
     endif()

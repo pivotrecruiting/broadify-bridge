@@ -63,7 +63,10 @@ test("the Windows program stream exists only where live-stream built its WebRTC 
     windows[1],
     /list\(APPEND MEETING_HELPER_SOURCES src\/live\/program_stream\.cpp src\/live\/program_frame_converter_nv12\.cpp\)/,
   );
-  assert.match(windows[1], /target_link_libraries\(meeting-helper PRIVATE live_stream\)/);
+  assert.match(
+    windows[1],
+    /target_link_libraries\(meeting-helper PRIVATE live_stream program_stream_encoder_info\)/,
+  );
   assert.doesNotMatch(windows[1], /program_stream_stub/);
 
   const apple = block.match(/\nif\(APPLE\)\n([\s\S]*?)\nelseif\(/);
@@ -89,6 +92,36 @@ test("the Windows program stream exists only where live-stream built its WebRTC 
   }
   // The RPC tests keep linking the stub on every platform.
   assert.match(outside, /set\(CONTROL_SERVER_TEST_SOURCES[\s\S]*?src\/live\/program_stream_stub\.cpp/);
+});
+
+test("the picked encoder is reported through the PGM helper's module, only where the stream is built", () => {
+  // One implementation for both helpers: the meeting helper compiles the PGM
+  // helper's source from where it lives and carries no copy of it.
+  const library = cmake.match(
+    /\nif\(TARGET live_stream\)\n([\s\S]*?)\nendif\(\)\n(?=\nif\(APPLE\)\n  # Program stream:)/,
+  );
+  assert.ok(library, "the encoder info library must sit behind the live_stream target");
+  assert.match(
+    library[1],
+    /\n  add_library\(program_stream_encoder_info STATIC \.\.\/pgm-helper\/src\/common\/encoder_info_json\.cpp\)\n/,
+  );
+  assert.equal((cmake.match(/encoder_info_json/g) || []).length, 1);
+  assert.ok(fs.existsSync(path.join(root, "apps/bridge/native/pgm-helper/src/common/encoder_info_json.cpp")));
+  for (const dir of [LIVE, `${MEETING_HELPER}/src/common`]) {
+    const copies = fs.readdirSync(path.join(root, dir)).filter((name) => /encoder_info/.test(name));
+    assert.deepEqual(copies, [], `${dir} must not carry its own encoder info module`);
+  }
+  // Nothing outside the branches that build the real stream, and its tests, links it.
+  const tests = cmake.match(/\n  if\(TARGET live_stream\)\n[\s\S]*?\n  endif\(\)\nendif\(\)\n$/);
+  assert.ok(tests);
+  const block = programStreamBlock();
+  const outside = cmake.replace(library[0], "").replace(block, "").replace(tests[0], "");
+  assert.doesNotMatch(outside, /program_stream_encoder_info/);
+  assert.doesNotMatch(block.slice(block.lastIndexOf("\nelse()\n")), /program_stream_encoder_info/);
+
+  // The worker names the encoder in the event and in the status, both through the module.
+  const worker = stripComments(read(`${LIVE}/program_stream.cpp`));
+  assert.equal((worker.match(/pgm::encoderDetailJsonMembers\(info\)/g) || []).length, 2);
 });
 
 test("build.ps1 passes the WebRTC arguments only with BROADIFY_PGM_WINDOWS=1", () => {

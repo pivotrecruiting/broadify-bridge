@@ -2,9 +2,10 @@
 // process offers a recvonly video section, program frames are published into
 // PreviewFrameStore the way the frame pipeline does, and the receiver sees RTP.
 // Covers what the RPC test with the stub cannot: consumer registration, the
-// frame hand-over, encoder set-up from the frame geometry, reconfiguration on
-// a program format change (1920x1080 -> 1080x1920) and on a profile change,
-// the wait on a cleared store, idle without viewers, stop and restart.
+// frame hand-over, encoder set-up from the frame geometry, the picked encoder
+// in the event and the status, reconfiguration on a program format change
+// (1920x1080 -> 1080x1920) and on a profile change, the wait on a cleared
+// store, idle without viewers, stop and restart.
 //
 // Built twice from this file:
 //   program_stream_loopback_test       the platform's frame converter and its
@@ -313,6 +314,35 @@ std::string encoderJsonFor(const EncodeTarget &target) {
          target.profileName + "\"";
 }
 
+// Which encoder was picked, as the event and the status say it: backend and hardware, then what the
+// encoder reports about itself, with the keys of the PGM helper's encoder event.
+#if defined(PROGRAM_STREAM_TEST_ENCODER)
+// TestEncoder::info() reports what a Windows hardware encoder does.
+const char *const kEncoderBackend = "test";
+const char *const kEncoderDetail =
+    ",\"name\":\"Test \\\"H.264\\\" Encoder MFT\",\"vendor_id\":\"VEN_10DE\",\"vendor\":\"nvidia\","
+    "\"settings\":{\"rate_control\":\"cbr\",\"low_latency\":true}";
+#elif defined(__APPLE__)
+const char *const kEncoderBackend = "videotoolbox";
+const char *const kEncoderDetail = "";  // VideoToolbox reports backend and hardware only
+#else
+const char *const kEncoderBackend = "mediafoundation";
+const char *const kEncoderDetail = nullptr;  // name, vendor and settings are the machine's: not pinned here
+#endif
+
+/** The `encoder` object of the status for `target`, up to its end where the encoder's own report is known. */
+std::string encoderStatusFor(const EncodeTarget &target) {
+  const std::string head =
+      std::string("\"encoder\":{\"backend\":\"") + kEncoderBackend + "\",\"hardware\":true," + encoderJsonFor(target);
+  return kEncoderDetail != nullptr ? head + kEncoderDetail + "}" : head;
+}
+
+/** The rest of an encoder_configured event from the target on, up to its end where the encoder's own report is known. */
+std::string encoderEventFor(const EncodeTarget &target) {
+  const std::string head = encoderJsonFor(target) + ",\"backend\":\"" + kEncoderBackend + "\",\"hardware\":true";
+  return kEncoderDetail != nullptr ? head + kEncoderDetail + "}" : head;
+}
+
 double processCpuSeconds() {
 #if defined(_WIN32)
   FILETIME creation;
@@ -492,10 +522,14 @@ class TestEncoder final : public VideoEncoder {
   void setBitrate(uint32_t, uint32_t) override {}
   void requestKeyframe() override {}
   void flush() override {}
+  // The identity a Windows hardware encoder reports (kEncoderDetail is the same as JSON members).
   EncoderInfo info() const override {
     EncoderInfo info;
     info.backend = "test";
     info.hardware = true;
+    info.name = "Test \"H.264\" Encoder MFT";
+    info.vendorId = "VEN_10DE";
+    info.settings = "{\"rate_control\":\"cbr\",\"low_latency\":true}";
     return info;
   }
 
@@ -718,8 +752,8 @@ int main() {
 #endif
 
   if (hardware) {
-    if (!contains(status, "\"active\":true,\"viewers\":1,\"encoder\":{\"backend\":\"") || !contains(status, "\"hardware\":true") ||
-        !contains(status, encoderJsonFor(remoteLandscape)) || !contains(status, "\"last_error\":null")) {
+    if (!contains(status, "\"active\":true,\"viewers\":1," + encoderStatusFor(remoteLandscape)) ||
+        !contains(status, "\"last_error\":null")) {
       fail("1920x1080 remote status: " + status);
     }
     if (numberField(status, "encoded_bytes") == 0) {
@@ -732,7 +766,7 @@ int main() {
     // The program turns portrait: the encoder follows the frame geometry (720x1280 for "remote").
     const EncodeTarget remotePortrait = selectEncodeTarget(1080, 1920, 30, 1, EncodeProfile::Remote);
     publisher.start(1080, 1920);
-    if (!waitFor([&] { return contains(stream.statusJson(), encoderJsonFor(remotePortrait)); }, 10000)) {
+    if (!waitFor([&] { return contains(stream.statusJson(), encoderStatusFor(remotePortrait)); }, 10000)) {
       fail("the encoder did not follow the program to 1080x1920: " + stream.statusJson());
     }
     const uint64_t encodedAtSwitch = numberField(stream.statusJson(), "encoded_frames");
@@ -811,7 +845,7 @@ int main() {
     // A new first viewer picks the ladder profile: "lan" keeps the portrait program at 1080x1920.
     const EncodeTarget lanPortrait = selectEncodeTarget(1080, 1920, 30, 1, EncodeProfile::Lan);
     std::unique_ptr<Browser> second = joinViewer(stream, "second-viewer", "lan");
-    if (!waitFor([&] { return contains(stream.statusJson(), encoderJsonFor(lanPortrait)); }, 10000)) {
+    if (!waitFor([&] { return contains(stream.statusJson(), encoderStatusFor(lanPortrait)); }, 10000)) {
       fail("the first viewer's profile did not reconfigure the encoder: " + stream.statusJson());
     }
     if (!waitFor([&] { return second->rtpPackets->load() >= 15; }, 10000)) {
@@ -824,7 +858,7 @@ int main() {
       fail("expected 3 encoder_configured events, got " + std::to_string(events.size()));
     }
     for (size_t i = 0; i < 3; ++i) {
-      if (!contains(events[i], encoderJsonFor(expected[i]))) {
+      if (!contains(events[i], encoderEventFor(expected[i]))) {
         fail("encoder_configured event " + std::to_string(i) + ": " + events[i]);
       }
     }

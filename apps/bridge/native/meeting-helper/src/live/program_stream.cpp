@@ -1,5 +1,6 @@
 #include "live/program_stream.h"
 
+#include "common/encoder_info_json.h"  // the PGM helper's module, built here as program_stream_encoder_info
 #include "live/program_frame_converter.h"
 #include "live_stream/bitrate_ladder.h"
 #include "live_stream/monotonic_clock.h"
@@ -130,10 +131,15 @@ struct ProgramStream::Impl {
     lastErrorCode.clear();
     lastErrorMessage.clear();
     keyframeWanted.store(true);
+    // Says which encoder was picked, with the keys of the PGM helper's `pgm_encoder_configured`: backend and
+    // hardware, then what the encoder reports about itself (Windows: name, vendor and settings of the MFT).
+    const live::EncoderInfo info = encoder->info();
     broadify::helper::emitHelperEvent("{\"type\":\"meeting_program_stream\",\"event\":\"encoder_configured\",\"width\":" +
                                       std::to_string(wanted.width) + ",\"height\":" + std::to_string(wanted.height) +
                                       ",\"fps\":" + std::to_string(wanted.fpsNum) + ",\"bitrate_kbps\":" +
-                                      std::to_string(wanted.bitrateKbps) + ",\"profile\":\"" + jsonEscape(wanted.profileName) + "\"}");
+                                      std::to_string(wanted.bitrateKbps) + ",\"profile\":\"" + jsonEscape(wanted.profileName) +
+                                      "\",\"backend\":\"" + jsonEscape(info.backend) + "\",\"hardware\":" +
+                                      (info.hardware ? "true" : "false") + pgm::encoderDetailJsonMembers(info) + "}");
     return true;
   }
 
@@ -312,7 +318,7 @@ std::string ProgramStream::statusJson() const {
     encoderJson = "{\"backend\":\"" + jsonEscape(info.backend) + "\",\"hardware\":" + (info.hardware ? "true" : "false") +
                   ",\"width\":" + std::to_string(impl_->target.width) + ",\"height\":" + std::to_string(impl_->target.height) +
                   ",\"fps\":" + std::to_string(impl_->target.fpsNum) + ",\"bitrate_kbps\":" + std::to_string(impl_->target.bitrateKbps) +
-                  ",\"profile\":\"" + jsonEscape(impl_->target.profileName) + "\"}";
+                  ",\"profile\":\"" + jsonEscape(impl_->target.profileName) + "\"" + pgm::encoderDetailJsonMembers(info) + "}";
   }
   std::string errorJson = "null";
   if (!impl_->lastErrorCode.empty()) {
