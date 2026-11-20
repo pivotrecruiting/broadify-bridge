@@ -108,6 +108,19 @@ describe("registerServerRoutes", () => {
       },
       { plugin: routes.registerLogsRoute, options: undefined },
     ]);
+
+    // The local video status mirrors get_status: live_program and meeting
+    // capability blocks side by side.
+    const videoOptions = calls.find(
+      (call) => call.plugin === routes.registerVideoRoute,
+    )?.options as { getStatus: () => { capabilities: Record<string, unknown> } };
+    const capabilities = videoOptions.getStatus().capabilities;
+    expect(capabilities.live_program).toEqual(
+      expect.objectContaining({ supported: expect.any(Boolean) }),
+    );
+    expect(capabilities.meeting).toEqual({
+      program_portrait: process.platform === "darwin",
+    });
   });
 
   it("registers relay route with undefined relayClient when not provided", async () => {

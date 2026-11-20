@@ -164,9 +164,15 @@ lokale Plattform und Output-Fähigkeiten:
 `outputCapabilities.decklink` ist nur auf macOS `true`; Windows/Linux können
 damit "keine DeckLink-Outputs" von "DeckLink nicht unterstützt" unterscheiden.
 
-`data.capabilities` ist additiv: `canonXC`, `live_program` und
+`data.capabilities` ist additiv: `canonXC`, `live_program`, `meeting` und
 `mode_activation: true` (Bridge unterstützt `mode_activate`; fehlt auf älteren
 Bridges, die Studio-Zustand noch selbst beim Start wiederherstellen).
+
+`capabilities.meeting` (`MeetingCapabilitiesT`, fehlt auf älteren Bridges):
+`program_portrait` – `meeting_engine_start` akzeptiert eine Hochformat-Leinwand
+(`height > width`, z. B. 1080×1920). `true` auf macOS, `false` auf Windows, bis
+der Pfad dort am Gerät geprüft ist. Fehlercodes und `program_format`:
+`docs/bridge/features/meeting-status-contract.md`, Entscheidung: ADR-0007.
 
 #### mode_activate
 Die Web-App meldet den gewählten Modus; die Bridge stellt Studio-Verbindungen

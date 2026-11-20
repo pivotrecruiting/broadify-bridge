@@ -141,9 +141,29 @@ bestehenden Layer neu in die frische Region zeichnet
 (`scheduleCapturedWindowFrames("framebus_reattach")`). Läuft die Engine
 bereits, ist `meeting_engine_start` idempotent (kein Clear, kein Invalidate) –
 der Autostart eines zweiten Webapp-Clients darf die Regionen nicht unter dem
-lebenden Helper neu anlegen. POSIX-Regionen werden beim Writer-`close()`
-bewusst NICHT unlinkt (Leser bleiben attached; Recycling ausschließlich über
-den forceRecreate-Clear).
+lebenden Helper neu anlegen. Ein abgelehnter Start (ADR-0007) fasst ebenfalls
+nichts an: die Entscheidung fällt vor dem Clear, auch wenn der Start nur auf
+einen noch laufenden Startvorgang mit anderer Geometrie träfe
+(`MeetingHelperManager.getPendingStart()`); er wartet dann auf dessen Ergebnis,
+statt die Regionen in der abgelehnten Größe neu anzulegen. Zwischen dieser
+Entscheidung und `MeetingHelperManager.start()` darf kein `await` stehen, sonst
+kann sich ein zweiter Start dazwischenschieben. POSIX-Regionen werden beim
+Writer-`close()` bewusst NICHT unlinkt (Leser bleiben attached; Recycling
+ausschließlich über den forceRecreate-Clear).
+
+### Meeting-Grafik-Ebenen im Hochformat (ADR-0007)
+Der Meeting-Compositor legt jede Grafik-Ebene per Cover auf die Leinwand. Bei
+einer Hochformat-Engine (z. B. 1080×1920) rendern die beiden Meeting-Renderer
+deshalb in Programmgröße: der Pre-Warm nach `meeting_engine_start` nimmt die
+Leinwandgröße (Querformat unverändert 1920×1080@30), und
+`meeting_graphics_configure_outputs` ersetzt eine Anfrage in der falschen
+Ausrichtung durch die Engine-Geometrie. Die Basis-Box der Templates bleibt
+1920×1080 (`electron-renderer-dom-runtime.ts`); im Hochformat platziert die
+Web-App sie per Layout. Die Bridge-eigenen Inhalts-Ebenen
+(`meeting-content-layers.ts`) bekommen die Bühnengröße als Parameter. Der
+Studio-Renderer ist davon nicht berührt. Das Offscreen-Fenster ist dann
+1080×1920 (mit Supersampling 2160×3840) – unter Windows kann der
+Arbeitsbereich das klemmen (`ensureWindowContentSize`), siehe ADR-0007.
 
 ## Output‑Adapter
 - `apps/bridge/src/services/graphics/output-adapters/decklink-video-output-adapter.ts`

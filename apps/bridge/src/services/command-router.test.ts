@@ -232,6 +232,16 @@ describe("command-router", () => {
       });
     });
 
+    it("get_status advertises the meeting capability block", async () => {
+      const result = await commandRouter.handleCommand("get_status", {});
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        capabilities: expect.objectContaining({
+          meeting: { program_portrait: process.platform === "darwin" },
+        }),
+      });
+    });
+
     it("mode_activate dispatches a valid mode to the mode activation service", async () => {
       mockModeActivate.mockClear();
       const result = await commandRouter.handleCommand("mode_activate", {

@@ -44,6 +44,27 @@ describe("meeting-content-layers", () => {
       expect(html).not.toContain("loop");
     });
 
+    it("uses the given stage size instead of 1920x1080", () => {
+      const portraitStage = { width: 1080, height: 1920 };
+      const pipHtml = buildVideoLayerHtml(
+        "http://127.0.0.1:8787/v",
+        pip,
+        { muted: false, loop: true },
+        portraitStage,
+      );
+      expect(pipHtml).toContain("left:540px;top:480px;width:270px;height:480px;");
+
+      const fullscreenHtml = buildVideoLayerHtml(
+        "http://127.0.0.1:8787/v",
+        { ...pip, mode: "fullscreen" },
+        { muted: false, loop: true },
+        portraitStage,
+      );
+      expect(fullscreenHtml).toContain(
+        "left:0;top:0;width:1080px;height:1920px;",
+      );
+    });
+
     it("applies the news-style 3D tilt (rotationY) with perspective", () => {
       const html = buildVideoLayerHtml(
         "http://127.0.0.1:8787/v",

@@ -1,9 +1,43 @@
 import {
   MeetingCameraSelectionSchema,
+  MeetingEngineStartSchema,
+  MeetingGraphicsConfigureOutputsSchema,
   MeetingScreenPickSchema,
   MeetingScreenStartSchema,
 } from "./meeting-command-schemas.js";
 import { parseRelayPayload } from "../relay-command-schemas.js";
+
+describe("MeetingEngineStartSchema", () => {
+  it("accepts landscape, portrait and empty payloads", () => {
+    expect(
+      MeetingEngineStartSchema.parse({ width: 1920, height: 1080, fps: 30 }),
+    ).toEqual({ width: 1920, height: 1080, fps: 30 });
+    expect(
+      MeetingEngineStartSchema.parse({ width: 1080, height: 1920, fps: 30 }),
+    ).toEqual({ width: 1080, height: 1920, fps: 30 });
+    expect(MeetingEngineStartSchema.parse({ width: 720, height: 1280 })).toEqual({
+      width: 720,
+      height: 1280,
+    });
+    expect(MeetingEngineStartSchema.parse({})).toEqual({});
+  });
+
+  it("keeps the size bounds and rejects unknown keys", () => {
+    expect(() => MeetingEngineStartSchema.parse({ width: 159 })).toThrow();
+    expect(() => MeetingEngineStartSchema.parse({ height: 4321 })).toThrow();
+    expect(() =>
+      MeetingEngineStartSchema.parse({ width: 1080, height: 1920, orientation: "portrait" }),
+    ).toThrow();
+  });
+});
+
+describe("MeetingGraphicsConfigureOutputsSchema", () => {
+  it("accepts a portrait plane size", () => {
+    expect(
+      MeetingGraphicsConfigureOutputsSchema.parse({ width: 1080, height: 1920, fps: 30 }),
+    ).toEqual({ width: 1080, height: 1920, fps: 30 });
+  });
+});
 
 describe("MeetingCameraSelectionSchema", () => {
   const builderPayload = {

@@ -267,6 +267,15 @@ properties on the video settings and pixel buffers; Windows sets BT.709
 matrix, transfer function, primaries and limited-range output media type while
 keeping the RGB input range full-range.
 
+The file has the size of the program canvas. A portrait program (engine
+started with `height > width`, e.g. 1080x1920, see ADR-0007) is recorded as a
+1080x1920 track without a rotation transform; the bitrate policy above applies
+unchanged, since it only depends on the pixel count. The canvas cannot change
+while the engine runs, so a recording never switches geometry mid-file:
+`meeting_engine_start` with another geometry is refused with
+`meeting_engine_restart_required`, and the web app locks the program-format
+switch while a recording is active.
+
 Quick probe after recording:
 
 ```bash
