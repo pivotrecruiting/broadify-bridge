@@ -722,5 +722,22 @@ if(MEETING_HELPER_BUILD_TESTS)
       add_test(NAME ${stream_test} COMMAND ${stream_test})
       set_tests_properties(${stream_test} PROPERTIES TIMEOUT 120)
     endforeach()
+
+    if(APPLE)
+      # Regression for the worker spinning on a cleared PreviewFrameStore: the
+      # real ProgramStream with a registered viewer, judged by the CPU time of
+      # the process while there is no frame to take.
+      add_executable(program_stream_idle_test
+        tests/program_stream_idle_test.cpp
+        src/live/program_stream.cpp
+        src/live/program_frame_converter_vt.mm
+        src/preview/preview_frame_store.cpp
+        src/util/pixel_swizzle.cpp
+      )
+      target_include_directories(program_stream_idle_test PRIVATE src)
+      target_link_libraries(program_stream_idle_test PRIVATE live_stream helper_common)
+      add_test(NAME program_stream_idle_test COMMAND program_stream_idle_test)
+      set_tests_properties(program_stream_idle_test PROPERTIES TIMEOUT 60)
+    endif()
   endif()
 endif()
