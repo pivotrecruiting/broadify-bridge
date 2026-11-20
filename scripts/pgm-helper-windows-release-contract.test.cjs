@@ -921,8 +921,10 @@ test("the Windows CI rehearses the release gate with the release's own install s
     "package-lock.json",
     "electron-builder.config.cjs",
     "jest.config.cjs",
-    ".github/workflows/release.yml",
-    ".github/workflows/test-release.yml",
+    "tsconfig*.json",
+    ".gitignore",
+    "build/windows-installer.nsh",
+    ".github/workflows/**",
   ]) {
     assert.ok(paths.includes(`\n      - ${entry}\n`), `${entry} must trigger the workflow`);
   }

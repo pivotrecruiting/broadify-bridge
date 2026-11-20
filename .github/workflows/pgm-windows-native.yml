@@ -57,9 +57,11 @@ on:
       - electron-builder.json
       - jest.config.cjs
       - jest.setup.cjs
-      - tsconfig.test.json
-      - .github/workflows/release.yml
-      - .github/workflows/test-release.yml
+      - tsconfig*.json
+      - .gitignore
+      - build/windows-installer.nsh
+      - apps/bridge/native/vcam-helper/windows/vcam_guid.h
+      - .github/workflows/**
       - apps/bridge/native/live-stream/**
       - apps/bridge/native/pgm-helper/**
       - apps/bridge/native/helper-common/**
@@ -722,6 +724,48 @@ jobs:
             Write-Host "required build output present: $source"
           }
           ./scripts/test-windows-pgm-helper.ps1 -ResourcesDir (Join-Path $env:RUNNER_TEMP 'pgm-stage\resources')
+
+      # The same script has to fail on a helper that does not answer the probe:
+      # two stand-ins in the package layout, one that exits non-zero and one
+      # that answers with a payload that is not this helper's.
+      - name: Installer smoke script rejects a broken helper
+        env:
+          BROADIFY_PGM_WINDOWS: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:RUNNER_TEMP 'pgm-standin'
+          $helperDir = Join-Path $stage 'resources\native\pgm-helper'
+          New-Item -ItemType Directory -Force -Path $helperDir | Out-Null
+          $exe = Join-Path $helperDir 'pgm-helper.exe'
+
+          function Test-BrokenHelper([string]$what, [string]$code, [string]$expected) {
+            $source = Join-Path $stage 'standin.c'
+            Set-Content -Path $source -Value $code -Encoding ascii
+            & cl /nologo "/Fe:$exe" "/Fo:$(Join-Path $stage 'standin.obj')" $source | Write-Host
+            if ($LASTEXITCODE -ne 0) { throw "cl failed with exit code $LASTEXITCODE" }
+            $failure = $null
+            try {
+              ./scripts/test-windows-pgm-helper.ps1 -ResourcesDir (Join-Path $stage 'resources')
+            } catch {
+              $failure = "$_"
+            }
+            if ($failure -notmatch $expected) {
+              throw "a helper that $what must fail the smoke script with '$expected', got: $failure"
+            }
+            Write-Host "a helper that ${what} is rejected ($failure)"
+          }
+
+          Test-BrokenHelper 'exits non-zero' 'int main(void) { return 3; }' 'probe failed with exit code 3'
+          $foreign = @'
+          #include <stdio.h>
+          int main(void) {
+            puts("{\"type\":\"probe\",\"inputs\":{\"inputs\":[],\"camera_permission\":\"authorized\"},\"encoder\":\"software\"}");
+            return 0;
+          }
+          '@
+          Test-BrokenHelper 'answers with a payload that is not its own' $foreign 'unexpected payload'
+          # The stand-ins' exit codes are part of the test, not the result of this step.
+          exit 0
 
       # Unsigned, for the device session only (docs: runbook). Never a release artifact.
       - name: Upload pgm-helper.exe (unsigned)
