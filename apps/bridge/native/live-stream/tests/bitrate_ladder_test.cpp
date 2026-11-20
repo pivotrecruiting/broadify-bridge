@@ -67,6 +67,58 @@ int main() {
   if (r.width != 1280 || r.height != 720 || r.bitrateKbps != 9677) fail("720p30 is 9677 kbps");
   r = selectRecordingTarget(0, 0, 0, 0);
   if (r.width < 16 || r.fpsNum != 30 || r.fpsDen != 1 || r.bitrateKbps != 2000) fail("degenerate recording input clamps to 30 fps / 2000 kbps");
+
+  // Landscape results stay exactly what they were before portrait support,
+  // including sources wider than 16:9 and square ones (the height is capped).
+  t = selectEncodeTarget(2560, 1080, 30, 1, EncodeProfile::Lan);
+  if (t.width != 2560 || t.height != 1080 || t.bitrateKbps != 5000 || t.maxBitrateKbps != 7500) fail("2560x1080 lan unchanged");
+  t = selectEncodeTarget(2560, 1080, 30, 1, EncodeProfile::Remote);
+  if (t.width != 1706 || t.height != 720 || t.bitrateKbps != 2500) fail("2560x1080 remote unchanged");
+  t = selectEncodeTarget(3840, 2160, 60, 1, EncodeProfile::Remote);
+  if (t.width != 1280 || t.height != 720 || t.fpsNum != 30 || t.fpsDen != 1) fail("4k60 remote unchanged");
+  t = selectEncodeTarget(2560, 1440, 30, 1, EncodeProfile::Lan);
+  if (t.width != 1920 || t.height != 1080 || t.bitrateKbps != 5000) fail("1440p lan unchanged");
+  t = selectEncodeTarget(1920, 1920, 30, 1, EncodeProfile::Lan);
+  if (t.width != 1080 || t.height != 1080 || t.bitrateKbps != 5000) fail("square lan unchanged");
+  t = selectEncodeTarget(640, 360, 30, 1, EncodeProfile::Lan);
+  if (t.width != 640 || t.height != 360 || t.bitrateKbps != 1500 || t.maxBitrateKbps != 2500) fail("360p lan unchanged");
+  r = selectRecordingTarget(2560, 1080, 30, 1);
+  if (r.width != 2560 || r.height != 1080 || r.bitrateKbps != 29030) fail("2560x1080 recording unchanged");
+
+  // Portrait: computed transposed, so the short edge is capped and the
+  // orientation survives; everything but width/height equals the landscape twin.
+  t = selectEncodeTarget(1080, 1920, 30, 1, EncodeProfile::Lan);
+  if (t.width != 1080 || t.height != 1920 || t.fpsNum != 30 || t.fpsDen != 1 || t.bitrateKbps != 5000 ||
+      t.maxBitrateKbps != 7500 || t.profileName != "lan") fail("1080x1920 lan stays 1080x1920");
+  t = selectEncodeTarget(1080, 1920, 30, 1, EncodeProfile::Auto);
+  if (t.width != 1080 || t.height != 1920 || t.profileName != "lan") fail("1080x1920 auto stays 1080x1920");
+  t = selectEncodeTarget(1080, 1920, 60, 1, EncodeProfile::Lan);
+  if (t.width != 1080 || t.height != 1920 || t.bitrateKbps != 8000 || t.maxBitrateKbps != 12000) fail("1080x1920p60 lan");
+  t = selectEncodeTarget(1080, 1920, 60, 1, EncodeProfile::Remote);
+  if (t.width != 720 || t.height != 1280 || t.fpsNum != 30 || t.fpsDen != 1 || t.bitrateKbps != 2500 ||
+      t.maxBitrateKbps != 3500 || t.profileName != "remote") fail("1080x1920 remote is 720x1280");
+  t = selectEncodeTarget(2160, 3840, 30, 1, EncodeProfile::Lan);
+  if (t.width != 1080 || t.height != 1920 || t.bitrateKbps != 5000) fail("2160x3840 lan capped to 1080x1920");
+  t = selectEncodeTarget(2160, 3840, 30, 1, EncodeProfile::Remote);
+  if (t.width != 720 || t.height != 1280) fail("2160x3840 remote capped to 720x1280");
+  t = selectEncodeTarget(720, 1280, 30, 1, EncodeProfile::Lan);
+  if (t.width != 720 || t.height != 1280 || t.bitrateKbps != 2500 || t.maxBitrateKbps != 4000) fail("720x1280 lan");
+  t = selectEncodeTarget(1080, 2560, 30, 1, EncodeProfile::Remote);
+  if (t.width != 720 || t.height != 1706) fail("1080x2560 remote mirrors 2560x1080");
+  for (const EncodeProfile profile : {EncodeProfile::Lan, EncodeProfile::Remote, EncodeProfile::Auto}) {
+    const EncodeTarget portrait = selectEncodeTarget(1080, 1920, 30, 1, profile);
+    if (portrait.h264Profile != H264Profile::Main || !portrait.prioritizeSpeed || !portrait.hardRateLimit ||
+        portrait.gopSeconds != 2) fail("portrait preview target must keep the preview encoder options");
+  }
+  r = selectRecordingTarget(1080, 1920, 30, 1);
+  if (r.width != 1080 || r.height != 1920 || r.fpsNum != 30 || r.fpsDen != 1 || r.bitrateKbps != 21773 ||
+      r.maxBitrateKbps != 32659) fail("1080x1920 recording keeps 1080x1920 at the 1080p30 bitrate");
+  if (r.h264Profile != H264Profile::High || r.prioritizeSpeed || r.hardRateLimit || r.gopSeconds != 2 ||
+      r.profileName != "archive") fail("portrait recording target must keep the archive encoder options");
+  r = selectRecordingTarget(2160, 3840, 30, 1);
+  if (r.width != 1080 || r.height != 1920 || r.bitrateKbps != 21773) fail("2160x3840 records as 1080x1920");
+  r = selectRecordingTarget(720, 1280, 30000, 1001);
+  if (r.width != 720 || r.height != 1280 || r.bitrateKbps != 9677 || r.fpsNum != 30000 || r.fpsDen != 1001) fail("720x1280 recording");
   std::cout << "bitrate_ladder_test passed" << std::endl;
   return 0;
 }
