@@ -1,6 +1,6 @@
 #include "live/program_stream.h"
 
-#include "common/encoder_info_json.h"  // the PGM helper's module, built here as program_stream_encoder_info
+#include "encoder_info_json.h"  // from the PGM helper's common directory, built here as program_stream_encoder_info
 #include "live/program_frame_converter.h"
 #include "live_stream/bitrate_ladder.h"
 #include "live_stream/monotonic_clock.h"

@@ -199,9 +199,15 @@ if(TARGET live_stream)
   # Where the real program stream is built (macOS, Windows behind the build
   # switch): the picked encoder's identity for the stream's event and status.
   # The PGM helper's module, compiled from its sources, so that both helpers
-  # report the encoder through one implementation.
+  # report the encoder through one implementation. Its users see the PGM
+  # helper's `common` directory and nothing else of that tree (both helpers
+  # have e.g. a macos/macos_app.h); only the module's own source is compiled
+  # with the tree root, which its include names.
   add_library(program_stream_encoder_info STATIC ../pgm-helper/src/common/encoder_info_json.cpp)
-  target_include_directories(program_stream_encoder_info PUBLIC ../pgm-helper/src)
+  target_include_directories(program_stream_encoder_info
+    PUBLIC ../pgm-helper/src/common
+    PRIVATE ../pgm-helper/src
+  )
   target_link_libraries(program_stream_encoder_info PUBLIC live_stream_core helper_common)
 endif()
 

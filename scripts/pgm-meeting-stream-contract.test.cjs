@@ -107,6 +107,22 @@ test("the picked encoder is reported through the PGM helper's module, only where
   );
   assert.equal((cmake.match(/encoder_info_json/g) || []).length, 1);
   assert.ok(fs.existsSync(path.join(root, "apps/bridge/native/pgm-helper/src/common/encoder_info_json.cpp")));
+  // Its users get the PGM helper's `common` directory and nothing else of that
+  // tree: with the tree root on their include path, a header both helpers have
+  // (macos/macos_app.h) could resolve to the wrong one. Only the module's own
+  // source is compiled with the root.
+  assert.match(
+    library[1],
+    /\n  target_include_directories\(program_stream_encoder_info\n    PUBLIC \.\.\/pgm-helper\/src\/common\n    PRIVATE \.\.\/pgm-helper\/src\n  \)\n/,
+  );
+  assert.equal(
+    (cmake.match(/pgm-helper\/src/g) || []).length,
+    3,
+    "the module's source and its two include directories are the only paths into the PGM helper",
+  );
+  const workerSource = read(`${LIVE}/program_stream.cpp`);
+  assert.match(workerSource, /\n#include "encoder_info_json\.h"/);
+  assert.doesNotMatch(workerSource, /#include "common\/encoder_/);
   for (const dir of [LIVE, `${MEETING_HELPER}/src/common`]) {
     const copies = fs.readdirSync(path.join(root, dir)).filter((name) => /encoder_info/.test(name));
     assert.deepEqual(copies, [], `${dir} must not carry its own encoder info module`);
