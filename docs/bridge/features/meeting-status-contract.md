@@ -308,6 +308,13 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
   `data`. Die Bridge startet nie selbst neu; die Web-App sendet
   `meeting_engine_stop` und danach `meeting_engine_start`. Laeuft eine Aufnahme,
   nennt `error` das - der Stop wuerde sie beenden.
+- `meeting_engine_start` waehrend ein Start mit anderer Breite/Hoehe noch laeuft
+  (zweiter Client, Crash-Restart): die Antwort wartet auf diesen Start. Laeuft
+  die Engine danach, kommt `meeting_engine_restart_required` mit deren
+  Manager-Status; scheitert er, kommt sein Fehler ohne `errorCode`.
+- Eine Ablehnung (`meeting_program_portrait_unsupported`,
+  `meeting_engine_restart_required`) aendert nichts: Engine, Aufnahme,
+  Grafik-FrameBus, Renderer und Grafik-Ebenen bleiben, wie sie sind.
 - `meeting_graphics_configure_outputs` folgt der Engine-Geometrie, wenn die
   Ausrichtung der Anfrage von der laufenden Engine abweicht; `data.width` /
   `data.height` nennen die tatsaechlich konfigurierte Groesse.

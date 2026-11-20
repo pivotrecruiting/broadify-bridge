@@ -141,9 +141,15 @@ bestehenden Layer neu in die frische Region zeichnet
 (`scheduleCapturedWindowFrames("framebus_reattach")`). Läuft die Engine
 bereits, ist `meeting_engine_start` idempotent (kein Clear, kein Invalidate) –
 der Autostart eines zweiten Webapp-Clients darf die Regionen nicht unter dem
-lebenden Helper neu anlegen. POSIX-Regionen werden beim Writer-`close()`
-bewusst NICHT unlinkt (Leser bleiben attached; Recycling ausschließlich über
-den forceRecreate-Clear).
+lebenden Helper neu anlegen. Ein abgelehnter Start (ADR-0007) fasst ebenfalls
+nichts an: die Entscheidung fällt vor dem Clear, auch wenn der Start nur auf
+einen noch laufenden Startvorgang mit anderer Geometrie träfe
+(`MeetingHelperManager.getPendingStart()`); er wartet dann auf dessen Ergebnis,
+statt die Regionen in der abgelehnten Größe neu anzulegen. Zwischen dieser
+Entscheidung und `MeetingHelperManager.start()` darf kein `await` stehen, sonst
+kann sich ein zweiter Start dazwischenschieben. POSIX-Regionen werden beim
+Writer-`close()` bewusst NICHT unlinkt (Leser bleiben attached; Recycling
+ausschließlich über den forceRecreate-Clear).
 
 ### Meeting-Grafik-Ebenen im Hochformat (ADR-0007)
 Der Meeting-Compositor legt jede Grafik-Ebene per Cover auf die Leinwand. Bei

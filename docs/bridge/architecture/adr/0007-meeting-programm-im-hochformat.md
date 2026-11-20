@@ -19,7 +19,9 @@ virtuelle Kamera) liegt in `apps/bridge/native/meeting-helper/README.md`, Abschn
   Autostart). Die Bridge startet dabei **nie selbst neu** – ein Stop finalisiert eine laufende Aufnahme und nimmt Kamera
   und virtuelle Kamera weg; diese Entscheidung trifft die Web-App mit explizitem `meeting_engine_stop` +
   `meeting_engine_start`. Läuft eine Aufnahme, nennt die Fehlermeldung das. Verglichen werden Breite und Höhe, nicht die
-  Bildrate.
+  Bildrate. Eine Ablehnung ändert nichts: sie fällt vor jeder Änderung an FrameBus, Renderern und Grafik-Ebenen – auch
+  wenn der Start nur auf einen noch laufenden Startvorgang mit anderer Geometrie träfe (zweiter Client, Crash-Restart);
+  die Antwort wartet dann auf diesen Start.
 - **Capability statt Versionsraten.** `get_status.capabilities.meeting.program_portrait` (Typ `MeetingCapabilitiesT`,
   `services/meeting/meeting-capabilities.ts`) sagt, ob diese Bridge auf dieser Plattform ein Hochformat-Programm
   fahren kann: `true` auf macOS, `false` auf Windows, bis der Windows-Pfad am Gerät geprüft ist. Ohne Capability lehnt
