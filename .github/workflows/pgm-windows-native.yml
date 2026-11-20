@@ -567,9 +567,9 @@ jobs:
             pgm_windows: "1"
     env:
       # As dist:win sets them (package.json): both matting backends are part
-      # of every Windows release build of the helper.
+      # of every Windows release build of the helper. The OpenVINO one is
+      # switched on by the step that provides its runtime.
       MEETING_HELPER_ENABLE_MODNET: "1"
-      MEETING_HELPER_ENABLE_OPENVINO: "1"
 
     steps:
       - name: Checkout
@@ -604,27 +604,37 @@ jobs:
         run: ./scripts/prepare-windows-meeting-helper-deps.ps1
 
       - name: Cache OpenVINO runtime
-        id: openvino-cache
         uses: actions/cache@v4
         with:
           path: apps/bridge/native/meeting-helper/deps/openvino/windows-x64
           key: pgm-win-openvino-${{ runner.os }}-${{ hashFiles('scripts/prepare-windows-openvino-deps.ps1') }}
 
       # The release's own script: pinned archive, SHA-256 checked. A failed
-      # download gets two more attempts.
-      - name: Prepare OpenVINO runtime
-        if: steps.openvino-cache.outputs.cache-hit != 'true'
+      # download gets two more attempts. If the archive stays unreachable the
+      # helper is still compiled, without the OpenVINO backend and with a
+      # warning on the run: a third-party server must not take away the
+      # Windows compile of everything else.
+      - name: OpenVINO runtime
         run: |
           $ErrorActionPreference = 'Stop'
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
+          $runtime = 'apps/bridge/native/meeting-helper/deps/openvino/windows-x64'
+          $prepared = (Test-Path "$runtime/lib/openvino.lib") -and (Test-Path "$runtime/bin/openvino.dll")
+          for ($attempt = 1; $attempt -le 3 -and -not $prepared; $attempt++) {
             try {
               ./scripts/prepare-windows-openvino-deps.ps1
-              break
+              $prepared = $true
             } catch {
-              if ($attempt -eq 3) { throw }
               Write-Host "OpenVINO preparation failed (attempt $attempt): $_"
-              Start-Sleep -Seconds 20
+              if ($attempt -lt 3) { Start-Sleep -Seconds 20 }
             }
+          }
+          if ($prepared) {
+            "MEETING_HELPER_ENABLE_OPENVINO=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            # Nothing half-prepared may end up in the cache.
+            if (Test-Path $runtime) { Remove-Item -Recurse -Force $runtime }
+            Write-Host "::warning title=OpenVINO runtime unavailable::meeting-helper is built without MEETING_HELPER_ENABLE_OPENVINO in this run; a release builds the OpenVINO backend."
+            "MEETING_HELPER_ENABLE_OPENVINO=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
 
       # ---- only with the switch: what the WebRTC part needs (as in job full) ----

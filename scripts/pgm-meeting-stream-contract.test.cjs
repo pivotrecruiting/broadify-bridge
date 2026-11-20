@@ -175,9 +175,10 @@ test("the Windows workflow builds and tests the meeting helper in both configura
   assert.match(body, /fail-fast: false/);
   assert.match(body, /pgm_windows: "0"/);
   assert.match(body, /pgm_windows: "1"/);
-  // Matting backends as dist:win builds them.
+  // Matting backends as dist:win builds them; OpenVINO through the release's own script.
   assert.match(body, /MEETING_HELPER_ENABLE_MODNET: "1"/);
-  assert.match(body, /MEETING_HELPER_ENABLE_OPENVINO: "1"/);
+  assert.match(body, /\.\/scripts\/prepare-windows-openvino-deps\.ps1\n/);
+  assert.match(body, /"MEETING_HELPER_ENABLE_OPENVINO=1" \| Out-File -FilePath \$env:GITHUB_ENV/);
 
   // One entry per step, without the comment block that introduces the next one.
   const steps = body

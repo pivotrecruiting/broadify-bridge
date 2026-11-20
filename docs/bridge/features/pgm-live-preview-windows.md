@@ -163,7 +163,8 @@ Socket an alle Adressen). Auf der LAN-Adresse des Rechners verwerfen lokale Pake
 Datagramme zwischen zwei Sockets desselben Prozesses; mit dem Stream hat das nichts zu tun.
 
 CI (Job `meeting`), zwei unabhängige Läufe, beide mit den Matting-Backends wie `dist:win` (ONNX Runtime aus dem Repo,
-OpenVINO über das Skript des Releases):
+OpenVINO über das Skript des Releases; bleibt dessen Download nach drei Versuchen aus, wird ohne OpenVINO gebaut und
+der Lauf trägt eine Warnung):
 1. **Standard, ohne Schalter**: genau die beiden Befehle des Releases, `npm run build:meeting-helper` und
    `npm run test:meeting-helper-native`. Danach die Prüfung, dass nichts vom Live-Programm konfiguriert oder kompiliert
    wurde (kein `_deps`, kein `LIVE_STREAM_*` im CMake-Cache, Stub im Helper). Dieser Lauf braucht nichts, was erst D8
