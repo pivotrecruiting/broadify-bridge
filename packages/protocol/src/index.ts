@@ -534,6 +534,12 @@ export type LiveProgramCapabilitiesT = {
   decklink_input: boolean;
   /** The meeting helper streams its composited program over WebRTC (meeting_program_* commands). */
   meeting_preview?: boolean;
+  /**
+   * `pgm_recording_*` can record the program on this bridge (false on Windows:
+   * `recording_unsupported`). Absent on older bridges, which were macOS-only:
+   * read it as `supported`.
+   */
+  recording?: boolean;
   /** Program recording uses its own H.264 High archive encoder (absent: the recording is the preview stream). */
   recording_profile?: "high";
 };

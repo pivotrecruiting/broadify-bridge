@@ -1,5 +1,5 @@
 import type { PgmWebrtcCloseT, PgmWebrtcOfferT } from "../pgm/pgm-command-schemas.js";
-import { parsePgmEnv } from "../pgm/pgm-env.js";
+import { isPgmPlatformSupported, parsePgmEnv } from "../pgm/pgm-env.js";
 import { isDeadViewerState } from "../pgm/pgm-helper-manager.js";
 import { PgmSessionManager } from "../pgm/pgm-session-manager.js";
 import { MeetingHelperRequestError, type MeetingHelperClient } from "./meeting-helper-client.js";
@@ -30,13 +30,19 @@ export type MeetingProgramStreamDepsT = {
   client: () => MeetingHelperClient | null;
   engineRunning: () => boolean;
   now?: () => number;
+  /** Defaults to process.platform; gates the stream like `live_program.meeting_preview`. */
+  platform?: NodeJS.Platform;
 };
 
 const defaultDeps: MeetingProgramStreamDepsT = {
   env: process.env,
   client: () => meetingHelperManager.getClient(),
   engineRunning: () => meetingHelperManager.isRunning(),
+  platform: process.platform,
 };
+
+/** The meeting helper stub's answer; the bridge gives the same one while the platform gate is closed. */
+const PROGRAM_STREAM_UNAVAILABLE_MESSAGE = "The program stream is not available on this platform yet.";
 
 /** How often the bridge-side session map is checked against the helper's live viewers while sessions exist. */
 const SESSION_RECONCILE_MS = 10_000;
@@ -65,7 +71,15 @@ export class MeetingProgramStream {
     if (!client || !this.deps.engineRunning()) {
       throw new MeetingProgramStreamError("meeting_engine_not_running", "The meeting engine is not running on this bridge.");
     }
+    if (!this.platformSupported()) {
+      // Also when the helper could stream (built with BROADIFY_PGM_WINDOWS=1): without BRIDGE_PGM_WINDOWS it is not asked.
+      throw new MeetingProgramStreamError("program_stream_unavailable", PROGRAM_STREAM_UNAVAILABLE_MESSAGE);
+    }
     return client;
+  }
+
+  private platformSupported(): boolean {
+    return isPgmPlatformSupported(this.deps.platform ?? process.platform, this.deps.env);
   }
 
   private rethrow(error: unknown): never {
@@ -125,7 +139,7 @@ export class MeetingProgramStream {
     };
   }
 
-  /** Helper status plus the bridge-side view: enabled gate, engine running, sessions. */
+  /** Helper status plus the bridge-side view: enabled gate, engine running, sessions; `supported` is false while the platform gate is closed. */
   async status(): Promise<Record<string, unknown>> {
     const env = parsePgmEnv(this.deps.env);
     const client = this.deps.client();
@@ -133,6 +147,9 @@ export class MeetingProgramStream {
     let helper: Record<string, unknown> = { supported: false, active: false, viewers: 0 };
     if (env.enabled && client && engineRunning) {
       helper = await client.programStreamStatus().catch(() => ({ supported: false, active: false, viewers: 0 }));
+    }
+    if (!this.platformSupported()) {
+      helper = { ...helper, supported: false };
     }
     return { enabled: env.enabled, engine_running: engineRunning, ...helper, bridge_viewers: this.sessions.count(), max_viewers: env.maxViewers };
   }

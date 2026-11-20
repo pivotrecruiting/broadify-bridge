@@ -54,12 +54,23 @@ describe("pgm command handler", () => {
   });
 
   it("advertises the capability from the env gate and platform", () => {
-    expect(getLiveProgramCapabilities({ env: {}, platform: "darwin" })).toEqual({ supported: true, enabled: true, audio: true, max_viewers: 4, decklink_input: false, meeting_preview: true, recording_profile: "high" });
+    expect(getLiveProgramCapabilities({ env: {}, platform: "darwin" })).toEqual({ supported: true, enabled: true, audio: true, max_viewers: 4, decklink_input: false, meeting_preview: true, recording: true, recording_profile: "high" });
     // The kill switch keeps `supported` (this is not an old bridge) but reports the feature as disabled.
     expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_PREVIEW: "0" }, platform: "darwin" })).toMatchObject({ supported: true, enabled: false });
     expect(getLiveProgramCapabilities({ env: {}, platform: "win32" })).toMatchObject({ supported: false, meeting_preview: false });
     // The recording profile is only advertised where the helper (and its High-profile encoder) exists.
     expect(getLiveProgramCapabilities({ env: {}, platform: "win32" })).not.toHaveProperty("recording_profile");
+    // A default Windows bridge: the block it advertised before, plus the explicit recording flag.
+    expect(getLiveProgramCapabilities({ env: {}, platform: "win32" })).toEqual({ supported: false, enabled: true, audio: false, max_viewers: 4, decklink_input: false, meeting_preview: false, recording: false });
+    // The Windows switch changes nothing on macOS.
+    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_WINDOWS: "1" }, platform: "darwin" })).toEqual(getLiveProgramCapabilities({ env: {}, platform: "darwin" }));
+  });
+
+  it("opens preview, audio and the meeting program on Windows only with BRIDGE_PGM_WINDOWS, never the recording", () => {
+    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_WINDOWS: "1" }, platform: "win32" })).toEqual({ supported: true, enabled: true, audio: true, max_viewers: 4, decklink_input: false, meeting_preview: true, recording: false });
+    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_WINDOWS: "0" }, platform: "win32" })).toMatchObject({ supported: false, meeting_preview: false, recording: false });
+    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_WINDOWS: "1", BRIDGE_PGM_PREVIEW: "0" }, platform: "win32" })).toMatchObject({ supported: true, enabled: false, recording: false });
+    expect(getLiveProgramCapabilities({ env: { BRIDGE_PGM_WINDOWS: "1" }, platform: "linux" })).toMatchObject({ supported: false, meeting_preview: false, recording: false });
   });
 
   it("answers status and sessions even while disabled", async () => {
@@ -74,6 +85,63 @@ describe("pgm command handler", () => {
       expect(await handlePgmCommand(command, payload, off)).toMatchObject({ success: false, errorCode: "pgm_disabled" });
     }
     expect(await handlePgmCommand("pgm_inputs_list", {}, deps(true, "win32"))).toMatchObject({ success: false, errorCode: "pgm_unsupported_bridge" });
+  });
+
+  describe("on Windows", () => {
+    const closePayload = { session_id: offerPayload.session_id, viewer_user_id: offerPayload.viewer_user_id };
+    const sideEffects = [
+      ["pgm_inputs_list", {}],
+      ["pgm_source_select", { input_id: "uvc:1" }],
+      ["pgm_source_clear", {}],
+      ["pgm_webrtc_offer", offerPayload],
+      ["pgm_webrtc_close", closePayload],
+      ["pgm_snapshot", {}],
+      ["pgm_recording_pick_path", {}],
+      ["pgm_recording_start", {}],
+      ["pgm_recording_stop", {}],
+    ] as const;
+    const winDeps = (env: NodeJS.ProcessEnv) => {
+      const m = fakeManager();
+      return { env, platform: "win32" as const, m, manager: jest.fn(() => m), pickPath: jest.fn(async (name: string) => `C:\\Users\\me\\Videos\\${name}`), defaultPath: () => "C:\\Users\\me\\Videos\\default.mp4" };
+    };
+
+    it("keeps every side effect closed without BRIDGE_PGM_WINDOWS, as before", async () => {
+      const d = winDeps({});
+      for (const [command, payload] of sideEffects) {
+        expect(await handlePgmCommand(command, payload, d)).toMatchObject({ success: false, errorCode: "pgm_unsupported_bridge", error: "Windows preview not enabled on this bridge." });
+      }
+      expect(d.manager).not.toHaveBeenCalled();
+      expect(d.pickPath).not.toHaveBeenCalled();
+      // Status and sessions answer on every platform, as before.
+      expect(await handlePgmCommand("pgm_get_status", {}, d)).toMatchObject({ success: true, data: { enabled: true, state: "idle" } });
+      expect(await handlePgmCommand("pgm_session_list", {}, d)).toMatchObject({ success: true, data: { active_viewers: 0 } });
+    });
+
+    it("routes the preview to the helper with BRIDGE_PGM_WINDOWS=1 and answers recording_unsupported itself", async () => {
+      const d = winDeps({ BRIDGE_PGM_WINDOWS: "1" });
+      const recordingStart = jest.spyOn(d.m, "recordingStart");
+      const recordingStop = jest.spyOn(d.m, "recordingStop");
+      expect(await handlePgmCommand("pgm_inputs_list", {}, d)).toMatchObject({ success: true, data: { camera_permission: "authorized" } });
+      expect(await handlePgmCommand("pgm_source_select", { input_id: "uvc:a" }, d)).toMatchObject({ success: true, data: { state: "running" } });
+      expect(await handlePgmCommand("pgm_webrtc_offer", offerPayload, d)).toMatchObject({ success: true, data: { sdp: "v=0\r\nanswer", stream: { codec: "h264" } } });
+      expect(await handlePgmCommand("pgm_snapshot", {}, d)).toMatchObject({ success: true, data: { jpeg_base64: "abc" } });
+      expect(await handlePgmCommand("pgm_webrtc_close", closePayload, d)).toMatchObject({ success: true });
+      for (const command of ["pgm_recording_pick_path", "pgm_recording_start", "pgm_recording_stop"] as const) {
+        expect(await handlePgmCommand(command, {}, d)).toMatchObject({ success: false, errorCode: "recording_unsupported", error: "Recording the program is not supported on this platform yet." });
+      }
+      // No save panel on the bridge machine and no helper round trip for a recording that cannot run.
+      expect(d.pickPath).not.toHaveBeenCalled();
+      expect(recordingStart).not.toHaveBeenCalled();
+      expect(recordingStop).not.toHaveBeenCalled();
+    });
+
+    it("lets the kill switch win over BRIDGE_PGM_WINDOWS", async () => {
+      const d = winDeps({ BRIDGE_PGM_WINDOWS: "1", BRIDGE_PGM_PREVIEW: "0" });
+      for (const [command, payload] of sideEffects) {
+        expect(await handlePgmCommand(command, payload, d)).toMatchObject({ success: false, errorCode: "pgm_disabled" });
+      }
+      expect(d.manager).not.toHaveBeenCalled();
+    });
   });
 
   it("validates payloads before anything else", async () => {
