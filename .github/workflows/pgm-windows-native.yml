@@ -18,7 +18,9 @@ name: PGM Windows Native
 #            release. Same image, Node version and install steps as the
 #            Windows leg of release.yml / test-release.yml, no secrets. Also
 #            checks that the packaging steps of the build switch do nothing
-#            without it.
+#            without it. What they do with it runs in job full against the
+#            built exe: the artifact list and the installer smoke script,
+#            which also has to reject two broken stand-ins.
 #   encoder  Media Foundation H.264 encoder (LIVE_STREAM_WITH_MF=ON, still no
 #            WebRTC/OpenSSL): compiles mf_encoder.cpp and runs it against an
 #            in-test asynchronous MFT and, through the test seam only, against
