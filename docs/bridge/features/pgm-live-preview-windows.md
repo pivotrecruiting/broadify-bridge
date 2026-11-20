@@ -54,6 +54,53 @@ Regeln, die unter Windows genauso gelten:
   `BRIDGE_PGM_SYNTHETIC_SOURCE=1920x1080@60`, `BRIDGE_LOG_PERF=1`, `BRIDGE_PGM_HELPER_PATH`.
 - Freischalten (Standard ändern) ist eine eigene Entscheidung nach der Sitzung am Gerät.
 
+## Bridge-Gate (D9)
+
+Was die Bridge mit `BRIDGE_PGM_WINDOWS` macht. Es entscheidet eine Stelle: `isPgmPlatformSupported(platform, env)` in
+`apps/bridge/src/services/pgm/pgm-env.ts`. macOS ist immer an, Windows nur mit `1`, `true` oder `on` (Groß-/Kleinschreibung
+und Leerzeichen egal), jede andere Plattform nie. Der Notaus `BRIDGE_PGM_PREVIEW=0` ist davon getrennt und geht vor.
+
+| | macOS | Windows ohne Schalter (Standard) | Windows mit `BRIDGE_PGM_WINDOWS=1` |
+|---|---|---|---|
+| `live_program.supported`, `audio`, `meeting_preview` | `true` | `false` | `true` |
+| `live_program.recording` (neu) | `true` | `false` | `false` |
+| `live_program.recording_profile` | `"high"` | fehlt | fehlt |
+| `pgm_*` mit Nebenwirkung | wie bisher | `pgm_unsupported_bridge` („Windows preview not enabled on this bridge.“) | an den Helper |
+| `pgm_recording_pick_path`, `_start`, `_stop` | wie bisher | `pgm_unsupported_bridge` | `recording_unsupported`, von der Bridge selbst: kein Speicherdialog, kein Helper-Aufruf |
+| `meeting_program_offer` | wie bisher | `program_stream_unavailable` mit der Meldung des Stubs; der Meeting-Helper wird nicht gefragt | an den Meeting-Helper |
+| `meeting_program_status.supported` | vom Helper | `false` | vom Helper |
+| Start des PGM-Helpers | Launch Services, Codesign-Prüfung | nie, auch nicht für eine gespeicherte Quelle beim Bridge-Start (`restoreOnBoot`) | direkt per `spawn` mit `windowsHide: true`, ohne Codesign-Prüfung, Ereignisse über stdout |
+
+- `pgm_get_status` und `pgm_session_list` antworten auf jeder Plattform wie bisher.
+- Reihenfolge der Ablehnungen: `pgm_disabled` vor `pgm_unsupported_bridge` vor `recording_unsupported`; beim
+  Meeting-Programm `pgm_disabled`, dann `meeting_engine_not_running`, dann `program_stream_unavailable`.
+- Was sich am Standard ändert: Der Fähigkeitsblock hat auf beiden Plattformen das Feld `recording`, und unter Windows
+  lautet die Meldung zu `pgm_unsupported_bridge` „Windows preview not enabled on this bridge.“ statt „Live program
+  preview ships for macOS bridges first; Windows follows.“. Fehlercodes, die übrigen Felder und das Verhalten bleiben
+  gleich.
+- `windowsHide`: `services/helpers/helper-launch.ts` benutzt nur der PGM-Helper-Manager. Meeting-, Display-, DeckLink-
+  und die übrigen Helper starten über eigenen Code, ihr Start unter Windows ändert sich nicht; auf macOS ignoriert Node
+  die Option. `helper-launch.test.ts` hält fest, dass nur `pgm-helper-manager.ts` die Datei importiert: Wer einen
+  weiteren Helper darauf umzieht, entscheidet dabei über `windowsHide` für diesen Helper.
+- Tests: `pgm-env.test.ts`, `pgm-command-handler.test.ts` (Standard auf macOS und Windows, Schalter, Notaus),
+  `pgm-helper-manager.win32.test.ts` (Startweg unter Windows), `helper-launch.test.ts`, `meeting-program-stream.test.ts`.
+  Alle laufen auch im Windows-Release-Build (`dist:win` ruft `npm run test` auf) und hängen nicht von der Plattform des
+  Rechners ab.
+
+### Folgearbeit in der Web-App (eigenes Repo)
+- `capabilities.live_program.recording` lesen: Bei `false` die Aufnahme-Knöpfe der Signalcheck-Karte ausblenden
+  (`components/live-program/live-program-source-card.tsx`; heute erscheinen sie, sobald eine Quelle gewählt ist). Fehlt
+  das Feld (ältere Bridges, die es nur für macOS gab), gilt `supported`. Den Typ `LiveProgramCapabilitiesT` in
+  `types/bridge-types.ts` um `recording?: boolean` ergänzen.
+- `recording_unsupported` als eigenen Fehlertext abbilden; bis dahin zeigt die Karte die englische Meldung der Bridge.
+- Der offene Web-PR #331 (`fix-live-program-windows-message`) zeigt bei `supported: false` auf einer Windows-Bridge „Das
+  Live-Programm ist auf diesem Betriebssystem noch nicht verfügbar.“ statt der Bitte, die Bridge zu aktualisieren. Mit
+  dem Schalter meldet die Windows-Bridge `supported: true` und bekommt die normale Kachel; Ablehnungen zur Laufzeit
+  (`pgm_unsupported_bridge`, `program_stream_unavailable`) zeigen dort weiter den Plattform-Hinweis. Das passt zu diesem
+  Gate; der PR braucht dafür keine Änderung.
+- Bis die Web-App `recording` liest, sieht ein Windows-Nutzer **mit** Schalter die Aufnahme-Knöpfe und bekommt beim
+  Klick `recording_unsupported`. Ohne Schalter (jedes Release) ändert sich in der Web-App nichts.
+
 ## Build
 
 Voraussetzungen auf dem Windows-Rechner: Visual Studio 2022 Build Tools (MSVC x64, Windows-SDK), CMake, Git, Node wie
