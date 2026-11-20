@@ -21,6 +21,20 @@ function stripComments(source) {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 }
 
+// CMake and YAML: a comment runs from `#` to the end of the line.
+function stripHashComments(source) {
+  return source.replace(/#.*$/gm, "");
+}
+
+// The text of one job of a workflow, from its key to the next job or the end of the file.
+function workflowJob(workflow, name) {
+  const start = workflow.indexOf(`\n  ${name}:\n`);
+  assert.ok(start >= 0, `job ${name} must exist`);
+  const rest = workflow.slice(start + 1);
+  const next = rest.slice(1).search(/\n {2}[A-Za-z0-9_-]+:\n/);
+  return next < 0 ? rest : rest.slice(0, next + 1);
+}
+
 // The if/elseif/else that picks the program stream sources of the helper binary.
 function programStreamBlock() {
   const block = cmake.match(
@@ -47,10 +61,13 @@ test("without the switch a Windows build links the stub program stream, as befor
     ),
     "the default branch of the program stream block changed",
   );
-  // The helper never turns the WebRTC part on by itself.
-  assert.doesNotMatch(cmake, /set\(LIVE_STREAM_WITH_(WEBRTC|MF)\b/);
-  assert.doesNotMatch(cmake, /BROADIFY_PGM_WINDOWS\}/);
-  assert.doesNotMatch(cmake, /FetchContent/);
+  // The helper never turns a part of the live program on by itself, in whatever
+  // spelling: set(), set (... CACHE ...), option(), a read of the environment.
+  // Only its comments name the switches.
+  const cmakeCode = stripHashComments(cmake);
+  assert.doesNotMatch(cmakeCode, /LIVE_STREAM_WITH_/);
+  assert.doesNotMatch(cmakeCode, /BROADIFY_PGM_WINDOWS/);
+  assert.doesNotMatch(cmakeCode, /FetchContent/i);
 });
 
 test("the Windows program stream exists only where live-stream built its WebRTC part", () => {
@@ -188,23 +205,31 @@ test("build.ps1 passes the WebRTC arguments only with BROADIFY_PGM_WINDOWS=1", (
   assert.doesNotMatch(rest, /BROADIFY_PGM_WINDOWS|LIVE_STREAM|MEETING_HELPER_CMAKE_EXTRA_ARGS/);
 });
 
-test("no npm script sets the build switch, and release.yml never does", () => {
+test("no npm script switches the live program on, and release.yml never does", () => {
+  // Neither the build switch nor one of the partial ones live-stream reads
+  // from the environment (LIVE_STREAM_WITH_MF=1 in dist:win would compile the
+  // encoder into every release), nor extra configure arguments.
+  const partialSwitches = /LIVE_STREAM_WITH_|MEETING_HELPER_CMAKE_EXTRA_ARGS/;
   const packageJson = JSON.parse(read("package.json"));
   for (const [name, command] of Object.entries(packageJson.scripts)) {
     assert.ok(
-      !/BROADIFY_PGM_WINDOWS\s*=/.test(command),
-      `npm script ${name} must not set the build switch`,
+      !/BROADIFY_PGM_WINDOWS/.test(command) && !partialSwitches.test(command),
+      `npm script ${name} must not switch a part of the live program on`,
     );
   }
   assert.doesNotMatch(read("scripts/build-meeting-helper.sh"), /BROADIFY_PGM_WINDOWS|LIVE_STREAM/);
-  // release.yml builds what customers install. test-release.yml is left to the
-  // release contract of the packaging unit: a throw-away opt-in build for a
-  // device session may set the switch there, for a whole job.
+  // release.yml builds what customers install. For the build switch itself,
+  // test-release.yml is left to the release contract of the packaging unit: a
+  // throw-away opt-in build for a device session may set it there, for a
+  // whole job. The partial switches have no place in either workflow.
   assert.doesNotMatch(
     read(".github/workflows/release.yml"),
     /BROADIFY_PGM_WINDOWS\s*[:=]\s*["']?1/,
     "release.yml must not set the build switch",
   );
+  for (const workflow of ["release.yml", "test-release.yml"]) {
+    assert.doesNotMatch(read(`.github/workflows/${workflow}`), partialSwitches, workflow);
+  }
 });
 
 test("the stream worker is portable and the NV12 converter is pure C++", () => {
@@ -241,9 +266,9 @@ test("the Windows workflow builds and tests the meeting helper in both configura
   const workflow = read(".github/workflows/pgm-windows-native.yml");
   // Pushes that touch the helper trigger the workflow.
   assert.match(workflow, /\n {6}- apps\/bridge\/native\/meeting-helper\/\*\*\n/);
-  const job = workflow.match(/\n {2}meeting:\n([\s\S]*)$/);
-  assert.ok(job, "job meeting must exist");
-  const body = job[1];
+  const body = workflowJob(workflow, "meeting");
+  // Nothing in the job may fail without failing it: not a step, not a leg.
+  assert.doesNotMatch(stripHashComments(body), /continue-on-error/);
   assert.match(body, /fail-fast: false/);
   assert.match(body, /pgm_windows: "0"/);
   assert.match(body, /pgm_windows: "1"/);
