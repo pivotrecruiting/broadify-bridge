@@ -47,7 +47,7 @@
     "prepare:presentation-runtime-macos-release": "bash scripts/prepare-presentation-runtime-macos-release.sh",
     "download:presentation-runtime-macos": "bash scripts/download-presentation-runtime-macos.sh",
     "ensure:presentation-runtime:macos": "bash scripts/ensure-presentation-runtime-macos.sh",
-    "ensure:presentation-runtime:windows": "pwsh -NoProfile -File scripts/prepare-windows-presentation-runtime.ps1",
+    "ensure:presentation-runtime:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-presentation-runtime.ps1",
     "check:decklink-helper": "bash scripts/check-decklink-helper.sh",
     "build": "npm run test && npm-run-all build:protocol build:bridge build:graphics-renderer build:app",
     "lint": "eslint .",

@@ -37,9 +37,13 @@ if ([string]::IsNullOrWhiteSpace($url) -or [string]::IsNullOrWhiteSpace($sha256)
   exit 0
 }
 
-$tmpfile = [System.IO.Path]::GetTempFileName()
+# Expand-Archive only accepts paths ending in .zip, so GetTempFileName() (.tmp)
+# cannot be used for the download.
+$tmpfile = Join-Path ([System.IO.Path]::GetTempPath()) ("broadify-presentation-runtime-" + [System.Guid]::NewGuid().ToString("N") + ".zip")
 try {
   Write-Host "Downloading Windows presentation runtime from: $url"
+  # The progress bar makes Invoke-WebRequest very slow on Windows PowerShell 5.1.
+  $ProgressPreference = "SilentlyContinue"
   Invoke-WebRequest -Uri $url -OutFile $tmpfile -UseBasicParsing
 
   $actual = (Get-FileHash -Path $tmpfile -Algorithm SHA256).Hash.ToLower()
