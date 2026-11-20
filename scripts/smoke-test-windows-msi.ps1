@@ -98,6 +98,11 @@ try {
   $meetingModelsDir = Join-Path $installDir "resources\native\meeting-helper\models"
   & (Join-Path $PSScriptRoot "test-windows-meeting-helper.ps1") -HelperPath $meetingHelperPath -ModelsDir $meetingModelsDir
 
+  # PGM helper (live program preview, ADR-0009): packaged only behind the build
+  # switch BROADIFY_PGM_WINDOWS=1. The script asserts the file and runs
+  # `--probe` then, and does nothing in a build without the switch.
+  & (Join-Path $PSScriptRoot "test-windows-pgm-helper.ps1") -ResourcesDir (Join-Path $installDir "resources")
+
   # Virtual-camera COM registration: the elevated runner registers the
   # packaged DLL, asserts the CLSID (must match
   # native/vcam-helper/windows/vcam_guid.h) landed under HKLM, then cleans up.
