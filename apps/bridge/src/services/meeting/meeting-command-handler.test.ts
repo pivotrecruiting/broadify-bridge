@@ -561,6 +561,17 @@ describe("meeting-command-handler", () => {
           mockStart.mockReset();
         });
 
+        // The real manager for the race test below. Loading it transforms the
+        // module and its imports for the first time in this file, which took
+        // more than the 5 s test timeout on a slow Windows runner; load it
+        // here so that cost does not count against the test.
+        let RealMeetingHelperManager: typeof import("./meeting-helper-manager.js").MeetingHelperManager;
+        beforeAll(() => {
+          ({ MeetingHelperManager: RealMeetingHelperManager } = jest.requireActual<
+            typeof import("./meeting-helper-manager.js")
+          >("./meeting-helper-manager.js"));
+        }, 60_000);
+
         it("refuses another geometry without touching anything and answers once that start runs", async () => {
           await primeGraphicsState();
           const pendingStart = pendingStartAt(LANDSCAPE);
@@ -650,10 +661,7 @@ describe("meeting-command-handler", () => {
         it("decides and claims in one step: of two simultaneous starts only the first touches anything", async () => {
           // The real manager decides who starts and who joins; only the
           // helper spawn is replaced by a start the test finishes by hand.
-          const { MeetingHelperManager } = jest.requireActual<
-            typeof import("./meeting-helper-manager.js")
-          >("./meeting-helper-manager.js");
-          const manager = new MeetingHelperManager();
+          const manager = new RealMeetingHelperManager();
           const internals = manager as unknown as {
             state: string;
             client: unknown;
