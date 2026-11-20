@@ -144,11 +144,42 @@ release v0.22.6) as its WebRTC implementation.
 
 **Source Code:** https://github.com/paullouisageneau/libdatachannel
 
-libdatachannel is built together with the following bundled components:
-libjuice (Mozilla Public License 2.0, https://github.com/paullouisageneau/libjuice),
-usrsctp (BSD 3-Clause, https://github.com/sctplab/usrsctp),
-libSRTP (BSD 3-Clause, Copyright (c) Cisco Systems, Inc., https://github.com/cisco/libsrtp)
-and plog (MIT, https://github.com/SergiusTheBest/plog).
+libdatachannel is built together with the following bundled components,
+which end up in the same binaries (media transport and data channels are
+enabled; WebSocket support and the examples are not built, so none of their
+dependencies is included):
+libjuice (Mozilla Public License 2.0, Copyright (c) Paul-Louis Ageneau,
+https://github.com/paullouisageneau/libjuice),
+usrsctp (BSD 3-Clause, Copyright (c) 2015, Randall Stewart and Michael Tuexen,
+https://github.com/sctplab/usrsctp),
+libSRTP (BSD 3-Clause, Copyright (c) 2001-2017 Cisco Systems, Inc.,
+https://github.com/cisco/libsrtp)
+and plog (MIT, Copyright (c) 2022 Sergey Podobry,
+https://github.com/SergiusTheBest/plog).
+
+---
+
+## Opus
+
+The PGM Helper links the Opus audio codec (libopus, statically linked,
+unmodified, release v1.5.2) to encode the audio track of the live program
+preview. It is part of the macOS helper; the Windows helper prepared behind
+`BROADIFY_PGM_WINDOWS=1` links the same release.
+
+**Copyright:** Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic,
+Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding,
+Erik de Castro Lopo, Mozilla, Amazon
+
+**License:** BSD 3-Clause License
+
+**License Text:** https://opus-codec.org/license/
+
+**Website:** https://opus-codec.org/
+
+**Source Code:** https://github.com/xiph/opus
+
+Opus is subject to the royalty-free patent licenses listed with its license
+text (Xiph.Org Foundation, Microsoft Corporation, Broadcom Corporation).
 
 ---
 
