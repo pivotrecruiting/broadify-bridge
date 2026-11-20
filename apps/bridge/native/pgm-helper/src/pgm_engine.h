@@ -68,7 +68,8 @@ class PgmEngine final : public PgmEngineApi {
   std::string statusJsonLocked() const;
   void emitStatus();
   void startAudioLocked(const VideoInputInfo &video);
-  void stopAudioLocked();
+  /** Ends the audio path and hands the source back: the caller stops it after releasing mutex_ (see clearSource). */
+  std::unique_ptr<AudioSource> detachAudioLocked();
   std::string recordingJsonLocked() const;
   std::string recordingEncoderJsonLocked() const;
   /** Flushes the recording encoder into the recorder, stops the recorder, destroys the encoder. */

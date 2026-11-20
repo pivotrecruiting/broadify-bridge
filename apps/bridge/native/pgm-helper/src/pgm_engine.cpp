@@ -250,15 +250,21 @@ void PgmEngine::clearSource() {
   }
   std::unique_ptr<VideoSource> source;
   std::unique_ptr<VideoEncoder> encoder;
+  std::unique_ptr<AudioSource> audio;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     source = std::move(source_);
     encoder = std::move(encoder_);
-    stopAudioLocked();
+    audio = detachAudioLocked();
     hasInput_ = false;
     encoderConfigured_ = false;
     encoderRetry_.reset();
     tracker_ = VideoSignalTracker();
+  }
+  if (audio) {
+    // Outside mutex_, like the video source: stop() may wait for a sink call
+    // in flight, and that call takes the mutex.
+    audio->stop();
   }
   if (source) {
     source->stop();
@@ -298,13 +304,10 @@ void PgmEngine::startAudioLocked(const VideoInputInfo &video) {
   audioRunning_ = true;
 }
 
-void PgmEngine::stopAudioLocked() {
-  if (audioSource_) {
-    audioSource_->stop();
-    audioSource_.reset();
-  }
+std::unique_ptr<AudioSource> PgmEngine::detachAudioLocked() {
   opus_.reset();
   audioRunning_ = false;
+  return std::move(audioSource_);
 }
 
 bool PgmEngine::ensureEncoderForSignalLocked(std::string &errorCode, std::string &error) {
