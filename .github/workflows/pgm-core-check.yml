@@ -1,0 +1,230 @@
+name: Core bundle check on Windows and macOS (throw-away)
+'on':
+  push:
+    branches:
+    - feature/pgm-win-core-check
+env:
+  PGM_HELPER_DIR: apps/bridge/native/pgm-helper
+  LIVE_STREAM_DIR: apps/bridge/native/live-stream
+  MEETING_HELPER_DIR: apps/bridge/native/meeting-helper
+  CMAKE_BUILD_PARALLEL_LEVEL: '4'
+jobs:
+  bridge-tests:
+    name: bridge-tests (jest + release contracts, as in a Windows release)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      SKIP_DECKLINK_HELPER_BUILD: '1'
+      SKIP_ATEM_USB_HELPER_BUILD: '1'
+      GYP_MSVS_VERSION: '2022'
+      npm_config_msvs_version: '2022'
+      BROADIFY_UPDATER_CHANNEL: rc
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: |
+          package-lock.json
+          apps/bridge/package-lock.json
+    - name: Install root deps (Windows, retry)
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $maxAttempts = 3
+
+        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+          Write-Host "Running npm ci (attempt $attempt/$maxAttempts)..."
+          & npm ci
+
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "npm ci succeeded."
+            exit 0
+          }
+
+          if ($attempt -lt $maxAttempts) {
+            Write-Warning "npm ci failed with exit code $LASTEXITCODE. Retrying in 20 seconds..."
+            Start-Sleep -Seconds 20
+          }
+        }
+
+        throw "npm ci failed after $maxAttempts attempts."
+    - name: Install Bridge dependencies (Windows, retry)
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $maxAttempts = 3
+
+        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+          Write-Host "Running apps/bridge npm ci (attempt $attempt/$maxAttempts)..."
+          Push-Location apps/bridge
+          & npm ci
+          $exitCode = $LASTEXITCODE
+          Pop-Location
+
+          if ($exitCode -eq 0) {
+            Write-Host "apps/bridge npm ci succeeded."
+            exit 0
+          }
+
+          if ($attempt -lt $maxAttempts) {
+            Write-Warning "apps/bridge npm ci failed with exit code $exitCode. Retrying in 20 seconds..."
+            Start-Sleep -Seconds 20
+          }
+        }
+
+        throw "apps/bridge npm ci failed after $maxAttempts attempts."
+    - name: Build Bridge (apps/bridge)
+      run: |
+        cd apps/bridge
+        npm run build
+    - name: Transpile Electron
+      run: npm run transpile:electron
+    - name: Release gate (npm run test)
+      run: npm run test
+  meeting:
+    name: meeting (${{ matrix.label }})
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - label: default, as a release builds it
+          pgm_windows: '0'
+    env:
+      MEETING_HELPER_ENABLE_MODNET: '1'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Set up MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+        vsversion: 2022
+    - name: Assert Media Foundation
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $mfplat = Join-Path $env:SystemRoot 'System32\mfplat.dll'
+        if (-not (Test-Path $mfplat)) {
+          Write-Host "mfplat.dll missing - trying Install-WindowsFeature Server-Media-Foundation"
+          try {
+            Install-WindowsFeature Server-Media-Foundation | Format-List
+          } catch {
+            Write-Host "Install-WindowsFeature failed: $_"
+          }
+        }
+        if (-not (Test-Path $mfplat)) {
+          throw "Media Foundation is not available on this runner ($mfplat missing; the feature may need a restart)."
+        }
+        Write-Host "Media Foundation present: $((Get-Item $mfplat).VersionInfo.FileVersion)"
+    - name: ONNX Runtime DirectML (vendored)
+      run: "./scripts/prepare-windows-meeting-helper-deps.ps1"
+    - name: Cache OpenVINO runtime
+      uses: actions/cache@v4
+      with:
+        path: apps/bridge/native/meeting-helper/deps/openvino/windows-x64
+        key: pgm-win-openvino-${{ runner.os }}-${{ hashFiles('scripts/prepare-windows-openvino-deps.ps1')
+          }}
+    - name: OpenVINO runtime
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $runtime = 'apps/bridge/native/meeting-helper/deps/openvino/windows-x64'
+        $prepared = (Test-Path "$runtime/lib/openvino.lib") -and (Test-Path "$runtime/bin/openvino.dll")
+        for ($attempt = 1; $attempt -le 3 -and -not $prepared; $attempt++) {
+          try {
+            ./scripts/prepare-windows-openvino-deps.ps1
+            $prepared = $true
+          } catch {
+            Write-Host "OpenVINO preparation failed (attempt $attempt): $_"
+            if ($attempt -lt 3) { Start-Sleep -Seconds 20 }
+          }
+        }
+        if ($prepared) {
+          "MEETING_HELPER_ENABLE_OPENVINO=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "meeting (${{ matrix.label }}): matting backends as in a release (ONNX Runtime and OpenVINO)." |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+        } else {
+          # Nothing half-prepared may end up in the cache.
+          if (Test-Path $runtime) { Remove-Item -Recurse -Force $runtime }
+          Write-Host "::warning title=Built WITHOUT OpenVINO::meeting-helper is built without MEETING_HELPER_ENABLE_OPENVINO in this run; a release builds the OpenVINO backend. The last step of the job fails for that reason."
+          "MEETING_HELPER_ENABLE_OPENVINO=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          @(
+            "## meeting (${{ matrix.label }}): built WITHOUT the OpenVINO backend",
+            "",
+            "The OpenVINO archive could not be prepared in three attempts. meeting-helper is compiled and tested without ``MEETING_HELPER_ENABLE_OPENVINO``, which is **not** what a release builds.",
+            "Every step before the last one reports on the code as usual; the last step fails this leg because of the missing backend. Re-run the job once the archive is reachable again."
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+        }
+    - name: Tool versions
+      run: |
+        cmake --version
+        Write-Host "cl: $((Get-Command cl.exe).Source)"
+        Write-Host "node: $(node --version), npm: $(npm --version)"
+    - name: Build meeting-helper.exe (default)
+      if: matrix.pgm_windows != '1'
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if ($env:BROADIFY_PGM_WINDOWS) { throw "BROADIFY_PGM_WINDOWS must not be set in the default configuration" }
+        Remove-Item Env:CMAKE_BUILD_PARALLEL_LEVEL -ErrorAction SilentlyContinue
+        if (Test-Path Env:CMAKE_BUILD_PARALLEL_LEVEL) { throw "CMAKE_BUILD_PARALLEL_LEVEL must not be set in the default configuration" }
+        npm run build:meeting-helper
+        if ($LASTEXITCODE -ne 0) { throw "npm run build:meeting-helper failed with exit code $LASTEXITCODE" }
+        if (-not (Test-Path (Join-Path $env:MEETING_HELPER_DIR 'meeting-helper.exe'))) { throw "meeting-helper.exe was not built" }
+    - name: Build all targets and test (default)
+      if: matrix.pgm_windows != '1'
+      run: |
+        $ErrorActionPreference = 'Stop'
+        Remove-Item Env:CMAKE_BUILD_PARALLEL_LEVEL -ErrorAction SilentlyContinue
+        if (Test-Path Env:CMAKE_BUILD_PARALLEL_LEVEL) { throw "CMAKE_BUILD_PARALLEL_LEVEL must not be set in the default configuration" }
+        npm run test:meeting-helper-native
+        if ($LASTEXITCODE -ne 0) { throw "npm run test:meeting-helper-native failed with exit code $LASTEXITCODE" }
+    - name: Matting backends as in a release (OpenVINO was built)
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if ($env:MEETING_HELPER_ENABLE_OPENVINO -ne '1') {
+          throw "meeting-helper was built WITHOUT the OpenVINO backend (its archive was unreachable): not the release configuration. Re-run the job."
+        }
+        Write-Host "MEETING_HELPER_ENABLE_MODNET=$env:MEETING_HELPER_ENABLE_MODNET MEETING_HELPER_ENABLE_OPENVINO=$env:MEETING_HELPER_ENABLE_OPENVINO, as dist:win sets them"
+  meeting-macos:
+    name: meeting-macos (release gate of dist:mac)
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Tool versions and the image's OpenSSL
+      run: |
+        set -euo pipefail
+        sw_vers
+        xcodebuild -version
+        cmake --version
+        echo "node $(node --version), npm $(npm --version)"
+        echo "cpus: $(sysctl -n hw.ncpu), $(sysctl -n machdep.cpu.brand_string)"
+        # live-stream links Homebrew's static openssl@3 from this path.
+        if [[ ! -f /opt/homebrew/opt/openssl@3/lib/libssl.a ]]; then
+          echo "::error::Homebrew openssl@3 is not on this runner image; dist:mac would stop at the same point"
+          exit 1
+        fi
+        brew list --versions openssl@3 || true
+    - name: Build the meeting helper (release command)
+      run: |
+        set -euo pipefail
+        unset CMAKE_BUILD_PARALLEL_LEVEL
+        npm run build:meeting-helper
+    - name: Build all targets and test (release command)
+      run: |
+        set -euo pipefail
+        unset CMAKE_BUILD_PARALLEL_LEVEL
+        npm run test:meeting-helper-native
+    - name: Idle test, ten more runs in a row
+      run: ctest --test-dir apps/bridge/native/meeting-helper/build --build-config
+        Release -R "^program_stream_idle_test$" --repeat until-fail:10 --output-on-failure
