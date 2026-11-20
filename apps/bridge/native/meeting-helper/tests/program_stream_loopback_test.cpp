@@ -43,6 +43,15 @@
 #include <thread>
 #include <vector>
 
+#if defined(PROGRAM_STREAM_TEST_ENCODER)
+// Process CPU time, for the check that an idle worker does not spin.
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <sys/resource.h>
+#endif
+#endif
+
 using namespace broadify::live;
 using broadify::meeting::MeetingState;
 using broadify::meeting::PreviewFrameStore;
@@ -296,6 +305,30 @@ std::string encoderJsonFor(const EncodeTarget &target) {
 #if defined(PROGRAM_STREAM_TEST_ENCODER)
 
 // --- the encoder of the NV12 build ---------------------------------------------
+
+double processCpuSeconds() {
+#if defined(_WIN32)
+  FILETIME creation;
+  FILETIME exited;
+  FILETIME kernel;
+  FILETIME user;
+  if (!GetProcessTimes(GetCurrentProcess(), &creation, &exited, &kernel, &user)) {
+    return 0.0;
+  }
+  ULARGE_INTEGER kernelTime;
+  kernelTime.LowPart = kernel.dwLowDateTime;
+  kernelTime.HighPart = kernel.dwHighDateTime;
+  ULARGE_INTEGER userTime;
+  userTime.LowPart = user.dwLowDateTime;
+  userTime.HighPart = user.dwHighDateTime;
+  return static_cast<double>(kernelTime.QuadPart + userTime.QuadPart) / 1e7;  // 100 ns units
+#else
+  rusage usage{};
+  getrusage(RUSAGE_SELF, &usage);
+  return static_cast<double>(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) +
+         static_cast<double>(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6;
+#endif
+}
 
 // BT.709 limited range of the two halves of makeProgramFrame().
 constexpr uint8_t kRedY = 63, kRedCb = 102, kRedCr = 240;
@@ -705,6 +738,25 @@ int main() {
       fail("the worker handled " + std::to_string(handled) + " frames, " + std::to_string(publisher.published()) + " were published");
     }
   }
+
+#if defined(PROGRAM_STREAM_TEST_ENCODER)
+  // The store is cleared while the viewer stays (camera stop): there is a new sequence but no frame to
+  // take. The worker has to wait for the next publish, not spin on the store.
+  publisher.stop();
+  frames.clear();
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  {
+    const double cpuBefore = processCpuSeconds();
+    const auto wallBefore = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    const double cpu = processCpuSeconds() - cpuBefore;
+    const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - wallBefore).count();
+    if (cpu > 0.5 * wall) {
+      fail("the worker spins on a cleared store: " + std::to_string(cpu) + " s CPU in " + std::to_string(wall) + " s");
+    }
+  }
+  publisher.start(1080, 1920);
+#endif
 
   // The viewer leaves: the consumer registration goes away and nothing is encoded any more.
   stream.viewerClose(viewer->viewerId);
