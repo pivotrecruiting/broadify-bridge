@@ -125,6 +125,124 @@ describe("meeting-helper-manager", () => {
     });
   });
 
+  describe("getPendingStart", () => {
+    type StartOptionsT = { width?: number; height?: number; fps?: number };
+    type InternalsT = {
+      state: string;
+      lastStartOptions: StartOptionsT;
+      startPromise: Promise<unknown> | null;
+      startInternal: (options: StartOptionsT) => Promise<unknown>;
+      handleProcessExit: (code: number | null) => void;
+    };
+
+    /** Replaces the helper spawn with a start the test finishes by hand. */
+    const stubHelperSpawn = (manager: MeetingHelperManager) => {
+      const internals = manager as unknown as InternalsT;
+      let finish!: (status: unknown) => void;
+      const startInternal = jest.fn(
+        (_options: StartOptionsT) =>
+          new Promise<unknown>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      internals.startInternal = startInternal;
+      return {
+        internals,
+        startInternal,
+        finish: (status: unknown) => finish(status),
+      };
+    };
+
+    it("is null while no start is in flight", () => {
+      const manager = new MeetingHelperManager();
+
+      expect(manager.getPendingStart()).toBeNull();
+    });
+
+    it("reports a start from the call to start() on, with the defaults filled in", async () => {
+      const manager = new MeetingHelperManager();
+      const { finish } = stubHelperSpawn(manager);
+
+      const started = manager.start({ width: 1080, height: 1920 });
+      // No await before this read: start() claims the start synchronously.
+      // meeting_engine_start decides and starts in one tick and relies on it.
+      const pending = manager.getPendingStart();
+
+      expect(pending?.format).toEqual({ width: 1080, height: 1920, fps: 30 });
+
+      finish({ state: "running" });
+      await expect(pending?.settled).resolves.toEqual({ state: "running" });
+      await started;
+      expect(manager.getPendingStart()).toBeNull();
+    });
+
+    it("keeps its geometry when a second start joins it", async () => {
+      const manager = new MeetingHelperManager();
+      const { internals, startInternal, finish } = stubHelperSpawn(manager);
+
+      const first = manager.start({ width: 1920, height: 1080 });
+      const second = manager.start({ width: 1080, height: 1920 });
+
+      expect(startInternal).toHaveBeenCalledTimes(1);
+      expect(startInternal).toHaveBeenCalledWith({ width: 1920, height: 1080 });
+      expect(manager.getPendingStart()?.format).toEqual({
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      });
+      // What a crash-recovery restart replays stays the first start's.
+      expect(internals.lastStartOptions).toEqual({ width: 1920, height: 1080 });
+
+      finish({ state: "running" });
+      await expect(second).resolves.toEqual({ state: "running" });
+      await first;
+    });
+
+    it("reports a crash-recovery restart with the geometry it replays", async () => {
+      jest.useFakeTimers();
+      try {
+        const manager = new MeetingHelperManager();
+        const { internals, startInternal, finish } = stubHelperSpawn(manager);
+        internals.state = "running";
+        internals.lastStartOptions = { width: 1080, height: 1920, fps: 25 };
+
+        internals.handleProcessExit(null);
+        // Only the restart timer is armed: a start() now would supersede it
+        // and spawn with its own options, so nothing is pending yet.
+        expect(manager.getPendingStart()).toBeNull();
+
+        jest.runOnlyPendingTimers();
+        expect(startInternal).toHaveBeenCalledWith({
+          width: 1080,
+          height: 1920,
+          fps: 25,
+        });
+        const pending = manager.getPendingStart();
+        expect(pending?.format).toEqual({ width: 1080, height: 1920, fps: 25 });
+
+        // Keep the failed attempt below from arming the next restart timer.
+        manager.beginShutdown();
+        finish({ state: "error" });
+        await expect(pending?.settled).resolves.toEqual({ state: "error" });
+        expect(manager.getPendingStart()).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("is null once the engine runs, while the start still finishes its publish", () => {
+      const manager = new MeetingHelperManager();
+      const internals = manager as unknown as InternalsT;
+      internals.startPromise = new Promise(() => undefined);
+      internals.state = "starting";
+      expect(manager.getPendingStart()).not.toBeNull();
+
+      // start() is a no-op for a running engine; it would not join anything.
+      internals.state = "running";
+      expect(manager.getPendingStart()).toBeNull();
+    });
+  });
+
   describe("inspectDeviceEntitlementStatuses", () => {
     const os = require("node:os");
     const fs = require("node:fs");

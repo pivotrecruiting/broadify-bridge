@@ -187,6 +187,15 @@ export type MeetingHelperManagerStatusT = {
   program_format: MeetingProgramFormatT | null;
 };
 
+/**
+ * A start that is in flight: the geometry it was issued with, and a promise
+ * that settles with the manager status once it has finished.
+ */
+export type MeetingHelperPendingStartT = {
+  format: MeetingProgramFormatT;
+  settled: Promise<MeetingHelperManagerStatusT>;
+};
+
 type EntitlementStatusT = "not_checked" | "present" | "missing" | "invalid";
 
 type MeetingHelperIdentityT = {
@@ -897,6 +906,35 @@ export class MeetingHelperManager {
     return this.state === "running" && this.client !== null;
   }
 
+  /**
+   * The start that a `start()` issued right now would join instead of spawning
+   * the helper with its own options: a user start or a crash-recovery restart
+   * that is still in flight. Null when there is none, and null while the
+   * engine runs (`start()` is a no-op then).
+   *
+   * Read-only: unlike `start()` this joins nothing and leaves the restart
+   * timer and the attempt counter alone, so a caller can wait for the start in
+   * flight without changing what happens to it.
+   */
+  getPendingStart(): MeetingHelperPendingStartT | null {
+    if (this.state === "running" || !this.startPromise) {
+      return null;
+    }
+    return {
+      format: resolveMeetingProgramFormat(this.lastStartOptions),
+      settled: this.startPromise,
+    };
+  }
+
+  /**
+   * Starts the helper, or joins the start that is already in flight; a no-op
+   * while the engine runs.
+   *
+   * Must stay free of awaits: the checks and the claim of the start
+   * (`startPromise`) are one synchronous step. `meeting_engine_start` decides
+   * on `isRunning()` and `getPendingStart()` in the same tick and relies on
+   * getting exactly the start it decided on.
+   */
   async start(
     options: MeetingHelperStartOptionsT = {},
   ): Promise<MeetingHelperManagerStatusT> {
