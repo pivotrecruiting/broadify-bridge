@@ -1,0 +1,1179 @@
+name: PGM Windows Native
+
+# Compile + ctest for the Windows side of the live program preview (ADR-0009,
+# docs/bridge/features/pgm-live-preview-windows.md). Runs on the stacked
+# feature/pgm-win-* branches and manually; it never builds or publishes a
+# release. Green here means "compiles and the tests pass on a hosted runner",
+# not "verified on hardware". One job runs on macOS: the chain changes the
+# meeting helper's program stream there too, and its tests are a gate of the
+# macOS release build.
+#
+# Jobs:
+#   core     pure modules only (pgm_core, live_stream_core, helper_common):
+#            no WebRTC, no encoder, no network dependency. Configured without
+#            any switch, i.e. what a Windows release compiles today.
+#   bridge-tests
+#            rehearsal of the release gate: `dist:win` runs `npm run build`,
+#            which starts with `npm run test` (jest --runInBand + the release
+#            contract tests), so every one of those tests runs on the Windows
+#            release runner and a test that depends on the host breaks the
+#            release. Same image, Node version and install steps as the
+#            Windows leg of release.yml / test-release.yml, no secrets. Also
+#            checks that the packaging steps of the build switch do nothing
+#            without it. What they do with it runs in job full against the
+#            built exe: the artifact list and the installer smoke script,
+#            which also has to reject two broken stand-ins.
+#   encoder  Media Foundation H.264 encoder (LIVE_STREAM_WITH_MF=ON, still no
+#            WebRTC/OpenSSL): compiles mf_encoder.cpp and runs it against an
+#            in-test asynchronous MFT and, through the test seam only, against
+#            Microsoft's software encoder MFT. The hosted runner has no GPU,
+#            so the hardware smoke test reports "skipped" here.
+#   full     the WebRTC part (LIVE_STREAM_WITH_WEBRTC=ON): static OpenSSL from
+#            the vcpkg manifest, libdatachannel, publisher.cpp on top of the
+#            encoder, and the in-process WebRTC loopback test. Then the helper
+#            itself the way the build switch builds it (BROADIFY_PGM_WINDOWS=1
+#            through scripts/build-pgm-helper.sh): pgm-helper.exe, ctest,
+#            `--probe`, and a run with the synthetic source that must end in
+#            `encoder_unavailable` on this GPU-less runner - the doctrine test:
+#            no silent software fallback. The exe's imports go through the
+#            release dependency gate and it is uploaded unsigned for the
+#            device session. Network dependencies (OpenSSL, libdatachannel,
+#            opus) are cached.
+#   meeting  meeting-helper.exe in both configurations, each with its ctest
+#            run, the way `dist:win` builds and tests it (matting backends on:
+#            vendored ONNX Runtime, OpenVINO from the release's own script; a
+#            leg that had to build without OpenVINO ends red and says so in
+#            the job summary):
+#            - default: no switch, exactly the release's two commands, built
+#              serially as a release does. Stub program stream, nothing of
+#              the live program configured. This is the Windows compile of
+#              every change under meeting-helper, whichever branch it comes
+#              from.
+#            - BROADIFY_PGM_WINDOWS=1: program_stream.cpp + NV12 frame
+#              converter + WebRTC linked into the helper, plus the stream
+#              tests (the worker end to end against an in-process viewer; on
+#              this GPU-less runner the real encoder path must end in
+#              `encoder_unavailable`).
+#   meeting-macos  what `dist:mac:arm64` runs for the meeting helper, on the
+#            runner image of the release: `npm run build:meeting-helper`, then
+#            `npm run test:meeting-helper-native`. The stream tests in there
+#            judge by CPU time and wall-clock limits and connect over local
+#            ICE; they run ten more times in a row afterwards, so that one
+#            green job says something about the release gate.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "feature/pgm-win-**"
+    paths:
+      # bridge-tests: what jest and the release contract tests read, and what
+      # the Windows release installs before it runs them.
+      - src/**
+      - apps/bridge/src/**
+      - apps/bridge/package.json
+      - apps/bridge/package-lock.json
+      - packages/protocol/**
+      - scripts/**
+      - package.json
+      - package-lock.json
+      - electron-builder.config.cjs
+      - electron-builder.json
+      - jest.config.cjs
+      - jest.setup.cjs
+      - tsconfig*.json
+      - .gitignore
+      - build/windows-installer.nsh
+      - apps/bridge/native/vcam-helper/windows/vcam_guid.h
+      - .github/workflows/**
+      - apps/bridge/native/live-stream/**
+      - apps/bridge/native/pgm-helper/**
+      - apps/bridge/native/helper-common/**
+      # Sources, tests, CMakeLists.txt and build.ps1 of the meeting helper,
+      # and what its build compiles from the neighbouring directories.
+      - apps/bridge/native/meeting-helper/**
+      - apps/bridge/native/vcam-helper/Shared/**
+      - apps/bridge/native/vcam-helper/windows/**
+      - apps/bridge/native/framebus/include/**
+      - scripts/prepare-windows-pgm-deps.ps1
+      - scripts/build-pgm-helper.sh
+      - scripts/build-meeting-helper.sh
+      - scripts/prepare-windows-meeting-helper-deps.ps1
+      - scripts/prepare-windows-openvino-deps.ps1
+      - scripts/prepare-windows-vc-runtime.ps1
+      - scripts/verify-windows-native-dependencies.cjs
+      - scripts/lib/windows-native-dependency-policy.cjs
+      - scripts/lib/windows-vc-runtime.cjs
+      - .github/workflows/pgm-windows-native.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pgm-windows-native-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  PGM_HELPER_DIR: apps/bridge/native/pgm-helper
+  LIVE_STREAM_DIR: apps/bridge/native/live-stream
+  MEETING_HELPER_DIR: apps/bridge/native/meeting-helper
+  # Hosted runners have 4 cores; keep the same cap when run elsewhere.
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+
+jobs:
+  core:
+    name: core (pure modules, MSVC)
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      # Pure modules + tests only: the helper binary (capture, encoder, WebRTC)
+      # stays out of this job. The CMake files read these from the environment.
+      PGM_HELPER_BUILD_BINARY: "0"
+      PGM_HELPER_BUILD_TESTS: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: 2022
+
+      # Windows Server ships Media Foundation as an optional feature. The pure
+      # modules do not need it, but every later job does - fail early and in
+      # one place if a runner image drops it.
+      - name: Assert Media Foundation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mfplat = Join-Path $env:SystemRoot 'System32\mfplat.dll'
+          if (-not (Test-Path $mfplat)) {
+            Write-Host "mfplat.dll missing - trying Install-WindowsFeature Server-Media-Foundation"
+            try {
+              Install-WindowsFeature Server-Media-Foundation | Format-List
+            } catch {
+              Write-Host "Install-WindowsFeature failed: $_"
+            }
+          }
+          if (-not (Test-Path $mfplat)) {
+            throw "Media Foundation is not available on this runner ($mfplat missing; the feature may need a restart)."
+          }
+          Write-Host "Media Foundation present: $((Get-Item $mfplat).VersionInfo.FileVersion)"
+
+      - name: Tool versions
+        run: |
+          cmake --version
+          Write-Host "cl: $((Get-Command cl.exe).Source)"
+
+      # FETCHCONTENT_FULLY_DISCONNECTED turns any accidental network
+      # dependency of the pure modules into a configure error.
+      - name: Configure pgm-helper (pure modules)
+        run: >
+          cmake -S $env:PGM_HELPER_DIR -B "$env:PGM_HELPER_DIR/build"
+          -DLIVE_STREAM_WITH_WEBRTC=OFF
+          -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+
+      - name: Build pgm-helper (pure modules)
+        run: cmake --build "$env:PGM_HELPER_DIR/build" --config Release
+
+      - name: Test pgm-helper (pure modules)
+        run: >
+          ctest --test-dir "$env:PGM_HELPER_DIR/build" --build-config Release
+          --timeout 120 --output-on-failure
+
+      # The same core as a stand-alone project, the way the meeting helper
+      # consumes it: catches anything that only works inside the pgm-helper tree.
+      - name: Configure live-stream core
+        run: >
+          cmake -S $env:LIVE_STREAM_DIR -B "$env:LIVE_STREAM_DIR/build"
+          -DLIVE_STREAM_WITH_WEBRTC=OFF
+          -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+
+      - name: Build live-stream core
+        run: cmake --build "$env:LIVE_STREAM_DIR/build" --config Release
+
+      - name: Test live-stream core
+        run: >
+          ctest --test-dir "$env:LIVE_STREAM_DIR/build" --build-config Release
+          --timeout 120 --output-on-failure
+
+  bridge-tests:
+    name: bridge-tests (jest + release contracts, as in a Windows release)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      # The entries of the release job environment that are no secret and
+      # matter on Windows.
+      SKIP_DECKLINK_HELPER_BUILD: "1"
+      SKIP_ATEM_USB_HELPER_BUILD: "1"
+      GYP_MSVS_VERSION: "2022"
+      npm_config_msvs_version: "2022"
+      # What "Resolve release channel" exports for RC tags and test builds
+      # (stable tags: latest).
+      BROADIFY_UPDATER_CHANNEL: rc
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # From here to "Transpile Electron": the steps of release.yml in front
+      # of its first `npm run build`, unchanged.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            apps/bridge/package-lock.json
+
+      - name: Install root deps (Windows, retry)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Running npm ci (attempt $attempt/$maxAttempts)..."
+            & npm ci
+
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "npm ci succeeded."
+              exit 0
+            }
+
+            if ($attempt -lt $maxAttempts) {
+              Write-Warning "npm ci failed with exit code $LASTEXITCODE. Retrying in 20 seconds..."
+              Start-Sleep -Seconds 20
+            }
+          }
+
+          throw "npm ci failed after $maxAttempts attempts."
+
+      - name: Install Bridge dependencies (Windows, retry)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Running apps/bridge npm ci (attempt $attempt/$maxAttempts)..."
+            Push-Location apps/bridge
+            & npm ci
+            $exitCode = $LASTEXITCODE
+            Pop-Location
+
+            if ($exitCode -eq 0) {
+              Write-Host "apps/bridge npm ci succeeded."
+              exit 0
+            }
+
+            if ($attempt -lt $maxAttempts) {
+              Write-Warning "apps/bridge npm ci failed with exit code $exitCode. Retrying in 20 seconds..."
+              Start-Sleep -Seconds 20
+            }
+          }
+
+          throw "apps/bridge npm ci failed after $maxAttempts attempts."
+
+      - name: Build Bridge (apps/bridge)
+        run: |
+          cd apps/bridge
+          npm run build
+
+      - name: Transpile Electron
+        run: npm run transpile:electron
+
+      # The gate itself: the first thing `npm run build` does.
+      - name: Release gate (npm run test)
+        run: npm run test
+
+      # ---- the build switch BROADIFY_PGM_WINDOWS stays off in a release ------
+
+      # dist:win calls `npm run build:pgm-helper`. Without the switch that has
+      # to skip, started the way dist:win starts it (npm, default shell).
+      - name: dist:win's PGM helper step skips without the switch
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BROADIFY_PGM_WINDOWS) { throw "BROADIFY_PGM_WINDOWS must not be set in this job" }
+          $output = @(& npm run build:pgm-helper)
+          $code = $LASTEXITCODE
+          $output | Write-Host
+          if ($code -ne 0) { throw "npm run build:pgm-helper exited with $code" }
+          if (-not ($output -match '^Skipping PGM helper build on ')) { throw "the wrapper did not skip" }
+          foreach ($path in @((Join-Path $env:PGM_HELPER_DIR 'pgm-helper.exe'), (Join-Path $env:PGM_HELPER_DIR 'build'))) {
+            if (Test-Path -LiteralPath $path) { throw "the skipped build left $path behind" }
+          }
+
+      # The installer smoke tests call scripts/test-windows-pgm-helper.ps1
+      # unconditionally. Without the switch it must do nothing (here: not even
+      # look at a folder that does not exist); with it, a package without the
+      # helper must fail. The run against a real pgm-helper.exe is in job full.
+      - name: Installer smoke script for the PGM helper follows the switch
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BROADIFY_PGM_WINDOWS) { throw "BROADIFY_PGM_WINDOWS must not be set in this job" }
+          ./scripts/test-windows-pgm-helper.ps1 -ResourcesDir (Join-Path $env:RUNNER_TEMP 'no-such-resources')
+          Write-Host "without the switch: nothing checked"
+
+          $empty = Join-Path $env:RUNNER_TEMP 'resources-without-pgm-helper'
+          New-Item -ItemType Directory -Force -Path $empty | Out-Null
+          $env:BROADIFY_PGM_WINDOWS = '1'
+          $failure = $null
+          try {
+            ./scripts/test-windows-pgm-helper.ps1 -ResourcesDir $empty
+          } catch {
+            $failure = "$_"
+          }
+          if ($failure -notmatch 'Packaged PGM helper is missing') {
+            throw "with the switch the smoke script must fail on a package without the helper, got: $failure"
+          }
+          Write-Host "with the switch: failed as it should ($failure)"
+
+      # The smoke scripts themselves only run against an installer. At least
+      # their syntax is checked on the PowerShell version the release uses.
+      - name: PowerShell release scripts parse
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failed = $false
+          foreach ($file in Get-ChildItem -Path scripts -Filter *.ps1 -File) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            foreach ($problem in $errors) {
+              Write-Host "$($file.Name):$($problem.Extent.StartLineNumber): $($problem.Message)"
+              $failed = $true
+            }
+          }
+          if ($failed) { throw "PowerShell syntax errors in scripts/*.ps1" }
+          Write-Host "parsed $(@(Get-ChildItem -Path scripts -Filter *.ps1 -File).Count) script(s)"
+
+      # A build with the switch runs the same contract tests with the switch
+      # in its environment (dist:win -> npm run build -> npm run test).
+      - name: Release contracts with the build switch set
+        env:
+          BROADIFY_PGM_WINDOWS: "1"
+        run: npm run test:release-contracts
+
+  encoder:
+    name: encoder (Media Foundation H.264, MSVC)
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: 2022
+
+      - name: Assert Media Foundation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mfplat = Join-Path $env:SystemRoot 'System32\mfplat.dll'
+          if (-not (Test-Path $mfplat)) {
+            Write-Host "mfplat.dll missing - trying Install-WindowsFeature Server-Media-Foundation"
+            try {
+              Install-WindowsFeature Server-Media-Foundation | Format-List
+            } catch {
+              Write-Host "Install-WindowsFeature failed: $_"
+            }
+          }
+          if (-not (Test-Path $mfplat)) {
+            throw "Media Foundation is not available on this runner ($mfplat missing; the feature may need a restart)."
+          }
+          Write-Host "Media Foundation present: $((Get-Item $mfplat).VersionInfo.FileVersion)"
+          $h264 = Join-Path $env:SystemRoot 'System32\mfh264enc.dll'
+          Write-Host "Microsoft H.264 encoder MFT (test seam only): $(if (Test-Path $h264) { 'present' } else { 'missing - the seam test will skip' })"
+
+      # The encoder needs neither WebRTC nor OpenSSL: still no network dependency.
+      - name: Configure live-stream with the Media Foundation encoder
+        run: >
+          cmake -S $env:LIVE_STREAM_DIR -B "$env:LIVE_STREAM_DIR/build-mf"
+          -DLIVE_STREAM_WITH_WEBRTC=OFF
+          -DLIVE_STREAM_WITH_MF=ON
+          -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+
+      - name: Build live-stream with the Media Foundation encoder
+        run: cmake --build "$env:LIVE_STREAM_DIR/build-mf" --config Release
+
+      # Verbose on purpose: the log shows which tests skipped (no hardware
+      # encoder MFT on hosted runners) and the settings each encoder accepted.
+      - name: Test live-stream with the Media Foundation encoder
+        run: >
+          ctest --test-dir "$env:LIVE_STREAM_DIR/build-mf" --build-config Release
+          --timeout 120 --output-on-failure --verbose
+
+  full:
+    name: full (WebRTC + static OpenSSL + pgm-helper.exe, MSVC)
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: 2022
+
+      - name: Assert Media Foundation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mfplat = Join-Path $env:SystemRoot 'System32\mfplat.dll'
+          if (-not (Test-Path $mfplat)) {
+            Write-Host "mfplat.dll missing - trying Install-WindowsFeature Server-Media-Foundation"
+            try {
+              Install-WindowsFeature Server-Media-Foundation | Format-List
+            } catch {
+              Write-Host "Install-WindowsFeature failed: $_"
+            }
+          }
+          if (-not (Test-Path $mfplat)) {
+            throw "Media Foundation is not available on this runner ($mfplat missing; the feature may need a restart)."
+          }
+          Write-Host "Media Foundation present: $((Get-Item $mfplat).VersionInfo.FileVersion)"
+
+      # Static OpenSSL: built once per manifest/script change (several minutes),
+      # afterwards the script short-circuits on the restored tree.
+      - name: Cache static OpenSSL (vcpkg)
+        uses: actions/cache@v4
+        with:
+          path: apps/bridge/native/live-stream/deps/vcpkg_installed
+          key: pgm-win-openssl-${{ runner.os }}-${{ hashFiles('apps/bridge/native/live-stream/vcpkg.json', 'scripts/prepare-windows-pgm-deps.ps1') }}
+
+      # The runner's own vcpkg checkout, not the one vcvars puts into VCPKG_ROOT.
+      - name: Prepare static OpenSSL
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot) { $vcpkgRoot = 'C:\vcpkg' }
+          ./scripts/prepare-windows-pgm-deps.ps1 -VcpkgRoot $vcpkgRoot
+
+      # libdatachannel with its submodules: the pinned tag is read from the
+      # CMake file, so the cache key and the clone follow it. The build then
+      # uses the documented offline path (FETCHCONTENT_SOURCE_DIR_LIBDATACHANNEL).
+      - name: Resolve libdatachannel tag
+        id: ldc
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmake = Get-Content -Raw "$env:LIVE_STREAM_DIR/CMakeLists.txt"
+          $match = [regex]::Match($cmake, 'libdatachannel\.git\s+GIT_TAG\s+(\S+)')
+          if (-not $match.Success) { throw "libdatachannel GIT_TAG not found in live-stream/CMakeLists.txt" }
+          $tag = $match.Groups[1].Value
+          Write-Host "libdatachannel $tag"
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          # Forward slashes: the path ends up in a CMake cache variable.
+          $src = (Join-Path $env:RUNNER_TEMP 'libdatachannel-src').Replace('\', '/')
+          "LIBDATACHANNEL_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Cache libdatachannel sources
+        id: ldc-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/libdatachannel-src
+          key: pgm-win-libdatachannel-${{ steps.ldc.outputs.tag }}
+
+      - name: Fetch libdatachannel sources
+        if: steps.ldc-cache.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path $env:LIBDATACHANNEL_SRC) { Remove-Item -Recurse -Force $env:LIBDATACHANNEL_SRC }
+          git clone --depth 1 --branch "${{ steps.ldc.outputs.tag }}" --recurse-submodules --shallow-submodules `
+            https://github.com/paullouisageneau/libdatachannel.git $env:LIBDATACHANNEL_SRC
+          if ($LASTEXITCODE -ne 0) { throw "git clone libdatachannel failed with exit code $LASTEXITCODE" }
+
+      - name: Tool versions
+        run: |
+          cmake --version
+          Write-Host "cl: $((Get-Command cl.exe).Source)"
+
+      - name: Configure live-stream with WebRTC
+        run: >
+          cmake -S $env:LIVE_STREAM_DIR -B "$env:LIVE_STREAM_DIR/build-full"
+          -DLIVE_STREAM_WITH_WEBRTC=ON
+          "-DFETCHCONTENT_SOURCE_DIR_LIBDATACHANNEL=$env:LIBDATACHANNEL_SRC"
+          -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+
+      - name: Build live-stream with WebRTC
+        run: cmake --build "$env:LIVE_STREAM_DIR/build-full" --config Release
+
+      # ADR-0009, point 5: OpenSSL is linked statically, the test binary must
+      # not import an OpenSSL DLL.
+      - name: Assert no OpenSSL DLL import
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem -Path "$env:LIVE_STREAM_DIR/build-full" -Recurse -Filter webrtc_loopback_test.exe | Select-Object -First 1
+          if (-not $exe) { throw "webrtc_loopback_test.exe not found" }
+          $imports = & dumpbin /dependents $exe.FullName
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed with exit code $LASTEXITCODE" }
+          $imports | Write-Host
+          $bad = @($imports | Where-Object { $_ -match '(?i)\b(libssl|libcrypto|ssleay|libeay|datachannel)[^\s]*\.dll' })
+          if ($bad.Count -gt 0) { throw "unexpected DLL imports: $($bad -join ', ')" }
+
+      - name: Test live-stream with WebRTC (all but the loopback test)
+        run: >
+          ctest --test-dir "$env:LIVE_STREAM_DIR/build-full" --build-config Release
+          --timeout 120 --output-on-failure --verbose -E "^webrtc_loopback_test$"
+
+      # ICE over UDP loopback on a shared runner: one retry for a lost
+      # connectivity check, a second failure is a real one.
+      - name: Test WebRTC loopback
+        run: >
+          ctest --test-dir "$env:LIVE_STREAM_DIR/build-full" --build-config Release
+          --timeout 120 --output-on-failure --verbose -R "^webrtc_loopback_test$"
+          --repeat until-pass:2 --no-tests=error
+
+      # ---- pgm-helper.exe: what BROADIFY_PGM_WINDOWS=1 builds ----------------
+
+      # Without the switch the wrapper must skip exactly as it does in a
+      # release today: no build directory, no executable.
+      - name: Build wrapper skips without the switch
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset BROADIFY_PGM_WINDOWS
+          output="$(bash scripts/build-pgm-helper.sh)"
+          echo "$output"
+          [[ "$output" == Skipping\ PGM\ helper\ build\ on\ * ]]
+          [[ ! -e "$PGM_HELPER_DIR/pgm-helper.exe" ]]
+          [[ ! -e "$PGM_HELPER_DIR/build" ]]
+
+      # opus like libdatachannel: pinned tag read from the CMake file, sources
+      # cached, build through the documented offline path.
+      - name: Resolve opus tag
+        id: opus
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmake = Get-Content -Raw "$env:PGM_HELPER_DIR/CMakeLists.txt"
+          $match = [regex]::Match($cmake, 'opus\.git\s+GIT_TAG\s+(\S+)')
+          if (-not $match.Success) { throw "opus GIT_TAG not found in pgm-helper/CMakeLists.txt" }
+          $tag = $match.Groups[1].Value
+          Write-Host "opus $tag"
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $src = (Join-Path $env:RUNNER_TEMP 'opus-src').Replace('\', '/')
+          "OPUS_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Cache opus sources
+        id: opus-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/opus-src
+          key: pgm-win-opus-${{ steps.opus.outputs.tag }}
+
+      - name: Fetch opus sources
+        if: steps.opus-cache.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path $env:OPUS_SRC) { Remove-Item -Recurse -Force $env:OPUS_SRC }
+          git clone --depth 1 --branch "${{ steps.opus.outputs.tag }}" https://github.com/xiph/opus.git $env:OPUS_SRC
+          if ($LASTEXITCODE -ne 0) { throw "git clone opus failed with exit code $LASTEXITCODE" }
+
+      # Through the wrapper, i.e. the path a build with the switch takes:
+      # scripts/build-pgm-helper.sh -> pgm-helper/build.ps1 (helper + tests).
+      - name: Build pgm-helper.exe (BROADIFY_PGM_WINDOWS=1)
+        shell: bash
+        env:
+          BROADIFY_PGM_WINDOWS: "1"
+        run: |
+          set -euo pipefail
+          export PGM_HELPER_CMAKE_EXTRA_ARGS="-DFETCHCONTENT_SOURCE_DIR_LIBDATACHANNEL=$LIBDATACHANNEL_SRC -DFETCHCONTENT_SOURCE_DIR_OPUS=$OPUS_SRC -DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+          bash scripts/build-pgm-helper.sh
+          test -f "$PGM_HELPER_DIR/pgm-helper.exe"
+
+      - name: Test pgm-helper (all but the loopback test)
+        run: >
+          ctest --test-dir "$env:PGM_HELPER_DIR/build" --build-config Release
+          --timeout 120 --output-on-failure -E "^webrtc_loopback_test$"
+
+      - name: Test pgm-helper WebRTC loopback
+        run: >
+          ctest --test-dir "$env:PGM_HELPER_DIR/build" --build-config Release
+          --timeout 120 --output-on-failure -R "^webrtc_loopback_test$"
+          --repeat until-pass:2 --no-tests=error
+
+      # The runner has no camera: the probe must still answer with one JSON
+      # line, an empty input list and exit code 0.
+      - name: pgm-helper.exe --probe
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:PGM_HELPER_DIR 'pgm-helper.exe'
+          $output = @(& $exe --probe)
+          $code = $LASTEXITCODE
+          $output | Write-Host
+          if ($code -ne 0) { throw "--probe exited with $code" }
+          $line = $output | Where-Object { $_ -match '^\{"type":"probe"' } | Select-Object -First 1
+          if (-not $line) { throw "no probe line on stdout" }
+          $probe = $line | ConvertFrom-Json
+          if ($null -eq $probe.inputs -or $null -eq $probe.inputs.camera_permission) { throw "probe line has no inputs.camera_permission" }
+          if ($probe.encoder -ne 'mediafoundation') { throw "unexpected encoder field: $($probe.encoder)" }
+          Write-Host "inputs: $(@($probe.inputs.inputs).Count), camera_permission: $($probe.inputs.camera_permission)"
+
+      # Doctrine test (ADR-0002/0009): on a machine without a hardware H.264
+      # encoder the helper reports encoder_unavailable and encodes nothing. It
+      # stays controllable: status, snapshot (portable JPEG path), the
+      # recorder stub's recording_unsupported and a clean shutdown are checked
+      # over the control pipe, the way the bridge talks to it.
+      - name: Synthetic source ends in encoder_unavailable (no software fallback)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:PGM_HELPER_DIR 'pgm-helper.exe'
+          $pipeName = "broadify-pgm-ci-$PID"
+          $stdout = Join-Path $env:RUNNER_TEMP 'pgm-synthetic.stdout.log'
+          $stderr = Join-Path $env:RUNNER_TEMP 'pgm-synthetic.stderr.log'
+          $helper = Start-Process -FilePath $exe -PassThru -NoNewWindow `
+            -ArgumentList @('--run', '--control-socket', "\\.\pipe\$pipeName", '--synthetic-source', '1280x720@30') `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          # Keeps the process handle open so ExitCode is readable after the exit.
+          $null = $helper.Handle
+
+          function Read-Events {
+            if (-not (Test-Path $stdout)) { return @() }
+            $stream = [System.IO.File]::Open($stdout, 'Open', 'Read', 'ReadWrite')
+            try {
+              $text = [System.IO.StreamReader]::new($stream).ReadToEnd()
+            } finally {
+              $stream.Dispose()
+            }
+            # A line the helper is still writing does not parse yet; the next poll sees it whole.
+            return @($text -split "`r?`n" | Where-Object { $_ -match '^\{.*\}$' } | ForEach-Object {
+              try { $_ | ConvertFrom-Json } catch { }
+            })
+          }
+          function Invoke-Rpc([string]$method, [string]$params = '{}') {
+            $client = [System.IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [System.IO.Pipes.PipeDirection]::InOut)
+            try {
+              $client.Connect(10000)
+              $request = [System.Text.Encoding]::UTF8.GetBytes("{`"id`":`"ci`",`"method`":`"$method`",`"params`":$params}`n")
+              $client.Write($request, 0, $request.Length)
+              $client.Flush()
+              $line = [System.IO.StreamReader]::new($client, [System.Text.Encoding]::UTF8).ReadLine()
+            } finally {
+              $client.Dispose()
+            }
+            if (-not $line) { throw "no answer to $method" }
+            Write-Host "$method -> $(if ($line.Length -gt 400) { $line.Substring(0, 400) + '...' } else { $line })"
+            return $line | ConvertFrom-Json
+          }
+
+          try {
+            $deadline = (Get-Date).AddSeconds(60)
+            $errorEvent = $null
+            while (-not $errorEvent -and (Get-Date) -lt $deadline) {
+              if ($helper.HasExited) { throw "pgm-helper.exe exited early with $($helper.ExitCode)" }
+              Start-Sleep -Milliseconds 500
+              $errorEvent = Read-Events | Where-Object { $_.type -eq 'pgm_error' } | Select-Object -First 1
+            }
+            $events = Read-Events
+            $events | ForEach-Object { Write-Host ($_ | ConvertTo-Json -Compress -Depth 8) }
+            if (-not $errorEvent) { throw "no pgm_error event within 60 s" }
+            if ($errorEvent.code -ne 'encoder_unavailable') { throw "expected encoder_unavailable, got $($errorEvent.code)" }
+            if ($events | Where-Object { $_.type -eq 'pgm_encoder_configured' }) { throw "an encoder was configured on a runner without a hardware encoder" }
+            if (-not ($events | Where-Object { $_.type -eq 'pgm_signal' -and $_.signal.width -eq 1280 -and $_.signal.height -eq 720 })) {
+              throw "the synthetic source delivered no 1280x720 signal"
+            }
+
+            $status = Invoke-Rpc 'pgm.status'
+            if (-not $status.ok) { throw "pgm.status failed" }
+            if ($status.result.state -ne 'error' -or $status.result.last_error.code -ne 'encoder_unavailable' -or $null -ne $status.result.encoder) {
+              throw "status does not report encoder_unavailable without an encoder"
+            }
+            $snapshot = Invoke-Rpc 'pgm.snapshot' '{"quality":0.8}'
+            if (-not $snapshot.ok -or $snapshot.result.width -ne 1280 -or $snapshot.result.height -ne 720 -or
+                -not $snapshot.result.jpeg_base64.StartsWith('/9j/')) {
+              throw "pgm.snapshot did not return a 1280x720 JPEG"
+            }
+            $recording = Invoke-Rpc 'pgm.recording.start' '{"file_path":"C:/unused/pgm.mp4"}'
+            if ($recording.ok -or $recording.error.code -ne 'recording_unsupported') { throw "pgm.recording.start must answer recording_unsupported" }
+            $shutdown = Invoke-Rpc 'control.shutdown'
+            if (-not $shutdown.ok) { throw "control.shutdown failed" }
+            if (-not $helper.WaitForExit(20000)) { throw "pgm-helper.exe did not exit within 20 s after control.shutdown" }
+            if ($helper.ExitCode -ne 0) { throw "pgm-helper.exe exited with $($helper.ExitCode)" }
+            $last = Read-Events | Select-Object -Last 1
+            if ($last.type -ne 'shutdown' -or $last.reason -ne 'control_shutdown') { throw "last event is not the control_shutdown shutdown event" }
+          } finally {
+            if (-not $helper.HasExited) { Stop-Process -Id $helper.Id -Force }
+            if (Test-Path $stderr) { Get-Content $stderr | Write-Host }
+          }
+
+      # ADR-0009, point 5 and the release gate: only inbox Windows DLLs and
+      # the VC runtime that ships next to every helper, no OpenSSL DLL. The
+      # exe is staged the way the package lays it out (resources/native/pgm-helper).
+      - name: Verify pgm-helper.exe imports (release dependency gate)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resources = Join-Path $env:RUNNER_TEMP 'pgm-stage\resources'
+          $helperDir = Join-Path $resources 'native\pgm-helper'
+          # Stages the VC runtime first: the script empties its destination.
+          ./scripts/prepare-windows-vc-runtime.ps1 -Destination $helperDir
+          Copy-Item -Force (Join-Path $env:PGM_HELPER_DIR 'pgm-helper.exe') $helperDir
+          $env:PGM_STAGE_RESOURCES = $resources
+          # The gate's own function, pointed at the staged folder instead of the packaged helper list.
+          $check = Join-Path $env:RUNNER_TEMP 'verify-pgm-helper-imports.cjs'
+          @'
+          const path = require("node:path");
+          const { verifyNativeDependencies } = require(path.join(process.cwd(), "scripts", "verify-windows-native-dependencies.cjs"));
+          verifyNativeDependencies({ resourcesDir: process.env.PGM_STAGE_RESOURCES, helperDirs: ["native/pgm-helper"] }).then(
+            (result) => {
+              for (const problem of result.problems) console.error(`[Deps] ${problem.file} -> ${problem.missing}`);
+              console.log(`[Deps] inspected ${result.inspected} PE file(s), ${result.problems.length} unresolved import(s)`);
+              process.exit(result.ok && result.inspected > 0 ? 0 : 1);
+            },
+            (error) => {
+              console.error(error);
+              process.exit(1);
+            },
+          );
+          '@ | Set-Content -Path $check -Encoding utf8
+          node $check
+          if ($LASTEXITCODE -ne 0) { throw "pgm-helper.exe has imports outside Windows and the packaged VC runtime" }
+          $imports = & dumpbin /NOLOGO /DEPENDENTS (Join-Path $helperDir 'pgm-helper.exe')
+          $imports | Write-Host
+          $bad = @($imports | Where-Object { $_ -match '(?i)\b(libssl|libcrypto|ssleay|libeay|datachannel|opus)[^\s]*\.dll' })
+          if ($bad.Count -gt 0) { throw "unexpected DLL imports: $($bad -join ', ')" }
+
+      # What the switch adds to the release checks, against the layout staged
+      # above (resources/native/pgm-helper with the VC runtime next to the
+      # exe): the build output verify-release-artifacts.sh then requires, and
+      # the helper check of the installer smoke tests (file present, `--probe`).
+      - name: Packaging checks of the switch (artifact list, installer smoke script)
+        env:
+          BROADIFY_PGM_WINDOWS: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sources = @(& node scripts/list-windows-pgm-helper-paths.cjs --source)
+          if ($LASTEXITCODE -ne 0 -or $sources.Count -ne 1) { throw "expected one build output in the list, got: $($sources -join ', ')" }
+          foreach ($source in $sources) {
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "verify-release-artifacts.sh would miss $source" }
+            Write-Host "required build output present: $source"
+          }
+          ./scripts/test-windows-pgm-helper.ps1 -ResourcesDir (Join-Path $env:RUNNER_TEMP 'pgm-stage\resources')
+
+      # The same script has to fail on a helper that does not answer the probe:
+      # two stand-ins in the package layout, one that exits non-zero and one
+      # that answers with a payload that is not this helper's.
+      - name: Installer smoke script rejects a broken helper
+        env:
+          BROADIFY_PGM_WINDOWS: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:RUNNER_TEMP 'pgm-standin'
+          $helperDir = Join-Path $stage 'resources\native\pgm-helper'
+          New-Item -ItemType Directory -Force -Path $helperDir | Out-Null
+          $exe = Join-Path $helperDir 'pgm-helper.exe'
+
+          function Test-BrokenHelper([string]$what, [string]$code, [string]$expected) {
+            $source = Join-Path $stage 'standin.c'
+            Set-Content -Path $source -Value $code -Encoding ascii
+            & cl /nologo "/Fe:$exe" "/Fo:$(Join-Path $stage 'standin.obj')" $source | Write-Host
+            if ($LASTEXITCODE -ne 0) { throw "cl failed with exit code $LASTEXITCODE" }
+            $failure = $null
+            try {
+              ./scripts/test-windows-pgm-helper.ps1 -ResourcesDir (Join-Path $stage 'resources')
+            } catch {
+              $failure = "$_"
+            }
+            if ($failure -notmatch $expected) {
+              throw "a helper that $what must fail the smoke script with '$expected', got: $failure"
+            }
+            Write-Host "a helper that ${what} is rejected ($failure)"
+          }
+
+          Test-BrokenHelper 'exits non-zero' 'int main(void) { return 3; }' 'probe failed with exit code 3'
+          $foreign = @'
+          #include <stdio.h>
+          int main(void) {
+            puts("{\"type\":\"probe\",\"inputs\":{\"inputs\":[],\"camera_permission\":\"authorized\"},\"encoder\":\"software\"}");
+            return 0;
+          }
+          '@
+          Test-BrokenHelper 'answers with a payload that is not its own' $foreign 'unexpected payload'
+          # The stand-ins' exit codes are part of the test, not the result of this step.
+          exit 0
+
+      # Unsigned, for the device session only (docs: runbook). Never a release artifact.
+      - name: Upload pgm-helper.exe (unsigned)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgm-helper-windows-x64-unsigned-${{ github.sha }}
+          path: apps/bridge/native/pgm-helper/pgm-helper.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  meeting:
+    name: meeting (${{ matrix.label }})
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      # The default configuration must report on its own, whatever the switch does.
+      fail-fast: false
+      matrix:
+        include:
+          - label: default, as a release builds it
+            pgm_windows: "0"
+          - label: BROADIFY_PGM_WINDOWS=1
+            pgm_windows: "1"
+    env:
+      # As dist:win sets them (package.json): both matting backends are part
+      # of every Windows release build of the helper. The OpenVINO one is
+      # switched on by the step that provides its runtime.
+      MEETING_HELPER_ENABLE_MODNET: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: 2022
+
+      - name: Assert Media Foundation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mfplat = Join-Path $env:SystemRoot 'System32\mfplat.dll'
+          if (-not (Test-Path $mfplat)) {
+            Write-Host "mfplat.dll missing - trying Install-WindowsFeature Server-Media-Foundation"
+            try {
+              Install-WindowsFeature Server-Media-Foundation | Format-List
+            } catch {
+              Write-Host "Install-WindowsFeature failed: $_"
+            }
+          }
+          if (-not (Test-Path $mfplat)) {
+            throw "Media Foundation is not available on this runner ($mfplat missing; the feature may need a restart)."
+          }
+          Write-Host "Media Foundation present: $((Get-Item $mfplat).VersionInfo.FileVersion)"
+
+      # The two dependency steps of release.yml. ONNX Runtime is vendored in
+      # git: its script only checks the tree and returns.
+      - name: ONNX Runtime DirectML (vendored)
+        run: ./scripts/prepare-windows-meeting-helper-deps.ps1
+
+      - name: Cache OpenVINO runtime
+        uses: actions/cache@v4
+        with:
+          path: apps/bridge/native/meeting-helper/deps/openvino/windows-x64
+          key: pgm-win-openvino-${{ runner.os }}-${{ hashFiles('scripts/prepare-windows-openvino-deps.ps1') }}
+
+      # The release's own script: pinned archive, SHA-256 checked. A failed
+      # download gets two more attempts. If the archive stays unreachable the
+      # helper is still compiled and tested, without the OpenVINO backend: a
+      # third-party server must not take away the Windows compile of
+      # everything else. That build is not the release configuration; the job
+      # summary says so and the last step of the job fails the leg.
+      - name: OpenVINO runtime
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtime = 'apps/bridge/native/meeting-helper/deps/openvino/windows-x64'
+          $prepared = (Test-Path "$runtime/lib/openvino.lib") -and (Test-Path "$runtime/bin/openvino.dll")
+          for ($attempt = 1; $attempt -le 3 -and -not $prepared; $attempt++) {
+            try {
+              ./scripts/prepare-windows-openvino-deps.ps1
+              $prepared = $true
+            } catch {
+              Write-Host "OpenVINO preparation failed (attempt $attempt): $_"
+              if ($attempt -lt 3) { Start-Sleep -Seconds 20 }
+            }
+          }
+          if ($prepared) {
+            "MEETING_HELPER_ENABLE_OPENVINO=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "meeting (${{ matrix.label }}): matting backends as in a release (ONNX Runtime and OpenVINO)." |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          } else {
+            # Nothing half-prepared may end up in the cache.
+            if (Test-Path $runtime) { Remove-Item -Recurse -Force $runtime }
+            Write-Host "::warning title=Built WITHOUT OpenVINO::meeting-helper is built without MEETING_HELPER_ENABLE_OPENVINO in this run; a release builds the OpenVINO backend. The last step of the job fails for that reason."
+            "MEETING_HELPER_ENABLE_OPENVINO=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            @(
+              "## meeting (${{ matrix.label }}): built WITHOUT the OpenVINO backend",
+              "",
+              "The OpenVINO archive could not be prepared in three attempts. meeting-helper is compiled and tested without ``MEETING_HELPER_ENABLE_OPENVINO``, which is **not** what a release builds.",
+              "Every step before the last one reports on the code as usual; the last step fails this leg because of the missing backend. Re-run the job once the archive is reachable again."
+            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+      # ---- only with the switch: what the WebRTC part needs (as in job full) ----
+
+      - name: Cache static OpenSSL (vcpkg)
+        if: matrix.pgm_windows == '1'
+        uses: actions/cache@v4
+        with:
+          path: apps/bridge/native/live-stream/deps/vcpkg_installed
+          key: pgm-win-openssl-${{ runner.os }}-${{ hashFiles('apps/bridge/native/live-stream/vcpkg.json', 'scripts/prepare-windows-pgm-deps.ps1') }}
+
+      - name: Prepare static OpenSSL
+        if: matrix.pgm_windows == '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot) { $vcpkgRoot = 'C:\vcpkg' }
+          ./scripts/prepare-windows-pgm-deps.ps1 -VcpkgRoot $vcpkgRoot
+
+      - name: Resolve libdatachannel tag
+        if: matrix.pgm_windows == '1'
+        id: ldc
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmake = Get-Content -Raw "$env:LIVE_STREAM_DIR/CMakeLists.txt"
+          $match = [regex]::Match($cmake, 'libdatachannel\.git\s+GIT_TAG\s+(\S+)')
+          if (-not $match.Success) { throw "libdatachannel GIT_TAG not found in live-stream/CMakeLists.txt" }
+          $tag = $match.Groups[1].Value
+          Write-Host "libdatachannel $tag"
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          # Forward slashes: the path ends up in a CMake cache variable.
+          $src = (Join-Path $env:RUNNER_TEMP 'libdatachannel-src').Replace('\', '/')
+          "LIBDATACHANNEL_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Cache libdatachannel sources
+        if: matrix.pgm_windows == '1'
+        id: ldc-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/libdatachannel-src
+          key: pgm-win-libdatachannel-${{ steps.ldc.outputs.tag }}
+
+      - name: Fetch libdatachannel sources
+        if: matrix.pgm_windows == '1' && steps.ldc-cache.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path $env:LIBDATACHANNEL_SRC) { Remove-Item -Recurse -Force $env:LIBDATACHANNEL_SRC }
+          git clone --depth 1 --branch "${{ steps.ldc.outputs.tag }}" --recurse-submodules --shallow-submodules `
+            https://github.com/paullouisageneau/libdatachannel.git $env:LIBDATACHANNEL_SRC
+          if ($LASTEXITCODE -ne 0) { throw "git clone libdatachannel failed with exit code $LASTEXITCODE" }
+
+      - name: Tool versions
+        run: |
+          cmake --version
+          Write-Host "cl: $((Get-Command cl.exe).Source)"
+          Write-Host "node: $(node --version), npm: $(npm --version)"
+
+      # ---- default: the two commands of dist:win, nothing else ----------------
+      #   cross-env MEETING_HELPER_ENABLE_MODNET=1 MEETING_HELPER_ENABLE_OPENVINO=1 npm run build:meeting-helper
+      #   npm run test:meeting-helper-native
+      # A release has no CMAKE_BUILD_PARALLEL_LEVEL in its environment: MSBuild
+      # then builds one project after the other (no /m). The level this
+      # workflow sets for its other jobs is taken away in both steps.
+
+      - name: Build meeting-helper.exe (default)
+        if: matrix.pgm_windows != '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BROADIFY_PGM_WINDOWS) { throw "BROADIFY_PGM_WINDOWS must not be set in the default configuration" }
+          Remove-Item Env:CMAKE_BUILD_PARALLEL_LEVEL -ErrorAction SilentlyContinue
+          if (Test-Path Env:CMAKE_BUILD_PARALLEL_LEVEL) { throw "CMAKE_BUILD_PARALLEL_LEVEL must not be set in the default configuration" }
+          npm run build:meeting-helper
+          if ($LASTEXITCODE -ne 0) { throw "npm run build:meeting-helper failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path (Join-Path $env:MEETING_HELPER_DIR 'meeting-helper.exe'))) { throw "meeting-helper.exe was not built" }
+
+      # Builds every target of the build directory and runs ctest: what a
+      # release runs before it packages the helper.
+      - name: Build all targets and test (default)
+        if: matrix.pgm_windows != '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item Env:CMAKE_BUILD_PARALLEL_LEVEL -ErrorAction SilentlyContinue
+          if (Test-Path Env:CMAKE_BUILD_PARALLEL_LEVEL) { throw "CMAKE_BUILD_PARALLEL_LEVEL must not be set in the default configuration" }
+          npm run test:meeting-helper-native
+          if ($LASTEXITCODE -ne 0) { throw "npm run test:meeting-helper-native failed with exit code $LASTEXITCODE" }
+
+      # Without the switch nothing of the live program may be configured or
+      # compiled into the helper: no fetched dependency, no WebRTC, no encoder,
+      # the stub as program stream.
+      - name: Assert the default build contains nothing of the live program
+        if: matrix.pgm_windows != '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:MEETING_HELPER_DIR 'build'
+          if (Test-Path (Join-Path $build '_deps')) { throw "the default build fetched a dependency ($build/_deps exists)" }
+          $cache = Get-Content -Raw (Join-Path $build 'CMakeCache.txt')
+          if ($cache -match '(?m)^LIVE_STREAM_WITH_(WEBRTC|MF)\b') { throw "the default build has a live-stream switch in its CMake cache" }
+          $objects = @(Get-ChildItem -Path $build -Recurse -File -Filter '*.obj' | ForEach-Object { $_.Name })
+          Write-Host "$($objects.Count) object files"
+          foreach ($forbidden in @('program_stream.obj', 'program_frame_converter_nv12.obj', 'encoder_info_json.obj', 'publisher.obj', 'mf_encoder.obj')) {
+            if ($objects -contains $forbidden) { throw "$forbidden was compiled without the build switch" }
+          }
+          $helperObjects = @(Get-ChildItem -Path (Join-Path $build 'meeting-helper.dir') -Recurse -File -Filter '*.obj' | ForEach-Object { $_.Name })
+          if ($helperObjects -notcontains 'program_stream_stub.obj') { throw "meeting-helper.exe was not built with the stub program stream" }
+          $imports = & dumpbin /NOLOGO /DEPENDENTS (Join-Path $env:MEETING_HELPER_DIR 'meeting-helper.exe')
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed with exit code $LASTEXITCODE" }
+          $imports | Write-Host
+
+      # ---- with the switch -----------------------------------------------------
+
+      # The same entry point with the switch: build.ps1 then passes the WebRTC
+      # arguments. libdatachannel comes from the cached sources (offline path).
+      - name: Build meeting-helper.exe (BROADIFY_PGM_WINDOWS=1)
+        if: matrix.pgm_windows == '1'
+        env:
+          BROADIFY_PGM_WINDOWS: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:MEETING_HELPER_CMAKE_EXTRA_ARGS = "-DFETCHCONTENT_SOURCE_DIR_LIBDATACHANNEL=$env:LIBDATACHANNEL_SRC -DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+          npm run build:meeting-helper
+          if ($LASTEXITCODE -ne 0) { throw "npm run build:meeting-helper failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path (Join-Path $env:MEETING_HELPER_DIR 'meeting-helper.exe'))) { throw "meeting-helper.exe was not built" }
+
+      - name: Build all targets (BROADIFY_PGM_WINDOWS=1)
+        if: matrix.pgm_windows == '1'
+        run: cmake --build "$env:MEETING_HELPER_DIR/build" --config Release
+
+      - name: Assert the helper links the program stream
+        if: matrix.pgm_windows == '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:MEETING_HELPER_DIR 'build'
+          $helperObjects = @(Get-ChildItem -Path (Join-Path $build 'meeting-helper.dir') -Recurse -File -Filter '*.obj' | ForEach-Object { $_.Name })
+          foreach ($required in @('program_stream.obj', 'program_frame_converter_nv12.obj')) {
+            if ($helperObjects -notcontains $required) { throw "$required is not part of meeting-helper.exe" }
+          }
+          if ($helperObjects -contains 'program_stream_stub.obj') { throw "meeting-helper.exe still contains the stub program stream" }
+          # ADR-0009, point 5: OpenSSL and libdatachannel are linked statically.
+          $imports = & dumpbin /NOLOGO /DEPENDENTS (Join-Path $env:MEETING_HELPER_DIR 'meeting-helper.exe')
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed with exit code $LASTEXITCODE" }
+          $imports | Write-Host
+          $bad = @($imports | Where-Object { $_ -match '(?i)\b(libssl|libcrypto|ssleay|libeay|datachannel)[^\s]*\.dll' })
+          if ($bad.Count -gt 0) { throw "unexpected DLL imports: $($bad -join ', ')" }
+
+      - name: Test (all but the loopback tests)
+        if: matrix.pgm_windows == '1'
+        run: >
+          ctest --test-dir "$env:MEETING_HELPER_DIR/build" --build-config Release
+          --output-on-failure -E "loopback_test$"
+
+      # The stream worker against an in-process viewer, plus the publisher's
+      # own loopback test. Verbose: the log shows the `encoder_unavailable`
+      # status of the real encoder path on this GPU-less runner. One retry for
+      # a lost connectivity check, a second failure is a real one.
+      - name: Test program stream and WebRTC loopback
+        if: matrix.pgm_windows == '1'
+        run: >
+          ctest --test-dir "$env:MEETING_HELPER_DIR/build" --build-config Release
+          --output-on-failure --verbose -R "loopback_test$"
+          --repeat until-pass:2 --no-tests=error
+
+      # Last, it deletes the built exe on its way: a default build must refuse
+      # this build directory instead of silently building the stream again.
+      - name: Default build refuses a directory configured with the switch
+        if: matrix.pgm_windows == '1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          unset BROADIFY_PGM_WINDOWS
+          # The runner starts bash with errexit: the build that is expected to
+          # fail must hand over its exit code instead of ending the step.
+          code=0
+          output="$(bash scripts/build-meeting-helper.sh 2>&1)" || code=$?
+          echo "$output"
+          if [[ $code -eq 0 ]]; then
+            echo "::error::the default build accepted a build directory configured with BROADIFY_PGM_WINDOWS=1"
+            exit 1
+          fi
+          # PowerShell wraps its error text: compare without whitespace.
+          if ! tr -d ' \r\n' <<<"$output" | grep -q "wasconfiguredwithBROADIFY_PGM_WINDOWS=1"; then
+            echo "::error::the default build failed for another reason"
+            exit 1
+          fi
+
+      # ---- both legs, last step ------------------------------------------------
+
+      # When the OpenVINO archive stayed unreachable, the helper was compiled and
+      # tested above without that backend, so that the run still reports on the
+      # code. That is not what a release builds, and the leg must not end green.
+      # A red leg for this reason is rare enough to mean something: every one of
+      # the 154 Windows release builds since the backend exists (2026-08-08 to
+      # 2026-11-20, release.yml and test-release.yml, one attempt, no cache) got
+      # the archive.
+      - name: Matting backends as in a release (OpenVINO was built)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:MEETING_HELPER_ENABLE_OPENVINO -ne '1') {
+            throw "meeting-helper was built WITHOUT the OpenVINO backend (its archive was unreachable): not the release configuration. Re-run the job."
+          }
+          Write-Host "MEETING_HELPER_ENABLE_MODNET=$env:MEETING_HELPER_ENABLE_MODNET MEETING_HELPER_ENABLE_OPENVINO=$env:MEETING_HELPER_ENABLE_OPENVINO, as dist:win sets them"
+
+  # The macOS release build (release.yml: `npm run dist:mac:arm64` on macos-15)
+  # builds the meeting helper and then runs its native tests; a failing test
+  # stops the release. Since the program stream fixes those tests include
+  # program_stream_idle_test and the two loopback tests: assertions on CPU time
+  # and wall-clock limits, and a WebRTC connection over local ICE, on a hosted
+  # runner they had never run on. This job runs the two commands of the release
+  # for the helper, in its order, on the same runner image.
+  #
+  # Same as the release: runner image, Node 22, the image's Xcode, CMake and
+  # Homebrew openssl@3 (the release has no install step for it either), the
+  # helper's deployment target 13.0 from its CMakeLists.txt, MODNet off (set by
+  # scripts/build-meeting-helper.sh on macOS), a serial build, libdatachannel
+  # fetched while configuring.
+  # Different from the release, and why it does not matter for these tests:
+  # - Nothing else of dist:mac:arm64 runs (CoreML model, the other helpers,
+  #   Electron packaging, artifact verification). The model needs a secret URL;
+  #   it is a packaging resource that neither the helper's build nor ctest
+  #   reads.
+  # - No `npm ci`: the two scripts call a shell script, cmake and ctest.
+  # - No signing certificate: build.sh signs the helper's app bundle ad hoc
+  #   instead of with the Developer ID. The test executables are not signed by
+  #   it in either case.
+  meeting-macos:
+    name: meeting-macos (release gate of dist:mac)
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Tool versions and the image's OpenSSL
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          cmake --version
+          echo "node $(node --version), npm $(npm --version)"
+          echo "cpus: $(sysctl -n hw.ncpu), $(sysctl -n machdep.cpu.brand_string)"
+          # live-stream links Homebrew's static openssl@3 from this path.
+          if [[ ! -f /opt/homebrew/opt/openssl@3/lib/libssl.a ]]; then
+            echo "::error::Homebrew openssl@3 is not on this runner image; dist:mac would stop at the same point"
+            exit 1
+          fi
+          brew list --versions openssl@3 || true
+
+      # No parallel build level, as in a release: make runs one job at a time.
+      - name: Build the meeting helper (release command)
+        run: |
+          set -euo pipefail
+          unset CMAKE_BUILD_PARALLEL_LEVEL
+          npm run build:meeting-helper
+
+      - name: Build all targets and test (release command)
+        run: |
+          set -euo pipefail
+          unset CMAKE_BUILD_PARALLEL_LEVEL
+          npm run test:meeting-helper-native
+
+      # Verbose: the log shows the CPU shares the tests measured and whether
+      # this runner has a hardware H.264 encoder (without one the stream must
+      # report `encoder_unavailable` and encode nothing).
+      - name: Stream tests, ten more runs in a row
+        run: |
+          set -euo pipefail
+          ctest --test-dir "$MEETING_HELPER_DIR/build" --build-config Release \
+            -R '^(program_stream_idle_test|program_stream_loopback_test|program_stream_nv12_loopback_test)$' \
+            --repeat until-fail:10 --no-tests=error --verbose

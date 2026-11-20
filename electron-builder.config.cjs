@@ -6,6 +6,9 @@ const {
 const {
   getWindowsVcRuntimeResourceEntries,
 } = require("./scripts/lib/windows-vc-runtime.cjs");
+const {
+  getWindowsPgmHelperResourceEntries,
+} = require("./scripts/lib/windows-pgm-helper.cjs");
 
 const config = JSON.parse(JSON.stringify(baseConfig));
 const updaterChannel =
@@ -197,6 +200,15 @@ if (config.win) {
     from: "apps/bridge/native/display-helper/SDL2.dll",
     to: "native/display-helper/SDL2.dll",
   });
+
+  // PGM helper (live program preview on Windows, ADR-0009). Packaged only
+  // behind the build switch BROADIFY_PGM_WINDOWS=1; without it this adds
+  // nothing. The same switch adds the helper to the signing list, its folder
+  // to the VC runtime entries below and the exe to
+  // scripts/verify-release-artifacts.sh (scripts/lib/windows-pgm-helper.cjs).
+  config.win.extraResources.push(
+    ...getWindowsPgmHelperResourceEntries(process.env),
+  );
 
   // Microsoft Visual C++ runtime (Microsoft.VC143.CRT) next to BOTH helper
   // executables: the helpers are /MD builds and Windows resolves imports from

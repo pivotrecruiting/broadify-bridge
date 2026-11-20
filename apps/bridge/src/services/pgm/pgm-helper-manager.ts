@@ -19,7 +19,7 @@ import {
   waitForHelperPing,
   type HelperSpecT,
 } from "../helpers/helper-launch.js";
-import { parsePgmEnv } from "./pgm-env.js";
+import { isPgmPlatformSupported, parsePgmEnv, pgmUnsupportedPlatformMessage } from "./pgm-env.js";
 import { PgmError } from "./pgm-errors.js";
 import { publishPgmErrorEvent, publishPgmStatusEvent } from "./pgm-event-publisher.js";
 import { PgmHelperClient, PgmHelperRequestError } from "./pgm-helper-client.js";
@@ -310,10 +310,14 @@ export class PgmHelperManager {
     return this.getStatus();
   }
 
-  /** Restores a persisted source on bridge start (helper starts lazily). */
+  /**
+   * Restores a persisted source on bridge start (helper starts lazily). A
+   * Windows bridge started without BRIDGE_PGM_WINDOWS leaves a source saved
+   * with the switch alone instead of starting the helper.
+   */
   async restoreOnBoot(): Promise<void> {
     const source = this.getSource();
-    if (!parsePgmEnv(this.deps.env).enabled || !source.input) {
+    if (!parsePgmEnv(this.deps.env).enabled || !isPgmPlatformSupported(this.deps.platform, this.deps.env) || !source.input) {
       return;
     }
     try {
@@ -353,6 +357,9 @@ export class PgmHelperManager {
   private async ensureRunning(): Promise<PgmHelperClient> {
     if (!parsePgmEnv(this.deps.env).enabled) {
       throw new PgmError("pgm_disabled", "Live program preview is disabled on this bridge.");
+    }
+    if (!isPgmPlatformSupported(this.deps.platform, this.deps.env)) {
+      throw new PgmError("pgm_unsupported_bridge", pgmUnsupportedPlatformMessage(this.deps.platform));
     }
     if (this.client && this.state === "running") {
       return this.client;
@@ -630,7 +637,7 @@ export class PgmHelperManager {
 const KNOWN_PGM_CODES = new Set([
   "pgm_disabled", "pgm_unsupported_bridge", "pgm_not_implemented", "pgm_viewer_limit", "pgm_no_signal", "pgm_sdp_invalid",
   "pgm_session_not_found", "input_not_found", "device_in_use", "camera_permission_denied", "encoder_unavailable", "helper_not_reachable",
-  "recording_failed", "snapshot_failed",
+  "recording_failed", "snapshot_failed", "recording_unsupported",
 ]);
 
 function isKnownPgmCode(code: string): code is import("./pgm-errors.js").PgmErrorCodeT {

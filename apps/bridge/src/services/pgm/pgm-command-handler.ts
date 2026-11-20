@@ -2,7 +2,7 @@ import type { LiveProgramCapabilitiesT, PgmStatusT } from "@broadify/protocol";
 import type { z } from "zod";
 
 import type { RelayCommandResult } from "../command-router.js";
-import { parsePgmEnv } from "./pgm-env.js";
+import { isPgmPlatformSupported, parsePgmEnv, pgmUnsupportedPlatformMessage } from "./pgm-env.js";
 import { PgmError, isPgmError } from "./pgm-errors.js";
 import { pgmHelperManager, type PgmHelperManager } from "./pgm-helper-manager.js";
 import {
@@ -38,19 +38,27 @@ const defaultDeps: PgmCommandDepsT = {
   defaultPath: buildDefaultProgramRecordingPath,
 };
 
+/** The program recording exists only on macOS; the Windows helper has a recorder stub (ADR-0009, point 7). */
+function isPgmRecordingPlatform(platform: NodeJS.Platform): boolean {
+  return platform === "darwin";
+}
+
 /**
  * Capability block for `get_status`. `supported` says what this bridge version
  * and platform can do (macOS UVC + audio in phase 1, meeting program via the
- * shared library); `enabled` mirrors the machine's kill switch. The web app
- * shows "update the bridge" for the first and "disabled on the bridge" for the
- * second, and gates the whole feature on the organization's entitlement.
- * `recording_profile` tells the web app that the program recording runs on its
- * own H.264 High archive encoder (absent on older bridges, which recorded the
- * preview stream).
+ * shared library; Windows only with BRIDGE_PGM_WINDOWS=1); `enabled` mirrors
+ * the machine's kill switch. The web app shows "update the bridge" for the
+ * first and "disabled on the bridge" for the second, and gates the whole
+ * feature on the organization's entitlement. `recording` says whether the
+ * program can be recorded on this bridge (false on Windows, where
+ * `pgm_recording_*` answers `recording_unsupported`). `recording_profile` tells
+ * the web app that the program recording runs on its own H.264 High archive
+ * encoder (absent on older bridges, which recorded the preview stream).
  */
 export function getLiveProgramCapabilities(deps: Pick<PgmCommandDepsT, "env" | "platform"> = defaultDeps): LiveProgramCapabilitiesT {
   const env = parsePgmEnv(deps.env);
-  const supported = deps.platform === "darwin";
+  const supported = isPgmPlatformSupported(deps.platform, deps.env);
+  const recording = supported && isPgmRecordingPlatform(deps.platform);
   return {
     supported,
     enabled: env.enabled,
@@ -58,7 +66,8 @@ export function getLiveProgramCapabilities(deps: Pick<PgmCommandDepsT, "env" | "
     max_viewers: env.maxViewers,
     decklink_input: false,
     meeting_preview: supported,
-    ...(supported ? { recording_profile: "high" as const } : {}),
+    recording,
+    ...(recording ? { recording_profile: "high" as const } : {}),
   };
 }
 
@@ -84,8 +93,15 @@ function assertSupported(deps: PgmCommandDepsT): void {
   if (!env.enabled) {
     throw new PgmError("pgm_disabled", "Live program preview is disabled on this bridge.");
   }
-  if (deps.platform !== "darwin") {
-    throw new PgmError("pgm_unsupported_bridge", "Live program preview ships for macOS bridges first; Windows follows.");
+  if (!isPgmPlatformSupported(deps.platform, deps.env)) {
+    throw new PgmError("pgm_unsupported_bridge", pgmUnsupportedPlatformMessage(deps.platform));
+  }
+}
+
+/** Answered by the bridge itself on Windows: no save panel, no helper round trip. Runs after assertSupported. */
+function assertRecordingSupported(deps: PgmCommandDepsT): void {
+  if (!isPgmRecordingPlatform(deps.platform)) {
+    throw new PgmError("recording_unsupported", "Recording the program is not supported on this platform yet.");
   }
 }
 
@@ -142,17 +158,20 @@ export async function handlePgmCommand(command: string, payload: unknown, deps: 
         // Bridge-local: the file lands on this machine, so the save panel opens here (cancel → { cancelled: true }).
         const input = parsePayload(PgmRecordingPickPathSchema, payload, command);
         assertSupported(deps);
+        assertRecordingSupported(deps);
         const filePath = await deps.pickPath(input.default_name ?? "Broadify-PGM.mp4", input.locale ?? "de");
         return { success: true, data: filePath ? { cancelled: false, file_path: filePath } : { cancelled: true } };
       }
       case "pgm_recording_start": {
         const input = parsePayload(PgmRecordingStartSchema, payload, command);
         assertSupported(deps);
+        assertRecordingSupported(deps);
         return { success: true, data: await deps.manager().recordingStart(input.file_path ?? deps.defaultPath()) };
       }
       case "pgm_recording_stop": {
         parsePayload(PgmEmptyPayloadSchema, payload, command);
         assertSupported(deps);
+        assertRecordingSupported(deps);
         return { success: true, data: await deps.manager().recordingStop() };
       }
       case "pgm_webrtc_close": {

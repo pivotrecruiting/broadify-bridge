@@ -1,6 +1,10 @@
 #include "live/program_stream.h"
 
-#include "live/program_stream_frame_copy.h"
+// Both from the PGM helper's common directory (CMake target program_stream_encoder_info): one
+// implementation for the two helpers.
+#include "encoder_info_json.h"
+#include "encoder_retry_backoff.h"
+#include "live/program_frame_converter.h"
 #include "live_stream/bitrate_ladder.h"
 #include "live_stream/monotonic_clock.h"
 #include "live_stream/publisher.h"
@@ -9,9 +13,6 @@
 #include "state/meeting_state.h"
 #include "helper_common/helper_event_log.h"
 #include "helper_common/json_utils.h"
-
-#import <CoreVideo/CoreVideo.h>
-#import <Foundation/Foundation.h>
 
 #include <atomic>
 #include <chrono>
@@ -49,12 +50,18 @@ struct ProgramStream::Impl {
   std::string profile = "auto";
   std::string lastErrorCode;
   std::string lastErrorMessage;
-  ProgramFramePool pool;
+  std::unique_ptr<ProgramFrameConverter> converter = createProgramFrameConverter();
+  // Where the converter asks for it, spaces out the set-up attempts after a failure: the target that
+  // failed waits, another one (size or frame rate) is tried at once, and a set-up that works clears
+  // the wait.
+  pgm::EncoderRetryBackoff encoderRetry;
+  // Worker only: the frame taken out of the store for a converter that must not run under the store lock.
+  PreviewFrame frameCopy;
 
   std::thread worker;
   std::atomic<bool> running{false};
   std::atomic<bool> keyframeWanted{false};
-  std::mutex mutex;              // encoder/pool/profile/error
+  std::mutex mutex;              // encoder/profile/error; the converter is the worker's (stop() touches it after the join)
   std::mutex wakeMutex;
   std::condition_variable wake;  // stop() wakes an idle worker
   bool consumerRegistered = false;
@@ -87,11 +94,17 @@ struct ProgramStream::Impl {
         wanted.bitrateKbps == target.bitrateKbps) {
       return true;
     }
+    // While an attempt waits there is no encoder and last_error names the failure: the attempt that
+    // failed tore the old encoder down, and a set-up that works clears the wait.
+    if (converter->pacesEncoderRetries() && !encoderRetry.attemptDue(wanted, live::monotonicNowNs())) {
+      return false;
+    }
     teardownEncoderLocked();
-    encoder = live::createVideoToolboxEncoder();
+    encoder = live::createHardwareEncoder();
     if (!encoder) {
       lastErrorCode = "encoder_unavailable";
       lastErrorMessage = "No hardware H.264 encoder on this machine.";
+      encoderRetry.onFailure(wanted, live::monotonicNowNs());
       return false;
     }
     // The encoder's thread gets its own reference to the publisher: it never reads `publisher`, which stop() resets.
@@ -102,17 +115,25 @@ struct ProgramStream::Impl {
       lastErrorCode = code;
       lastErrorMessage = error;
       encoder.reset();
+      // Counted from the end of the attempt: a set-up that fails slowly is not tried again at once.
+      encoderRetry.onFailure(wanted, live::monotonicNowNs());
       return false;
     }
     target = wanted;
     encoderConfigured = true;
+    encoderRetry.reset();
     lastErrorCode.clear();
     lastErrorMessage.clear();
     keyframeWanted.store(true);
+    // Says which encoder was picked, with the keys of the PGM helper's `pgm_encoder_configured`: backend and
+    // hardware, then what the encoder reports about itself (Windows: name, vendor and settings of the MFT).
+    const live::EncoderInfo info = encoder->info();
     broadify::helper::emitHelperEvent("{\"type\":\"meeting_program_stream\",\"event\":\"encoder_configured\",\"width\":" +
                                       std::to_string(wanted.width) + ",\"height\":" + std::to_string(wanted.height) +
                                       ",\"fps\":" + std::to_string(wanted.fpsNum) + ",\"bitrate_kbps\":" +
-                                      std::to_string(wanted.bitrateKbps) + ",\"profile\":\"" + jsonEscape(wanted.profileName) + "\"}");
+                                      std::to_string(wanted.bitrateKbps) + ",\"profile\":\"" + jsonEscape(wanted.profileName) +
+                                      "\",\"backend\":\"" + jsonEscape(info.backend) + "\",\"hardware\":" +
+                                      (info.hardware ? "true" : "false") + pgm::encoderDetailJsonMembers(info) + "}");
     return true;
   }
 
@@ -122,62 +143,49 @@ struct ProgramStream::Impl {
     if (sink != nullptr) {
       sink->sendVideo(unit);
     }
-    if (unit.sample != nullptr) {
-      CFRelease(unit.sample);  // no passthrough recorder here; the meeting recorder has its own writer
-      unit.sample = nullptr;
-    }
+    live::releaseEncodedSample(unit);  // no passthrough recorder here; the meeting recorder has its own writer
   }
 
-  // Pool at the size of the program frame, not of the encode target: the copy
-  // below writes frame-size rows and VideoToolbox scales to the session size.
-  // Independent of the encoder: a profile change keeps it, a frame size change
-  // recreates it even when the encode target stays the same.
-  bool ensurePoolLocked(uint32_t width, uint32_t height) {
-    if (pool.ensure(width, height)) {
+  // Converter buffers at the size of the program frame, not of the encode
+  // target: the conversion writes frame-size rows and the encoder scales to
+  // its session size. Independent of the encoder: a profile change keeps them,
+  // a frame size change rebuilds them even when the encode target stays the same.
+  bool prepareConverterLocked(uint32_t width, uint32_t height) {
+    if (converter->prepare(width, height)) {
       return true;
     }
-    teardownEncoderLocked();  // a later frame reconfigures and clears the error once the pool exists
+    teardownEncoderLocked();  // a later frame reconfigures and clears the error once the buffers exist
     lastErrorCode = "encoder_unavailable";
-    lastErrorMessage = "CVPixelBufferPool for the program stream could not be created.";
+    lastErrorMessage = converter->failure();
     return false;
   }
 
-  // Runs under the PreviewFrameStore lock: one RGBA→BGRA pass straight into the pooled buffer.
+  // One conversion pass into the converter's buffer, then the encoder. `frame` is the store's own frame
+  // (the PreviewFrameStore lock is held) or the worker's copy of it, as the converter asks for.
   void encodeFrame(const PreviewFrame &frame) {
     if (frame.width == 0 || frame.height == 0) {
       droppedFrames.fetch_add(1);
       return;
     }
     live::VideoEncoder *activeEncoder = nullptr;
-    CVPixelBufferRef pixelBuffer = nullptr;
     {
       std::lock_guard<std::mutex> lock(mutex);
-      if (!ensurePoolLocked(frame.width, frame.height) || !ensureEncoderLocked(frame.width, frame.height)) {
+      if (!prepareConverterLocked(frame.width, frame.height) || !ensureEncoderLocked(frame.width, frame.height)) {
         droppedFrames.fetch_add(1);
-        return;
-      }
-      pixelBuffer = pool.createBuffer();
-      if (pixelBuffer == nullptr) {
-        droppedFrames.fetch_add(1);  // every pooled buffer still sits in the encoder: drop, never block
         return;
       }
       activeEncoder = encoder.get();
     }
-    if (!copyRgbaFrameToPixelBuffer(frame.rgba.data(), frame.rgba.size(), frame.width, frame.height, pixelBuffer)) {
-      droppedFrames.fetch_add(1);  // buffer and frame geometry disagree: drop, never write past the buffer
-      CVPixelBufferRelease(pixelBuffer);
+    live::CapturedFrame captured;
+    if (!converter->convert(frame, captured)) {
+      droppedFrames.fetch_add(1);  // no free buffer, or buffer and frame geometry disagree: drop, never block
       return;
     }
-    live::CapturedFrame captured;
-    captured.pixelBuffer = pixelBuffer;
-    captured.width = frame.width;
-    captured.height = frame.height;
-    captured.pixelFormat = "bgra";
     captured.captureNs = live::monotonicNowNs();
     if (!activeEncoder->encode(captured, keyframeWanted.exchange(false))) {
       droppedFrames.fetch_add(1);
     }
-    CVPixelBufferRelease(pixelBuffer);  // VideoToolbox retains it for the encode
+    converter->release(captured);
   }
 
   void run() {
@@ -203,11 +211,19 @@ struct ProgramStream::Impl {
       if (!frames.waitForNewFrame(lastSequence, now + kFrameWait)) {
         continue;
       }
-      const bool visited = frames.visitLatestIfNew(lastSequence, [&](const PreviewFrame &frame) {
-        lastSequence = frame.sequence;
-        encodeFrame(frame);
-      });
-      if (!visited) {
+      bool taken = false;
+      if (converter->runsUnderStoreLock()) {
+        taken = frames.visitLatestIfNew(lastSequence, [&](const PreviewFrame &frame) {
+          lastSequence = frame.sequence;
+          encodeFrame(frame);
+        });
+      } else if (frames.copyLatestIfNew(lastSequence, frameCopy)) {
+        // The store lock was held for this copy only: conversion and encoder calls run without it.
+        lastSequence = frameCopy.sequence;
+        encodeFrame(frameCopy);
+        taken = true;
+      }
+      if (!taken) {
         // A new sequence without a frame: the store was cleared (camera stop, virtual camera stop).
         // There is nothing to take until the next publish and waitForNewFrame() would return at
         // once again, so wait here instead of spinning.
@@ -255,7 +271,8 @@ void ProgramStream::stop() {
     impl_->encoder->flush();
   }
   impl_->teardownEncoderLocked();
-  impl_->pool.reset();
+  impl_->encoderRetry.reset();
+  impl_->converter->reset();
   impl_->publisher.reset();
 }
 
@@ -295,7 +312,7 @@ std::string ProgramStream::statusJson() const {
     encoderJson = "{\"backend\":\"" + jsonEscape(info.backend) + "\",\"hardware\":" + (info.hardware ? "true" : "false") +
                   ",\"width\":" + std::to_string(impl_->target.width) + ",\"height\":" + std::to_string(impl_->target.height) +
                   ",\"fps\":" + std::to_string(impl_->target.fpsNum) + ",\"bitrate_kbps\":" + std::to_string(impl_->target.bitrateKbps) +
-                  ",\"profile\":\"" + jsonEscape(impl_->target.profileName) + "\"}";
+                  ",\"profile\":\"" + jsonEscape(impl_->target.profileName) + "\"" + pgm::encoderDetailJsonMembers(info) + "}";
   }
   std::string errorJson = "null";
   if (!impl_->lastErrorCode.empty()) {

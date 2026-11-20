@@ -22,6 +22,13 @@ const repoRoot = path.join(__dirname, "..");
 const read = (relativePath) =>
   fs.readFileSync(path.join(repoRoot, relativePath), "utf8").replace(/\r\n/g, "\n");
 
+// A build without the switch BROADIFY_PGM_WINDOWS: the two helper folders
+// below. These tests also run inside a build that has the switch set
+// (dist:win -> npm run test), so the list checks pass the environment instead
+// of reading the ambient one; what the switch adds is pinned in
+// scripts/pgm-helper-windows-release-contract.test.cjs.
+const NO_BUILD_SWITCH = Object.freeze({});
+
 // The Microsoft.VC143.CRT folder of the VS 2022 redistributable
 // (<VCToolsRedistDir>\x64\Microsoft.VC143.CRT). This is the complete,
 // redistributable CRT set; the UCRT is an OS component and is not shipped.
@@ -89,8 +96,8 @@ test("helper folders match where electron-builder packages the helper executable
 });
 
 test("resource entries are deterministic and copy the full set into every helper folder", () => {
-  const entries = getWindowsVcRuntimeResourceEntries();
-  assert.deepEqual(entries, getWindowsVcRuntimeResourceEntries());
+  const entries = getWindowsVcRuntimeResourceEntries(NO_BUILD_SWITCH);
+  assert.deepEqual(entries, getWindowsVcRuntimeResourceEntries(NO_BUILD_SWITCH));
   assert.equal(entries.length, WINDOWS_VC_RUNTIME_HELPER_DIRS.length);
   entries.forEach((entry, index) => {
     assert.deepEqual(entry, {
@@ -102,8 +109,8 @@ test("resource entries are deterministic and copy the full set into every helper
 });
 
 test("packaged paths list every DLL exactly once per helper folder", () => {
-  const packagedPaths = getWindowsVcRuntimePackagedPaths();
-  assert.deepEqual(packagedPaths, getWindowsVcRuntimePackagedPaths());
+  const packagedPaths = getWindowsVcRuntimePackagedPaths(NO_BUILD_SWITCH);
+  assert.deepEqual(packagedPaths, getWindowsVcRuntimePackagedPaths(NO_BUILD_SWITCH));
   assert.equal(
     packagedPaths.length,
     EXPECTED_DLLS.length * WINDOWS_VC_RUNTIME_HELPER_DIRS.length,

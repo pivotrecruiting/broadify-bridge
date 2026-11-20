@@ -1,10 +1,13 @@
 # Live-PGM-Vorschau (Studio)
 
-Status: Phase 0 (Gerüst). Feature-Gate `BRIDGE_PGM_PREVIEW=1`, Web-App zusätzlich Entitlement `feature_live_program`.
+Status: Phase 1 (macOS) umgesetzt und standardmäßig an; `BRIDGE_PGM_PREVIEW=0` ist der Notaus je Rechner (siehe
+„Betrieb“), die Web-App schaltet zusätzlich über das Entitlement `feature_live_program` frei. Windows ist in
+Vorbereitung: `docs/bridge/features/pgm-live-preview-windows.md` (ADR-0009).
 
 ## Ziel
 Programmbild des Mischers (UVC: ATEM Mini, RØDECaster Video, Elgato; DeckLink-Eingänge) live in broadifyStudio,
-per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Entscheidungen: ADR-0002 bis 0004.
+per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Entscheidungen: ADR-0002 bis 0006,
+für Windows ADR-0009.
 
 ## Verträge
 - Typen: `packages/protocol/src/index.ts` (`VideoSignalT`, `VideoInputDescriptorT`, `PgmStatusT`,
@@ -31,11 +34,12 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
   verbunden). Ohne diesen Abgleich sperrte ein paar Mal Neuladen alle Zuschauer aus (Befund 2026-10-24).
 - Meeting-Programm im selben Viewer (ADR-0005): Encoder, Annex B, Bitraten-Leiter und WebRTC-Publisher liegen in
   `apps/bridge/native/live-stream` (`broadify::live`), genutzt vom PGM-Helper und vom Meeting-Helper. Der Meeting-
-  Helper streamt sein zusammengesetztes Kamerabild über `ProgramStream` (`src/live/program_stream.mm`): eigener
+  Helper streamt sein zusammengesetztes Kamerabild über `ProgramStream` (`src/live/program_stream.cpp`, der
+  macOS-Teil dahinter ist `program_frame_converter_vt.mm`): eigener
   Thread am `PreviewFrameStore`, ohne Zuschauer keine Kopie und kein Encoder, mit Zuschauern ein Durchgang
   RGBA→BGRA in einen gepoolten IOSurface-`CVPixelBuffer` und asynchrone VideoToolbox-Kodierung; die Frame-Pipeline
   (virtuelle Kamera, Aufnahme) wartet nie auf den Encoder. Der Pool hat die Größe des Programmbilds, nicht die des
-  Encode-Ziels (`src/live/program_stream_frame_copy.mm`): VideoToolbox skaliert auf die Session-Größe (Profil
+  Encode-Ziels (`src/live/program_frame_converter_vt.mm`): VideoToolbox skaliert auf die Session-Größe (Profil
   `remote` → 1280×720), die Kopie ist an Breite, Höhe und Zeilenlänge des Puffers gebunden, ein nicht passendes
   Bild wird verworfen und gezählt (`dropped_frames`). Ist der Store geleert (Kamera-Stopp), wartet der Thread auf
   das nächste Bild, statt im Kreis zu laufen. Die Leiter deckelt die kurze Kante, Hochkant bleibt Hochkant
@@ -45,7 +49,8 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
   `services/meeting/meeting-program-stream.ts` mit Grenze, Nutzerbindung und Abgleich). Fähigkeit
   `get_status.capabilities.live_program.meeting_preview`. Web: das schwebende Fenster wählt die Quelle je Modus
   (Studio/Postproduction → Mischer-PGM, Meeting/Conference → Meeting-Programm) und startet die Session beim
-  Moduswechsel einmal neu. Windows: `program_stream_unavailable` bis zum Media-Foundation-Encoder (Phase 2).
+  Moduswechsel einmal neu. Windows: ohne den Build-Schalter `BROADIFY_PGM_WINDOWS=1` `program_stream_unavailable`;
+  mit ihm derselbe Worker mit NV12-Konverter (`pgm-live-preview-windows.md`, „Meeting-Programm (D8)“).
 - Quelle: `<userData>/pgm/pgm-source.json` wird beim Wählen/Entfernen geschrieben und beim Bridge-Start wieder
   gewählt (`restoreOnBoot`). Der Store entsteht erst beim ersten Zugriff, weil der Manager-Singleton vor dem
   Bridge-Kontext (userDataDir) importiert wird.
@@ -80,7 +85,7 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
   Schreiben in geschützte Zielordner einen Freigabedialog zeigt statt still mit einem Berechtigungsfehler abzubrechen.
 - Standbild: `pgm_snapshot {quality?}` liefert JPEG als Base64 (Relay-Grenze 2 MB beachtet), Download im Browser.
 - Noch offen in Phase 1: Browser-Test mit echtem ATEM/RØDECaster (Ton, TURN von außerhalb), Latenzmessung.
-- Phase 2: Windows UVC. Phase 3/4: DeckLink macOS/Windows. Phase 5: Ausbau. Phase 6: PGM-Aufzeichnung.
+- Phase 2: Windows UVC (Vorbereitung hinter Schaltern, Runbook: `pgm-live-preview-windows.md`). Phase 3/4: DeckLink macOS/Windows. Phase 5: Ausbau. Phase 6: PGM-Aufzeichnung.
 
 ## Betrieb
 - Standardmäßig an (der Helper startet erst bei Quelle oder Zuschauer); `BRIDGE_PGM_PREVIEW=0` ist der Notaus je Rechner, `BRIDGE_PGM_MAX_VIEWERS` (Standard 4, höchstens 16) begrenzt Zuschauer. Wer das Programm sehen darf, entscheidet die Web-App über `feature_live_program`; `capabilities.live_program.enabled` spiegelt den Notaus, `supported` die Bridge-Version.
@@ -95,6 +100,13 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
 `pgm.snapshot {quality}` → `{jpeg_base64,width,height,captured_at_ms}`. Ereignisse: `ready`, `pgm_status`, `pgm_signal`, `pgm_error`,
 `pgm_encoder_configured`, `pgm_recording`, `pgm_recording_signal_mismatch`, `pgm_recording_fps_changed`, `pgm_inputs_changed`,
 `pgm_viewer_state`, `pgm_audio_unavailable`, `pgm_perf`, `shutdown`.
+Nur der Windows-Helper (vorbereitet, `pgm-live-preview-windows.md`): das Signal trägt `"decode":"mjpg"`, wenn das
+Gerät MJPG liefert und vor dem Encoder dekodiert wird; `pgm.recording.start` antwortet `recording_unsupported`; dazu
+die Ereignisse `pgm_uvc_modes`, `pgm_uvc_mode_selected`, `pgm_uvc_mode_rejected`, `pgm_capture_error`,
+`pgm_audio_paired`. `pgm_encoder_configured` nennt dort außerdem den gewählten Encoder (`name`, `vendor_id`, `vendor`,
+`settings`; ebenso `pgm_status` unter `encoder`), und `--probe` listet `encoder_candidates`. Auf macOS ändert sich an
+Signal, Antworten und Ereignissen nichts, bis auf zwei Schlüssel in `pgm_encoder_configured`, die es auf beiden
+Plattformen gibt: `backend` und `hardware`.
 
 ## Build
 - `npm run build:pgm-helper` (macOS): CMake, libdatachannel v0.22.6 und libopus 1.5.2 per FetchContent (fester Tag),

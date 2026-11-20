@@ -143,6 +143,77 @@ here does not imply endorsement.
 
 ---
 
+## OpenSSL
+
+The live program preview (PGM Helper and Meeting Helper) links OpenSSL 3
+statically for the DTLS/SRTP transport of its WebRTC stream. On macOS the
+library comes from Homebrew `openssl@3`; the Windows build prepared behind
+`BROADIFY_PGM_WINDOWS=1` takes it from vcpkg
+(`apps/bridge/native/live-stream/vcpkg.json`).
+
+**Copyright:** Copyright (c) 1998-2026 The OpenSSL Project Authors.
+Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson. All rights reserved.
+
+**License:** Apache License 2.0
+
+**License Text:** https://www.apache.org/licenses/LICENSE-2.0
+
+**Source Code:** https://github.com/openssl/openssl
+
+---
+
+## libdatachannel
+
+The live program preview uses libdatachannel (statically linked, unmodified,
+release v0.22.6) as its WebRTC implementation.
+
+**Copyright:** Copyright (c) Paul-Louis Ageneau and libdatachannel contributors
+
+**License:** Mozilla Public License 2.0
+
+**License Text:** https://www.mozilla.org/en-US/MPL/2.0/
+
+**Source Code:** https://github.com/paullouisageneau/libdatachannel
+
+libdatachannel is built together with the following bundled components,
+which end up in the same binaries (media transport and data channels are
+enabled; WebSocket support and the examples are not built, so none of their
+dependencies is included):
+libjuice (Mozilla Public License 2.0, Copyright (c) Paul-Louis Ageneau,
+https://github.com/paullouisageneau/libjuice),
+usrsctp (BSD 3-Clause, Copyright (c) 2015, Randall Stewart and Michael Tuexen,
+https://github.com/sctplab/usrsctp),
+libSRTP (BSD 3-Clause, Copyright (c) 2001-2017 Cisco Systems, Inc.,
+https://github.com/cisco/libsrtp)
+and plog (MIT, Copyright (c) 2022 Sergey Podobry,
+https://github.com/SergiusTheBest/plog).
+
+---
+
+## Opus
+
+The PGM Helper links the Opus audio codec (libopus, statically linked,
+unmodified, release v1.5.2) to encode the audio track of the live program
+preview. It is part of the macOS helper; the Windows helper prepared behind
+`BROADIFY_PGM_WINDOWS=1` links the same release.
+
+**Copyright:** Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic,
+Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding,
+Erik de Castro Lopo, Mozilla, Amazon
+
+**License:** BSD 3-Clause License
+
+**License Text:** https://opus-codec.org/license/
+
+**Website:** https://opus-codec.org/
+
+**Source Code:** https://github.com/xiph/opus
+
+Opus is subject to the royalty-free patent licenses listed with its license
+text (Xiph.Org Foundation, Microsoft Corporation, Broadcom Corporation).
+
+---
+
 ## Other Dependencies
 
 All npm dependencies are listed in `package.json` and `apps/bridge/package.json`. Most dependencies use permissive licenses (MIT, Apache-2.0, BSD-2-Clause, ISC).

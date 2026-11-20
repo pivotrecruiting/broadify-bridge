@@ -27,9 +27,24 @@ struct EncodedAccessUnit {
 #endif
 };
 
+/** Releases the unit's retained platform sample, if it carries one; the receiver calls it once it is done with the unit. */
+inline void releaseEncodedSample(EncodedAccessUnit &unit) {
+#if defined(__APPLE__)
+  if (unit.sample != nullptr) {
+    CFRelease(unit.sample);
+    unit.sample = nullptr;
+  }
+#else
+  (void)unit;
+#endif
+}
+
 struct EncoderInfo {
   std::string backend;  // "videotoolbox" | "mediafoundation"
   bool hardware = false;
+  std::string name;      // encoder product name where the platform reports one (Windows: MFT friendly name)
+  std::string vendorId;  // hardware vendor id where the platform reports one (Windows: MFT_ENUM_HARDWARE_VENDOR_ID_Attribute)
+  std::string settings;  // JSON object with the encoder settings that took effect (Windows: one entry per ICodecAPI setting); empty elsewhere
 };
 
 /**
@@ -49,6 +64,13 @@ class VideoEncoder {
   virtual EncoderInfo info() const = 0;
   std::function<void(EncodedAccessUnit &&)> onAccessUnit;
 };
+
+/**
+ * The platform's hardware H.264 encoder (macOS: VideoToolbox, Windows: Media
+ * Foundation), or nullptr where none is implemented; callers report that as
+ * `encoder_unavailable`. Defined in the platform encoder source of `live_stream`.
+ */
+std::unique_ptr<VideoEncoder> createHardwareEncoder();
 
 #if defined(__APPLE__)
 std::unique_ptr<VideoEncoder> createVideoToolboxEncoder();

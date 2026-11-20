@@ -9,8 +9,9 @@ bekommt die alte den Status „abgelöst durch ADR-NNNN“.
 | [0001](0001-adr-prozess.md) | ADR-Prozess | akzeptiert |
 | [0002](0002-pgm-helper-eigener-prozess.md) | Live-PGM: eigener nativer Helper-Prozess | akzeptiert |
 | [0003](0003-framebus-v2-yuv-capture-ring.md) | FrameBus v2 als YUV-Ring für DeckLink-Eingang | akzeptiert |
-| [0004](0004-libdatachannel-fuer-pgm-webrtc.md) | libdatachannel als WebRTC-Stack des PGM-Helpers | akzeptiert |
+| [0004](0004-libdatachannel-fuer-pgm-webrtc.md) | libdatachannel als WebRTC-Stack des PGM-Helpers | akzeptiert; TLS-Backend abgelöst durch ADR-0009 |
 | [0005](0005-live-stream-bibliothek-fuer-pgm-und-meeting.md) | Gemeinsame `live_stream`-Bibliothek für PGM- und Meeting-Helper | akzeptiert |
 | [0006](0006-pgm-aufnahme-eigener-encoder.md) | PGM-Aufnahme mit eigenem H.264-High-Hardware-Encoder | akzeptiert |
 | [0007](0007-meeting-programm-im-hochformat.md) | Meeting-Programm im Hochformat (9:16) | akzeptiert |
 | [0008](0008-session-event-log-nur-auf-opt-in.md) | Session-Event-Log nur auf Opt-in | akzeptiert |
+| [0009](0009-live-pgm-windows-media-foundation.md) | Live-PGM unter Windows: Media-Foundation-Hardware-Encoder, OpenSSL statisch, WASAPI | akzeptiert (Umsetzung hinter Schaltern) |

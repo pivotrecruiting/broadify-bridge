@@ -18,7 +18,8 @@ mit sauberer Aufnahme (kein Ruckeln) und ohne den Rechner zusätzlich zu belaste
   FetchContent-Konfiguration für libdatachannel lebt dort. Der PGM-Helper macht die Typen per
   `using namespace ::broadify::live` in `broadify::pgm` sichtbar (`src/common/live_types.h`); keine Weiterleitungs-
   Header.
-- Der Meeting-Helper bekommt `ProgramStream` (`src/live/program_stream.mm`, Stub für andere Plattformen): eigener
+- Der Meeting-Helper bekommt `ProgramStream` (`src/live/program_stream.cpp` mit dem Bildkonverter der Plattform,
+  ursprünglich `program_stream.mm`; Stub für andere Plattformen): eigener
   Thread, der aus dem vorhandenen `PreviewFrameStore` zieht. Ohne Zuschauer wird nichts kopiert und nichts
   kodiert; mit Zuschauern wandert jedes neue Programmbild in einem Durchgang (RGBA→BGRA, SIMD) in einen gepoolten,
   IOSurface-gestützten `CVPixelBuffer` und asynchron in VideoToolbox. Die Frame-Pipeline (virtuelle Kamera,

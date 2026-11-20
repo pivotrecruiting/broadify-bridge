@@ -1,5 +1,7 @@
-#include "live/program_stream_frame_copy.h"
+#include "live/program_frame_converter_vt.h"
 
+#include "live/program_frame_converter.h"
+#include "preview/preview_frame_store.h"
 #include "util/pixel_swizzle.h"
 
 #import <Foundation/Foundation.h>
@@ -81,6 +83,52 @@ bool copyRgbaFrameToPixelBuffer(const uint8_t *rgba, size_t rgbaSize, uint32_t w
   }
   CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
   return fits;
+}
+
+namespace {
+
+// The macOS converter of the program stream: one RGBA→BGRA pass straight into a pooled buffer.
+class VideoToolboxProgramFrameConverter final : public ProgramFrameConverter {
+ public:
+  bool prepare(uint32_t width, uint32_t height) override { return pool_.ensure(width, height); }
+
+  std::string failure() const override { return "CVPixelBufferPool for the program stream could not be created."; }
+
+  bool convert(const PreviewFrame &frame, live::CapturedFrame &out) override {
+    CVPixelBufferRef pixelBuffer = pool_.createBuffer();
+    if (pixelBuffer == nullptr) {
+      return false;  // every pooled buffer still sits in the encoder: drop, never block
+    }
+    if (!copyRgbaFrameToPixelBuffer(frame.rgba.data(), frame.rgba.size(), frame.width, frame.height, pixelBuffer)) {
+      CVPixelBufferRelease(pixelBuffer);
+      return false;  // buffer and frame geometry disagree: drop, never write past the buffer
+    }
+    out.pixelBuffer = pixelBuffer;
+    out.width = frame.width;
+    out.height = frame.height;
+    out.pixelFormat = "bgra";
+    return true;
+  }
+
+  void release(live::CapturedFrame &frame) override {
+    CVPixelBufferRelease(frame.pixelBuffer);  // VideoToolbox retains it for the encode
+    frame.pixelBuffer = nullptr;
+  }
+
+  void reset() override { pool_.reset(); }
+
+  // As before the converter existed: straight from the store's frame, and an encoder is asked for with every frame.
+  bool runsUnderStoreLock() const override { return true; }
+  bool pacesEncoderRetries() const override { return false; }
+
+ private:
+  ProgramFramePool pool_;
+};
+
+}  // namespace
+
+std::unique_ptr<ProgramFrameConverter> createProgramFrameConverter() {
+  return std::make_unique<VideoToolboxProgramFrameConverter>();
 }
 
 }  // namespace broadify::meeting

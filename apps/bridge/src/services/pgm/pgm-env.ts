@@ -29,3 +29,34 @@ export function parsePgmEnv(env: NodeJS.ProcessEnv = process.env): PgmEnvT {
 export function isPgmPreviewEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return parsePgmEnv(env).enabled;
 }
+
+/**
+ * Run-time switch for the Windows live program (ADR-0009, point 8). Off by
+ * default: a Windows bridge then answers as before (`pgm_unsupported_bridge`,
+ * meeting program `program_stream_unavailable`) and never starts the helper,
+ * even when the build switch BROADIFY_PGM_WINDOWS=1 packaged it.
+ */
+export const PGM_WINDOWS_ENV = "BRIDGE_PGM_WINDOWS";
+
+/**
+ * Where this bridge runs the live program (Studio PGM helper and meeting
+ * program stream): macOS always, Windows only with BRIDGE_PGM_WINDOWS=1/true/on,
+ * any other platform never. The kill switch BRIDGE_PGM_PREVIEW=0 is separate.
+ */
+export function isPgmPlatformSupported(platform: NodeJS.Platform, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (platform === "darwin") {
+    return true;
+  }
+  if (platform !== "win32") {
+    return false;
+  }
+  const raw = (env[PGM_WINDOWS_ENV] ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on";
+}
+
+/** Message of the `pgm_unsupported_bridge` refusal; on Windows the run-time switch is what is missing. */
+export function pgmUnsupportedPlatformMessage(platform: NodeJS.Platform): string {
+  return platform === "win32"
+    ? "Windows preview not enabled on this bridge."
+    : "Live program preview ships for macOS bridges first; Windows follows.";
+}

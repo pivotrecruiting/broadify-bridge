@@ -6,8 +6,9 @@
 
 namespace broadify::pgm {
 
-std::string jpegBase64FromPixelBuffer(CVPixelBufferRef buffer, double quality, uint32_t &outWidth, uint32_t &outHeight) {
+std::string jpegBase64FromFrame(const CapturedFrame &frame, double quality, uint32_t &outWidth, uint32_t &outHeight) {
   @autoreleasepool {
+    CVPixelBufferRef buffer = frame.pixelBuffer;
     if (buffer == nullptr) {
       return "";
     }
