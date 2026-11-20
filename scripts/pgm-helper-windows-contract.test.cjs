@@ -159,14 +159,20 @@ test("the build wrapper runs build.ps1 only with BROADIFY_PGM_WINDOWS=1", () => 
   assert.match(ps1, /"-DLIVE_STREAM_WITH_WEBRTC=ON",/);
   assert.match(ps1, /"--target", "pgm-helper"/);
 
-  // No npm script and no release workflow turns the switch on or calls the script directly.
+  // No npm script turns the switch on or calls build.ps1 directly, and no
+  // release workflow builds the helper itself: a release reaches it only
+  // through dist:win -> npm run build:pgm-helper, i.e. through the gate above.
+  // Since the packaging unit the release workflows name the switch in one
+  // place, the guard of the step that installs the helper's dependencies.
+  // That they never set it is pinned, with the packaging lists, in
+  // scripts/pgm-helper-windows-release-contract.test.cjs.
   const packageJson = read("package.json");
   assert.ok(!packageJson.includes("BROADIFY_PGM_WINDOWS"));
   assert.ok(!packageJson.includes("pgm-helper/build.ps1"));
   for (const workflow of ["release.yml", "test-release.yml"]) {
     const text = read(`.github/workflows/${workflow}`);
-    assert.ok(!text.includes("BROADIFY_PGM_WINDOWS"), workflow);
-    assert.ok(!text.includes("pgm-helper"), workflow);
+    assert.ok(!text.includes("build-pgm-helper"), workflow);
+    assert.ok(!text.includes("build.ps1"), workflow);
   }
 });
 

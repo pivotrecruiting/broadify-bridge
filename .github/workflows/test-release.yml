@@ -319,6 +319,21 @@ jobs:
         run: |
           & .\scripts\prepare-windows-openvino-deps.ps1
 
+      # Live program preview on Windows (ADR-0009) is opt-in. This step runs
+      # only when the build switch is set for the job; this workflow does not
+      # set it, so a build from here skips the step and neither builds nor
+      # packages pgm-helper.exe. With the switch, dist:win links libdatachannel
+      # against the static OpenSSL this script installs.
+      - name: Install static OpenSSL (Windows, for pgm-helper, opt-in build only)
+        if: matrix.os == 'windows-2022' && env.BROADIFY_PGM_WINDOWS == '1'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The runner's own vcpkg checkout, as in pgm-windows-native.yml.
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot) { $vcpkgRoot = 'C:\vcpkg' }
+          & .\scripts\prepare-windows-pgm-deps.ps1 -VcpkgRoot $vcpkgRoot
+
       - name: Cache MODNet model (meeting-helper, Windows only)
         if: matrix.os == 'windows-2022'
         uses: actions/cache@v4

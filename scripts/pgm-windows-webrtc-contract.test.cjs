@@ -116,7 +116,7 @@ test("the vcpkg install tree is ignored by git", () => {
   assert.equal(out.trim(), probe);
 });
 
-test("no release script or packaging list knows the Windows deps script", () => {
+test("no npm script runs the Windows deps script, the release workflows only behind the switch", () => {
   const packageJson = JSON.parse(read("package.json"));
   for (const [name, command] of Object.entries(packageJson.scripts)) {
     assert.ok(
@@ -124,10 +124,21 @@ test("no release script or packaging list knows the Windows deps script", () => 
       `npm script ${name} must not run the opt-in deps script`,
     );
   }
+  // Since the packaging unit each release workflow has the script in one
+  // step, and that step runs only when the build switch is set for the job.
+  // That the workflows never set it is pinned in
+  // scripts/pgm-helper-windows-release-contract.test.cjs.
   for (const workflow of ["release.yml", "test-release.yml"]) {
     const source = read(`.github/workflows/${workflow}`);
-    assert.ok(!source.includes("prepare-windows-pgm-deps"), workflow);
-    assert.ok(!source.includes("BROADIFY_PGM_WINDOWS"), workflow);
+    const steps = source
+      .split(/\n(?=      - name: )/)
+      .filter((step) => step.includes("prepare-windows-pgm-deps"));
+    assert.equal(steps.length, 1, workflow);
+    assert.match(
+      steps[0],
+      /\n        if: matrix\.os == 'windows-2022' && env\.BROADIFY_PGM_WINDOWS == '1'\n/,
+      workflow,
+    );
   }
 });
 
