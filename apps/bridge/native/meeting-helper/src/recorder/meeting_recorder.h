@@ -19,6 +19,11 @@ struct RecordingStatus {
   std::string filePath;
   double elapsedSeconds = 0.0;
   uint64_t videoFrames = 0;
+  // Program frames the recorder could not encode (encoder backpressure, and
+  // on macOS frames the recorder mailbox replaced because the worker thread
+  // fell behind) and frames waiting in that mailbox right now.
+  uint64_t droppedFrames = 0;
+  uint64_t queuedFrames = 0;
   std::string lastError;
   // Microphone sample counters (RecorderAudioRebase): samples handed to the
   // writer at/after the session start vs. samples dropped because they were
@@ -34,7 +39,10 @@ struct RecordingStatus {
 // on the selected device. Video and audio are timestamped on the shared macOS
 // host clock so they stay in sync. All public methods are thread-safe:
 // start/stop are driven from the control thread, appendVideoFrame from the
-// pipeline thread.
+// pipeline thread. On macOS appendVideoFrame only copies the frame into a
+// mailbox (RecorderVideoWorker); swizzle, CFR planning and the writer append
+// run on the recorder's own thread so the program tick never waits on the
+// encoder.
 class MeetingRecorder {
  public:
   MeetingRecorder();

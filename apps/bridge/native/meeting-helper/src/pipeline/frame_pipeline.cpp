@@ -2050,6 +2050,9 @@ void runFramePipeline(const Options &options,
     const bool previewConsumerActive =
         runtime.previewClients > 0 || runtime.vcamTcpClients > 0;
     const auto programStart = std::chrono::steady_clock::now();
+    // Recorder tap wall time of this tick (both platforms): reported through
+    // keyer.get metrics (recorder_ms) and, on Windows, the budget event.
+    double stageRecorderMs = 0.0;
 #if defined(_WIN32)
     static BudgetOverrunReporter fusedBudgetOverrunReporter;
     static double fusedOverheadEmaMs = 0.0;
@@ -2070,7 +2073,6 @@ void runFramePipeline(const Options &options,
     double stagePostprocessMs = 0.0;
     double stageGraphicsMs = 0.0;
     double stageRenderMs = 0.0;
-    double stageRecorderMs = 0.0;
     double stagePreviewMs = 0.0;
     double stageVcamMs = 0.0;
     bool fusedInferenceRanThisFrame = false;
@@ -3627,16 +3629,15 @@ void runFramePipeline(const Options &options,
       // Tap the composited program frame for recording. No-op unless a
       // recording is active; runs every tick so the file keeps a steady
       // timeline (and holds the last image) even during static periods.
+      // Timed on every platform: on macOS the call is only the mailbox copy
+      // (~0.2 ms at 1080p) since the encoder runs on the recorder's own
+      // thread, so recorder_ms in keyer_budget_overrun flags a regression.
       if (!programFrame.empty()) {
-#if defined(_WIN32)
         const auto stageRecorderStart = std::chrono::steady_clock::now();
-#endif
         recorder.appendVideoFrame(programFrame.data(), options.width,
                                   options.height);
-#if defined(_WIN32)
         stageRecorderMs =
             elapsedMs(stageRecorderStart, std::chrono::steady_clock::now());
-#endif
       }
 
       shouldWriteFramebus = shouldWriteFramebusFrame(
@@ -3768,6 +3769,7 @@ void runFramePipeline(const Options &options,
             d3d11CompositorStagingReadbackDepth();
 #endif
         state.keyerMetrics.programFrameMs = programFrameMs;
+        state.keyerMetrics.recorderMs = stageRecorderMs;
         state.keyerMetrics.cameraCopyMs = cameraCopyMs;
         state.keyerMetrics.programFps = programRate.value(programEnd);
         state.keyerMetrics.programFrameIntervalMs = programFrameIntervalMs;

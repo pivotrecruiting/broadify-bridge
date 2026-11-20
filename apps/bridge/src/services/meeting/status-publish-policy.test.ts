@@ -106,6 +106,36 @@ describe("status-publish-policy", () => {
     expect(a).not.toContain("audio_samples_written");
   });
 
+  it("projection ignores the recorder backlog counters", () => {
+    // macOS recorder worker (Nov 2026): dropped_frames / queued_frames move
+    // on every poll while recording, same nature as video_frames.
+    const a = projectStableStatus(
+      makeStatus({
+        recording: {
+          active: false,
+          elapsed_seconds: 0,
+          video_frames: 0,
+          dropped_frames: 1,
+          queued_frames: 0,
+        },
+      }),
+    );
+    const b = projectStableStatus(
+      makeStatus({
+        recording: {
+          active: false,
+          elapsed_seconds: 0,
+          video_frames: 0,
+          dropped_frames: 12,
+          queued_frames: 2,
+        },
+      }),
+    );
+    expect(a).toBe(b);
+    expect(a).not.toContain("dropped_frames");
+    expect(a).not.toContain("queued_frames");
+  });
+
   it("skips an identical projection inside the metrics interval", () => {
     const first = decideStatusPublish({
       status: makeStatus(),

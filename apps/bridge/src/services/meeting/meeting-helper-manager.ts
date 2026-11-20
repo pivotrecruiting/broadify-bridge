@@ -62,6 +62,14 @@ const CAMERA_STATUS_EVENT_TYPES = new Set<string>([
   "camera_capture_error",
   "camera_open_failure",
 ]);
+// One-shot camera diagnostics (macOS capture-format selection, Nov 2026):
+// mirrored into the bridge log like meeting_recorder lines so a field log
+// shows which device format/frame rate the helper configured, but no status
+// publish - they are not state transitions.
+const CAMERA_DIAGNOSTIC_EVENT_TYPES = new Set<string>([
+  "camera_format_selected",
+  "camera_format_apply_failed",
+]);
 const SCREEN_CAPTURE_STATUS_EVENT_TYPES = new Set<string>([
   "screen_capture_started",
   "screen_capture_stopped",
@@ -1374,6 +1382,9 @@ export class MeetingHelperManager {
         logger.info(`[MeetingHelper] ${line}`);
       }
       if (parsed.type === "meeting_recorder") {
+        logger.info(`[MeetingHelper] ${line}`);
+      }
+      if (CAMERA_DIAGNOSTIC_EVENT_TYPES.has(parsed.type ?? "")) {
         logger.info(`[MeetingHelper] ${line}`);
       }
       if (parsed.type === "ready") {

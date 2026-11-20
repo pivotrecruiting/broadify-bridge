@@ -261,6 +261,8 @@ int main() {
     withAudio.active = false;
     withAudio.filePath = "C:\\rec\\a.mp4";
     withAudio.videoFrames = 630;
+    withAudio.droppedFrames = 7;
+    withAudio.queuedFrames = 1;
     withAudio.audioSamplesWritten = 12;
     withAudio.audioSamplesDroppedBeforeStart = 3;
     const std::string audioJson = recordingStatusJson(withAudio);
@@ -268,6 +270,12 @@ int main() {
         !contains(audioJson, "\"audio_samples_dropped\":3") ||
         !contains(audioJson, "\"video_frames\":630")) {
       fail("recording status did not serialize the audio counters");
+    }
+    // Recorder backlog counters (macOS worker mailbox / encoder drops) are
+    // always numbers so the webapp can render them without null checks.
+    if (!contains(audioJson, "\"dropped_frames\":7") ||
+        !contains(audioJson, "\"queued_frames\":1")) {
+      fail("recording status did not serialize the dropped/queued counters");
     }
     const std::string noAudioJson = recordingStatusJson(RecordingStatus{});
     if (!contains(noAudioJson, "\"audio_samples_written\":null") ||

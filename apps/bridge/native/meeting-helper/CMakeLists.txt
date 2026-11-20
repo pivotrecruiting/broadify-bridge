@@ -82,6 +82,7 @@ set(MEETING_HELPER_SOURCES
   ../vcam-helper/Shared/src/framebus_reader.c
   Shared/src/framebus_writer.c
   src/capture/camera_source.cpp
+  src/capture/capture_format_selection.cpp
   src/capture/liveness_watchdog.cpp
   src/capture/screen_capture_source.cpp
   src/capture/screen_capture_stub.cpp
@@ -120,6 +121,7 @@ set(MEETING_HELPER_SOURCES
   src/preview/raw_frame_stream_header.cpp
   src/preview/vcam_shm_layout.cpp
   src/preview/vcam_shm_ring_win.cpp
+  src/recorder/recorder_frame_mailbox.cpp
   src/util/sha256.cpp
   src/util/pixel_swizzle.cpp
   src/util/win_qos.cpp
@@ -143,6 +145,7 @@ if(APPLE)
     src/keyer/coreml_keyer.mm
     src/keyer/gpu_mask_refine.mm
     src/recorder/meeting_recorder.mm
+    src/recorder/recorder_video_worker.mm
     src/recorder/recorder_writer_factory.mm
     src/macos/macos_app.mm
   )
@@ -156,6 +159,9 @@ if(APPLE)
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/recorder/recorder_writer_factory.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/recorder/recorder_video_worker.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
@@ -364,6 +370,17 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(camera_media_type_rank_test
     tests/camera_media_type_rank_test.cpp
   )
+  # macOS capture-format selection (tolerant fps match, nearest fallback).
+  add_executable(capture_format_selection_test
+    tests/capture_format_selection_test.cpp
+    src/capture/capture_format_selection.cpp
+  )
+  # Latest-wins frame mailbox between the pipeline tick and the recorder
+  # worker thread (macOS recorder).
+  add_executable(recorder_frame_mailbox_test
+    tests/recorder_frame_mailbox_test.cpp
+    src/recorder/recorder_frame_mailbox.cpp
+  )
   add_executable(latest_frame_slot_test
     tests/latest_frame_slot_test.cpp
   )
@@ -555,6 +572,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     ort_session_options_policy_test
     inference_provider_test
     camera_media_type_rank_test
+    capture_format_selection_test
+    recorder_frame_mailbox_test
     camera_reopen_policy_test
     latest_frame_slot_test
     guarded_frame_slot_test
@@ -605,7 +624,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")
       target_link_libraries(${helper_test} PRIVATE "-framework Accelerate")
     endif()
-    if(NOT WIN32 AND helper_test STREQUAL "liveness_watchdog_test")
+    if(NOT WIN32 AND (helper_test STREQUAL "liveness_watchdog_test" OR
+                      helper_test STREQUAL "recorder_frame_mailbox_test"))
       target_link_libraries(${helper_test} PRIVATE pthread)
     endif()
     add_test(NAME ${helper_test} COMMAND ${helper_test})
@@ -635,6 +655,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     # microphone access, so it runs headless under ctest.
     add_executable(meeting_recorder_writer_test
       tests/meeting_recorder_writer_test.mm
+      src/recorder/recorder_frame_mailbox.cpp
+      src/recorder/recorder_video_worker.mm
       src/recorder/recorder_writer_factory.mm
     )
     set_source_files_properties(tests/meeting_recorder_writer_test.mm PROPERTIES
@@ -643,6 +665,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     target_include_directories(meeting_recorder_writer_test PRIVATE src)
     target_link_libraries(meeting_recorder_writer_test PRIVATE helper_common)
     target_link_libraries(meeting_recorder_writer_test PRIVATE
+      "-framework Accelerate"
       "-framework AVFoundation"
       "-framework CoreMedia"
       "-framework CoreVideo"

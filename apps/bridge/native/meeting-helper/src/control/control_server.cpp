@@ -253,6 +253,7 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"keyer_publish_to_program_ms\":" << metricNumber(metrics.keyerPublishToProgramMs)
          << ",\"program_frame_interval_ms\":" << metricNumber(metrics.programFrameIntervalMs)
          << ",\"program_frame_ms\":" << metricNumber(metrics.programFrameMs)
+         << ",\"recorder_ms\":" << metricNumber(metrics.recorderMs)
          << ",\"mjpeg_encode_ms\":" << metricNumber(metrics.mjpegEncodeMs)
          << ",\"vcam_publish_ms\":" << metricNumber(metrics.vcamPublishMs)
          << ",\"keyer_fps\":" << metricNumber(metrics.keyerFps)
@@ -362,6 +363,10 @@ std::string recordingStatusJson(const RecordingStatus &s) {
       << "\"file_path\":\"" << jsonEscape(s.filePath) << "\","
       << "\"elapsed_seconds\":" << s.elapsedSeconds << ","
       << "\"video_frames\":" << s.videoFrames << ","
+      // Frames the recorder could not encode / frames waiting for the macOS
+      // recorder worker (Nov 2026, additive counters).
+      << "\"dropped_frames\":" << s.droppedFrames << ","
+      << "\"queued_frames\":" << s.queuedFrames << ","
       // Additive audio diagnostics (Windows fills them, macOS/stub: null).
       << "\"audio_samples_written\":"
       << optionalCounterJson(s.audioSamplesWritten) << ","

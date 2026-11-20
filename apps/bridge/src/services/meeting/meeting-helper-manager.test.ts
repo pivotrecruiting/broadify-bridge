@@ -389,6 +389,41 @@ describe("meeting-helper-manager", () => {
       );
     });
 
+    it("mirrors the camera format selection into the bridge log without a status publish", () => {
+      // camera_format_selected (macOS, Nov 2026) is a one-shot diagnostic per
+      // camera open: it belongs in the bridge log next to meeting_recorder
+      // lines, but it is no state transition and must not force a publish.
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+      mockLogger.info.mockClear();
+      mockPublishBridgeEvent.mockClear();
+
+      const line = JSON.stringify({
+        type: "camera_format_selected",
+        camera_index: 0,
+        width: 1920,
+        height: 1080,
+        fps: 30.00003,
+        match: "tolerant",
+        applied_fps: 30.00003,
+      });
+      internals.handleStdoutLine(line, mockLogger);
+      internals.handleStdoutLine(
+        JSON.stringify({ type: "camera_format_apply_failed", reason: "exception" }),
+        mockLogger,
+      );
+
+      expect(mockLogger.info).toHaveBeenCalledWith(`[MeetingHelper] ${line}`);
+      expect(mockLogger.info).toHaveBeenCalledTimes(2);
+      expect(publishStatus).not.toHaveBeenCalled();
+      expect(mockPublishBridgeEvent).not.toHaveBeenCalled();
+    });
+
     it("forwards a camera stall as both a status publish and one error event", () => {
       const manager = new MeetingHelperManager();
       const publishStatus = jest.fn(async () => {});
