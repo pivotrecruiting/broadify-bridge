@@ -26,7 +26,10 @@ $requiredDllPaths = @(
   (Join-Path $resolvedDistPath "win-unpacked\resources\native\display-helper\SDL2.dll"),
   (Join-Path $resolvedDistPath "win-unpacked\resources\native\meeting-helper\onnxruntime.dll"),
   (Join-Path $resolvedDistPath "win-unpacked\resources\native\meeting-helper\onnxruntime_providers_shared.dll"),
-  (Join-Path $resolvedDistPath "win-unpacked\resources\native\meeting-helper\DirectML.dll")
+  (Join-Path $resolvedDistPath "win-unpacked\resources\native\meeting-helper\DirectML.dll"),
+  # FrameBus Node addon: a PE DLL loaded via process.dlopen. Smart App Control /
+  # WDAC block it when unsigned (scripts/sign-windows-native-resources.cjs).
+  (Join-Path $resolvedDistPath "win-unpacked\resources\bridge\native\framebus\build\Release\framebus.node")
 )
 
 foreach ($dllPath in $requiredDllPaths) {
