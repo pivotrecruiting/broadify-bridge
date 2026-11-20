@@ -28,8 +28,9 @@ macOS, so PPTX works out of the box.
    - A minimal tree (program/ + share/ + the fonts/filters LibreOffice needs for
      pptx->pdf) is enough; the full install also works (just larger).
 2. **Host it** on the same release mirror as the macOS runtime.
-3. **Set the CI Release-Build variables** (next to `PRESENTATION_RUNTIME_URL_ARM64` /
-   `PRESENTATION_RUNTIME_SHA256_ARM64`):
+3. **Set the repository secrets** (next to `PRESENTATION_RUNTIME_URL_ARM64` /
+   `PRESENTATION_RUNTIME_SHA256_ARM64`; `release.yml` and `test-release.yml` pass
+   them to the Windows build only):
    - `PRESENTATION_RUNTIME_URL_WIN` = https URL of the zip
    - `PRESENTATION_RUNTIME_SHA256_WIN` = lowercase hex SHA256 of the zip
 4. Cut the next RC. The Windows build then bundles LibreOffice and PPTX works
@@ -38,6 +39,13 @@ macOS, so PPTX works out of the box.
 
 Until step 3 is done, the code is inert on Windows: the build ships without the
 bundle and PPTX keeps using a system LibreOffice / `BROADIFY_SOFFICE_PATH` if present.
+
+## Not verified yet (check on the first RC that has the secrets set)
+- The download/unpack script has not run on Windows.
+- electron-builder re-signs every `*.exe` in the bundled tree with the Broadify
+  certificate; DLLs and `soffice.bin` keep The Document Foundation's signature.
+  Signing time, installer size and the release verification scripts have not been
+  exercised with the bundle present.
 
 ## Licensing
 LibreOffice is **MPL 2.0** — commercial redistribution/bundling of the unmodified

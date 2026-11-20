@@ -48,6 +48,8 @@ jobs:
       SDL2_MACOS_SHA256_X64: ${{ matrix.os == 'macos-15' && secrets.SDL2_MACOS_SHA256_X64 || '' }}
       PRESENTATION_RUNTIME_URL_ARM64: ${{ matrix.os == 'macos-15' && secrets.PRESENTATION_RUNTIME_URL_ARM64 || '' }}
       PRESENTATION_RUNTIME_SHA256_ARM64: ${{ matrix.os == 'macos-15' && secrets.PRESENTATION_RUNTIME_SHA256_ARM64 || '' }}
+      PRESENTATION_RUNTIME_URL_WIN: ${{ matrix.os == 'windows-2022' && secrets.PRESENTATION_RUNTIME_URL_WIN || '' }}
+      PRESENTATION_RUNTIME_SHA256_WIN: ${{ matrix.os == 'windows-2022' && secrets.PRESENTATION_RUNTIME_SHA256_WIN || '' }}
       BRIDGE_RELAY_JWKS_URL_RC: ${{ secrets.BRIDGE_RELAY_JWKS_URL_RC }}
       RELAY_URL_RC: ${{ secrets.RELAY_URL_RC }}
       MODNET_MODEL_URL: ${{ matrix.os == 'windows-2022' && secrets.MODNET_MODEL_URL || '' }}
