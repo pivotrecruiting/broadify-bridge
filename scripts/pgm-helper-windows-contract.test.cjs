@@ -210,7 +210,7 @@ test("the build wrapper runs build.ps1 only with BROADIFY_PGM_WINDOWS=1", () => 
   for (const workflow of ["release.yml", "test-release.yml"]) {
     const text = read(`.github/workflows/${workflow}`);
     assert.ok(!text.includes("build-pgm-helper"), workflow);
-    assert.ok(!text.includes("build.ps1"), workflow);
+    assert.doesNotMatch(text, /pgm-helper[\\/]build\.ps1/, workflow);
   }
 });
 

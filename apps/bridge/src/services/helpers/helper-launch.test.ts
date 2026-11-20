@@ -16,7 +16,7 @@ jest.mock("node:os", () => ({
   platform: () => mockOsPlatform,
 }));
 
-import { inspectHelperIdentity, launchHelper, resolveControlSocketPath, type HelperSpecT } from "./helper-launch.js";
+import { inspectHelperIdentity, launchHelper, resolveControlSocketPath, resolveHelperPath, type HelperSpecT } from "./helper-launch.js";
 
 const SPEC: HelperSpecT = {
   dirName: "pgm-helper",
@@ -58,6 +58,53 @@ describe("launchHelper", () => {
     const env = {};
     expect(launchHelper(identity, ["--run"], env)).toMatchObject({ viaLaunchServices: true });
     expect(mockSpawn).toHaveBeenCalledWith("/usr/bin/open", ["-W", "-n", appPath, "--args", "--run"], { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  });
+});
+
+/**
+ * Where a packaged bridge looks for the helper. The Windows package puts
+ * pgm-helper.exe exactly there (scripts/lib/windows-pgm-helper.cjs, behind the
+ * build switch BROADIFY_PGM_WINDOWS); the release contract test relies on this
+ * lookup instead of pinning source lines.
+ */
+describe("resolveHelperPath", () => {
+  const resourcesPathDescriptor = Object.getOwnPropertyDescriptor(process, "resourcesPath");
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousOverride = process.env[SPEC.pathEnv];
+  const restoreEnv = (name: string, value: string | undefined) => {
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  };
+
+  afterEach(() => {
+    if (resourcesPathDescriptor) {
+      Object.defineProperty(process, "resourcesPath", resourcesPathDescriptor);
+    } else {
+      delete (process as unknown as { resourcesPath?: string }).resourcesPath;
+    }
+    restoreEnv("NODE_ENV", previousNodeEnv);
+    restoreEnv(SPEC.pathEnv, previousOverride);
+  });
+
+  it("finds the packaged Windows helper under resources/native/<dir>/<binary>.exe", () => {
+    mockOsPlatform = "win32";
+    const resources = join("install-dir", "resources");
+    Object.defineProperty(process, "resourcesPath", { value: resources, configurable: true });
+    process.env.NODE_ENV = "production";
+    delete process.env[SPEC.pathEnv];
+    expect(resolveHelperPath(SPEC)).toBe(join(resources, "native", "pgm-helper", "pgm-helper.exe"));
+  });
+
+  it("lets BRIDGE_PGM_HELPER_PATH point at another helper, also in a packaged bridge", () => {
+    mockOsPlatform = "win32";
+    Object.defineProperty(process, "resourcesPath", { value: join("install-dir", "resources"), configurable: true });
+    process.env.NODE_ENV = "production";
+    const override = join("downloads", "pgm-helper.exe");
+    process.env[SPEC.pathEnv] = override;
+    expect(resolveHelperPath(SPEC)).toBe(override);
   });
 });
 

@@ -136,13 +136,66 @@ function runBlock(step) {
   return body.join("\n").trimEnd();
 }
 
+// Any spelling of the name: Windows treats environment names
+// case-insensitively, so `broadify_pgm_windows: "1"` in a workflow would set
+// the switch on the Windows runner just the same.
+const SWITCH_PATTERN = /BROADIFY_PGM_WINDOWS/i;
+
+/** The branches an opt-in build may run from in CI (docs: "Opt-in-Build für die Sitzung am Gerät", Weg C). */
+const OPT_IN_BUILD_REF = /^test-release\/pgm-windows/;
+
+/** Source text without block and line comments (TypeScript, JavaScript). */
+function stripCodeComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+}
+
 /** Non-comment lines that mention the switch other than as the step guard. */
 function switchMentionsOutsideGuard(source) {
   return source
     .split("\n")
     .filter((line) => !/^\s*#/.test(line))
     .map((line) => line.split(`env.${SWITCH} == '1'`).join(""))
-    .filter((line) => line.includes(SWITCH));
+    .filter((line) => SWITCH_PATTERN.test(line));
+}
+
+/**
+ * What is wrong with the way a release workflow carries the build switch;
+ * empty when nothing is. `env` is the environment the contract tests run in.
+ *
+ * - release.yml builds what customers install: it never carries the switch.
+ * - test-release.yml publishes nothing. The opt-in build for the device
+ *   session sets the switch there, and only like this: for the whole job
+ *   (build, dependency gate, signature check and smoke tests each read it),
+ *   in a build that runs these tests with the switch on, and - when the
+ *   tests run in GitHub Actions - on a branch test-release/pgm-windows*.
+ *   Any run without the switch, which includes every real release build,
+ *   fails on such a line, so it cannot sit on dev; and a line that strayed
+ *   onto another ref cannot produce a signed opt-in installer there.
+ */
+function switchRuleViolations({ workflow, source, env }) {
+  const mentions = switchMentionsOutsideGuard(source);
+  if (mentions.length === 0) {
+    return [];
+  }
+  if (workflow !== "test-release.yml") {
+    return [
+      `${workflow} must not set ${SWITCH}; an opt-in build goes through test-release.yml on a branch test-release/pgm-windows`,
+    ];
+  }
+  if (!pgmHelper.isWindowsPgmHelperEnabled(env)) {
+    return [
+      `test-release.yml sets ${SWITCH}: allowed only for an opt-in build on a branch test-release/pgm-windows (which runs these tests with the switch), never on dev or main`,
+    ];
+  }
+  const violations = mentions
+    .filter((line) => !/^      BROADIFY_PGM_WINDOWS: /.test(line))
+    .map((line) => `set the switch for the whole job, as ${SWITCH}, not like this: ${line.trim()}`);
+  if (env.GITHUB_ACTIONS && !OPT_IN_BUILD_REF.test(env.GITHUB_REF_NAME ?? "")) {
+    violations.push(
+      `test-release.yml sets ${SWITCH} on ${env.GITHUB_REF_NAME || "an unnamed ref"}: an opt-in build runs from a branch test-release/pgm-windows only`,
+    );
+  }
+  return violations;
 }
 
 test("the build switch is on for exactly \"1\", like the build wrapper and CMake", () => {
@@ -316,12 +369,13 @@ test("the packaged path is where the build puts the helper and where the bridge 
     /\$outputExe = Join-Path \$rootDir "pgm-helper\.exe"/,
   );
   assert.equal(pgmHelper.WINDOWS_PGM_HELPER_SOURCE_PATH, PGM_HELPER_SOURCE);
-  // The bridge resolves resources/native/<dirName>/<binaryName>.exe in a packaged app.
-  const manager = read("apps/bridge/src/services/pgm/pgm-helper-manager.ts");
-  assert.match(manager, /\n  dirName: "pgm-helper",\n  binaryName: "pgm-helper",\n/);
-  const launch = read("apps/bridge/src/services/helpers/helper-launch.ts");
-  assert.match(launch, /platform\(\) === "win32" \? `\$\{spec\.binaryName\}\.exe` : spec\.binaryName/);
-  assert.match(launch, /return join\(resourcesPath, "native", spec\.dirName, binaryName\);/);
+  // A packaged bridge resolves resources/native/<dirName>/<binaryName>.exe. The
+  // lookup itself is pinned by behaviour (helper-launch.test.ts, "finds the
+  // packaged Windows helper ..."); here only the two names the helper's spec
+  // feeds into it, which are the ones the package uses.
+  const manager = stripCodeComments(read("apps/bridge/src/services/pgm/pgm-helper-manager.ts"));
+  assert.match(manager, /\bdirName:\s*"pgm-helper"/);
+  assert.match(manager, /\bbinaryName:\s*"pgm-helper"/);
   assert.equal(pgmHelper.WINDOWS_PGM_HELPER_PACKAGED_PATH, PGM_HELPER_PACKAGED);
   assert.equal(pgmHelper.WINDOWS_PGM_HELPER_DIR, PGM_HELPER_DIR);
 });
@@ -443,7 +497,7 @@ test("the artifact check requires the helper through that list, in the Windows b
   assert.equal((script.match(/list-windows-pgm-helper-paths\.cjs/g) || []).length, 1);
   assert.ok(!script.includes("pgm-helper.exe"));
   const code = script.split("\n").filter((line) => !/^\s*#/.test(line));
-  assert.deepEqual(code.filter((line) => line.includes(SWITCH)), []);
+  assert.deepEqual(code.filter((line) => SWITCH_PATTERN.test(line)), []);
   for (const other of [
     branches[0],
     branches[1].slice(branches[1].indexOf("\nelse\n")),
@@ -610,7 +664,7 @@ test("dist:win builds the helper through the gated wrapper, before the artifact 
   // No npm script turns the switch on: dist:win only reaches the wrapper,
   // and the wrapper builds on Windows only with BROADIFY_PGM_WINDOWS=1.
   for (const [name, command] of Object.entries(packageJson.scripts)) {
-    assert.ok(!command.includes(SWITCH), `npm script ${name} must not set the build switch`);
+    assert.ok(!SWITCH_PATTERN.test(command), `npm script ${name} must not set the build switch`);
     assert.ok(!command.includes("pgm-helper/build.ps1"), `npm script ${name} must go through the wrapper`);
   }
   const wrapper = read("scripts/build-pgm-helper.sh");
@@ -648,29 +702,24 @@ test("the native build keeps the Windows program stream off without the switch",
 });
 
 test("a packaged helper stays off until the bridge's own run-time switch BRIDGE_PGM_WINDOWS", () => {
-  const env = read("apps/bridge/src/services/pgm/pgm-env.ts");
-  assert.match(env, /export const PGM_WINDOWS_ENV = "BRIDGE_PGM_WINDOWS";/);
-  assert.match(
-    env,
-    /export function isPgmPlatformSupported\(platform: NodeJS\.Platform, env: NodeJS\.ProcessEnv = process\.env\): boolean \{/,
-  );
-  assert.match(env, /const raw = \(env\[PGM_WINDOWS_ENV\] \?\? ""\)\.trim\(\)\.toLowerCase\(\);/);
+  // What the gate does is pinned by behaviour (pgm-env.test.ts,
+  // pgm-command-handler.test.ts). Here only what packaging relies on: the
+  // bridge decides by its own switch, and the command handler asks that gate.
+  const env = stripCodeComments(read("apps/bridge/src/services/pgm/pgm-env.ts"));
+  assert.match(env, /"BRIDGE_PGM_WINDOWS"/);
+  assert.match(env, /export function isPgmPlatformSupported\b/);
+  const handler = stripCodeComments(read("apps/bridge/src/services/pgm/pgm-command-handler.ts"));
+  assert.match(handler, /\bisPgmPlatformSupported\(/);
 
-  const handler = read("apps/bridge/src/services/pgm/pgm-command-handler.ts");
-  assert.match(handler, /const supported = isPgmPlatformSupported\(deps\.platform, deps\.env\);/);
-  assert.match(
-    handler,
-    /if \(!isPgmPlatformSupported\(deps\.platform, deps\.env\)\) \{\n\s+throw new PgmError\("pgm_unsupported_bridge", /,
-  );
-  // The bridge never looks at the build switch: packaging a helper enables nothing.
+  // The bridge never reads the build switch: packaging a helper enables nothing.
   for (const file of [
+    "apps/bridge/src/services/pgm/pgm-env.ts",
     "apps/bridge/src/services/pgm/pgm-command-handler.ts",
     "apps/bridge/src/services/pgm/pgm-helper-manager.ts",
     "apps/bridge/src/services/helpers/helper-launch.ts",
   ]) {
-    assert.ok(!read(file).includes(SWITCH), `${file} must not read the build switch`);
+    assert.doesNotMatch(stripCodeComments(read(file)), SWITCH_PATTERN, `${file} must not read the build switch`);
   }
-  assert.doesNotMatch(env, /env\[\s*"BROADIFY_PGM_WINDOWS"\s*\]|env\.BROADIFY_PGM_WINDOWS/);
 });
 
 test("the installer smoke tests check the helper only in a build that packaged it", () => {
@@ -687,13 +736,13 @@ test("the installer smoke tests check the helper only in a build that packaged i
   );
   assert.match(helperSmoke, /throw "Packaged PGM helper is missing: \$helperPath /);
   assert.match(helperSmoke, /\$payload\.encoder -ne "mediafoundation"/);
-  assert.ok(!helperSmoke.includes(`$env:${SWITCH}`), "the switch is read in one place, the Node module");
+  assert.doesNotMatch(helperSmoke, /\$env:BROADIFY_PGM_WINDOWS/i, "the switch is read in one place, the Node module");
 
   for (const script of ["scripts/smoke-test-windows-nsis.ps1", "scripts/smoke-test-windows-msi.ps1"]) {
     const text = read(script);
     assert.equal((text.match(/test-windows-pgm-helper\.ps1/g) || []).length, 1, script);
     assert.match(text, /-ResourcesDir \(Join-Path \$installDir "resources"\)\n/, script);
-    assert.ok(!text.includes(`$env:${SWITCH}`), script);
+    assert.doesNotMatch(text, /\$env:BROADIFY_PGM_WINDOWS/i, script);
     // The CRT next to the helper is asserted through the VC runtime list, which follows the same switch.
     assert.match(text, /list-windows-vc-runtime-paths\.cjs/, script);
   }
@@ -728,30 +777,11 @@ test("the release workflows install the helper's dependencies only behind the sw
   // Same step in both workflows.
   assert.equal(findStep(release, stepName).trimEnd(), findStep(testRelease, stepName).trimEnd());
 
-  // release.yml builds what customers install: it never carries the switch.
-  assert.deepEqual(
-    switchMentionsOutsideGuard(release),
-    [],
-    "release.yml must not set BROADIFY_PGM_WINDOWS; an opt-in build goes through test-release.yml on a test-release/* branch",
-  );
-
-  // test-release.yml publishes nothing. The opt-in build for the device
-  // session sets the switch there, for the whole job, on a throwaway
-  // test-release/* branch; that build runs these tests with the switch on.
-  // Everywhere else - any run without the switch, which includes every real
-  // release build - an assignment fails here, so it cannot sit on dev.
-  const testReleaseMentions = switchMentionsOutsideGuard(testRelease);
-  if (pgmHelper.isWindowsPgmHelperEnabled(process.env)) {
-    for (const line of testReleaseMentions) {
-      assert.match(line, /^      BROADIFY_PGM_WINDOWS: /, "set the switch for the whole job, not for single steps");
-    }
-  } else {
-    assert.deepEqual(
-      testReleaseMentions,
-      [],
-      "test-release.yml sets BROADIFY_PGM_WINDOWS: allowed only on a test-release/* branch for an opt-in build (which runs these tests with the switch), never on dev or main",
-    );
-  }
+  // Neither workflow sets the switch (rule: switchRuleViolations). This is the
+  // one place that reads the environment the tests run in: it decides whether
+  // test-release.yml may carry the switch.
+  assert.deepEqual(switchRuleViolations({ workflow: "release.yml", source: release, env: process.env }), []);
+  assert.deepEqual(switchRuleViolations({ workflow: "test-release.yml", source: testRelease, env: process.env }), []);
 
   // No other workflow sets it either, except the native CI that exists to test it.
   const workflowDir = path.join(root, ".github", "workflows");
@@ -759,8 +789,78 @@ test("the release workflows install the helper's dependencies only behind the sw
     if (["release.yml", "test-release.yml", "pgm-windows-native.yml"].includes(file)) {
       continue;
     }
-    assert.ok(!read(`.github/workflows/${file}`).includes(SWITCH), file);
+    assert.doesNotMatch(read(`.github/workflows/${file}`), SWITCH_PATTERN, file);
   }
+});
+
+test("the switch may sit in test-release.yml only for an opt-in build, and never in release.yml", () => {
+  // The rule itself, on variants of the two workflows. The variants start
+  // from the files without any line that sets the switch, so this test also
+  // holds on the opt-in branch, where test-release.yml carries one.
+  const withoutSwitchLines = (source) =>
+    source
+      .split("\n")
+      .filter((line) => switchMentionsOutsideGuard(line).length === 0)
+      .join("\n");
+  const release = withoutSwitchLines(read(".github/workflows/release.yml"));
+  const testRelease = withoutSwitchLines(read(".github/workflows/test-release.yml"));
+  const jobEnvAnchor = '      npm_config_msvs_version: "2022"\n';
+  const stepAnchor = "      - name: Build Electron App\n";
+  const insertAfter = (source, anchor, text) => {
+    assert.equal(source.split(anchor).length, 2, `anchor ${JSON.stringify(anchor)} must exist once`);
+    return source.replace(anchor, anchor + text);
+  };
+  const violations = (workflow, source, env) => switchRuleViolations({ workflow, source, env });
+  const withoutSwitch = {};
+  const local = { [SWITCH]: "1" };
+  const ci = (ref) => ({ [SWITCH]: "1", GITHUB_ACTIONS: "true", GITHUB_REF_NAME: ref });
+
+  // Without such a line: fine in every environment.
+  for (const env of [withoutSwitch, local, ci("dev"), ci("test-release/pgm-windows")]) {
+    assert.deepEqual(violations("release.yml", release, env), []);
+    assert.deepEqual(violations("test-release.yml", testRelease, env), []);
+  }
+
+  // The documented opt-in line: one line in the job environment of test-release.yml.
+  const optIn = insertAfter(testRelease, jobEnvAnchor, '      BROADIFY_PGM_WINDOWS: "1"\n');
+  assert.deepEqual(violations("test-release.yml", optIn, local), []);
+  assert.deepEqual(violations("test-release.yml", optIn, ci("test-release/pgm-windows")), []);
+  assert.deepEqual(violations("test-release.yml", optIn, ci("test-release/pgm-windows-2")), []);
+  // Red in every run without the switch: local runs, the CI rehearsal, every real release build.
+  assert.equal(violations("test-release.yml", optIn, withoutSwitch).length, 1);
+  assert.equal(violations("test-release.yml", optIn, { GITHUB_ACTIONS: "true", GITHUB_REF_NAME: "dev" }).length, 1);
+  // In CI the line builds an installer only from the opt-in branch.
+  for (const ref of ["dev", "main", "test-release", "test-release/other", "feature/test-release/pgm-windows", undefined]) {
+    assert.match(
+      violations("test-release.yml", optIn, ci(ref)).join("\n"),
+      /an opt-in build runs from a branch test-release\/pgm-windows only/,
+      `ref ${ref}`,
+    );
+  }
+
+  // For the whole job only, and under its own name only.
+  const perStep = insertAfter(testRelease, stepAnchor, '        env:\n          BROADIFY_PGM_WINDOWS: "1"\n');
+  assert.match(violations("test-release.yml", perStep, ci("test-release/pgm-windows")).join("\n"), /for the whole job/);
+  const viaGithubEnv = insertAfter(
+    testRelease,
+    stepAnchor,
+    '        run: echo "BROADIFY_PGM_WINDOWS=1" >> "$GITHUB_ENV"\n',
+  );
+  assert.match(violations("test-release.yml", viaGithubEnv, ci("test-release/pgm-windows")).join("\n"), /for the whole job/);
+  const otherSpelling = insertAfter(testRelease, jobEnvAnchor, '      broadify_pgm_windows: "1"\n');
+  assert.equal(violations("test-release.yml", otherSpelling, withoutSwitch).length, 1, "any spelling is a mention");
+  assert.match(violations("test-release.yml", otherSpelling, ci("test-release/pgm-windows")).join("\n"), /for the whole job/);
+
+  // release.yml: never, whatever the environment.
+  for (const text of ['      BROADIFY_PGM_WINDOWS: "1"\n', '      Broadify_Pgm_Windows: "1"\n']) {
+    const flagged = insertAfter(release, jobEnvAnchor, text);
+    for (const env of [withoutSwitch, local, ci("test-release/pgm-windows"), ci("v0.27.3-rc.24")]) {
+      assert.match(violations("release.yml", flagged, env).join("\n"), /release\.yml must not set/);
+    }
+  }
+  // A comment may name the switch; the guard of the one step is the only code that does.
+  const commented = insertAfter(release, jobEnvAnchor, "      # BROADIFY_PGM_WINDOWS stays unset here\n");
+  assert.deepEqual(violations("release.yml", commented, withoutSwitch), []);
 });
 
 test("the Windows CI rehearses the release gate with the release's own install steps", () => {
