@@ -115,7 +115,7 @@ test("build.ps1 passes the WebRTC arguments only with BROADIFY_PGM_WINDOWS=1", (
   assert.doesNotMatch(rest, /BROADIFY_PGM_WINDOWS|LIVE_STREAM|MEETING_HELPER_CMAKE_EXTRA_ARGS/);
 });
 
-test("no npm script and no release workflow sets the build switch", () => {
+test("no npm script sets the build switch, and release.yml never does", () => {
   const packageJson = JSON.parse(read("package.json"));
   for (const [name, command] of Object.entries(packageJson.scripts)) {
     assert.ok(
@@ -124,13 +124,14 @@ test("no npm script and no release workflow sets the build switch", () => {
     );
   }
   assert.doesNotMatch(read("scripts/build-meeting-helper.sh"), /BROADIFY_PGM_WINDOWS|LIVE_STREAM/);
-  for (const workflow of ["release.yml", "test-release.yml"]) {
-    assert.doesNotMatch(
-      read(`.github/workflows/${workflow}`),
-      /BROADIFY_PGM_WINDOWS\s*[:=]\s*["']?1/,
-      workflow,
-    );
-  }
+  // release.yml builds what customers install. test-release.yml is left to the
+  // release contract of the packaging unit: a throw-away opt-in build for a
+  // device session may set the switch there, for a whole job.
+  assert.doesNotMatch(
+    read(".github/workflows/release.yml"),
+    /BROADIFY_PGM_WINDOWS\s*[:=]\s*["']?1/,
+    "release.yml must not set the build switch",
+  );
 });
 
 test("the stream worker is portable and the NV12 converter is pure C++", () => {
