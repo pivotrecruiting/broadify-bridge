@@ -1,7 +1,6 @@
 #include "common/encoder_info_json.h"
 
 #include "helper_common/json_utils.h"
-#include "live_stream/mf_encoder_policy.h"
 
 #include <cstdio>
 
@@ -235,6 +234,20 @@ std::string encoderDetailJsonMembers(const live::EncoderInfo &info) {
     }
   }
   return out;
+}
+
+std::string encoderCandidatesJson(const std::vector<live::EncoderCandidateInfo> &candidates, live::EncoderVendor preferred) {
+  std::string out = "[";
+  for (const size_t index : live::rankEncoderCandidates(candidates, preferred)) {
+    live::EncoderInfo info;
+    info.name = candidates[index].name;
+    info.vendorId = candidates[index].vendorId;
+    const std::string members = encoderDetailJsonMembers(info);
+    out += out.size() > 1 ? ",{" : "{";
+    out += members.empty() ? std::string() : members.substr(1);  // without the leading comma
+    out += "}";
+  }
+  return out + "]";
 }
 
 }  // namespace broadify::pgm

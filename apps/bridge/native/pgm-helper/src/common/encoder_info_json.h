@@ -1,8 +1,10 @@
 #pragma once
 
+#include "live_stream/mf_encoder_policy.h"
 #include "live_stream/video_encoder.h"
 
 #include <string>
+#include <vector>
 
 namespace broadify::pgm {
 
@@ -25,5 +27,13 @@ namespace broadify::pgm {
  * in must stay one parsable line.
  */
 std::string encoderDetailJsonMembers(const live::EncoderInfo &info);
+
+/**
+ * JSON array for `encoder_candidates` in the --probe line: the enumerated
+ * hardware encoders in the order the encoder tries them (rankEncoderCandidates
+ * with the preferred vendor), each an object with "name", "vendor_id" and
+ * "vendor" under the rules above.
+ */
+std::string encoderCandidatesJson(const std::vector<live::EncoderCandidateInfo> &candidates, live::EncoderVendor preferred);
 
 }  // namespace broadify::pgm

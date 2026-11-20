@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 using namespace broadify::pgm;
 using broadify::live::EncoderInfo;
@@ -108,6 +109,21 @@ int main() {
   deep += "1";
   for (int i = 0; i < 40; ++i) deep += "}";
   if (encoderDetailJsonMembers(mediaFoundation("", "", deep)).rfind(",\"settings_text\":\"", 0) != 0) fail("deep nesting must not be embedded");
+
+  // --probe: the enumerated encoders in the order the encoder tries them, not in enumeration order.
+  using broadify::live::EncoderCandidateInfo;
+  using broadify::live::EncoderVendor;
+  const std::vector<EncoderCandidateInfo> hybrid = {
+      {"Intel\xC2\xAE Quick Sync Video H.264 Encoder MFT", "VEN_8086"}, {"Some SoC H264 Encoder", "VEN_5143"}, {"NVIDIA H.264 Encoder MFT", "VEN_10DE"}};
+  const std::string nvidia = "{\"name\":\"NVIDIA H.264 Encoder MFT\",\"vendor_id\":\"VEN_10DE\",\"vendor\":\"nvidia\"}";
+  const std::string intel = "{\"name\":\"Intel\xC2\xAE Quick Sync Video H.264 Encoder MFT\",\"vendor_id\":\"VEN_8086\",\"vendor\":\"intel\"}";
+  const std::string other = "{\"name\":\"Some SoC H264 Encoder\",\"vendor_id\":\"VEN_5143\",\"vendor\":\"unknown\"}";
+  if (encoderCandidatesJson({}, EncoderVendor::Unknown) != "[]") fail("no hardware encoder is an empty list");
+  if (encoderCandidatesJson(hybrid, EncoderVendor::Unknown) != "[" + nvidia + "," + intel + "," + other + "]") fail("candidates in try order");
+  if (encoderCandidatesJson(hybrid, EncoderVendor::Intel) != "[" + intel + "," + nvidia + "," + other + "]") fail("preferred vendor first");
+  // An encoder that names nothing still counts as a candidate.
+  if (encoderCandidatesJson({{"", ""}, {"AMDh264Encoder", ""}}, EncoderVendor::Unknown) != "[{\"name\":\"AMDh264Encoder\",\"vendor\":\"amd\"},{}]")
+    fail("anonymous candidate");
 
   std::cout << "encoder_info_json_test passed" << std::endl;
   return 0;

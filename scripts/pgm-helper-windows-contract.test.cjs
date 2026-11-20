@@ -82,6 +82,44 @@ test("the Windows sources compile to nothing elsewhere and stdout is never line-
   }
 });
 
+test("the probe lists hardware encoder MFTs by enumeration only", () => {
+  // --probe names the encoder candidates without opening anything. The doctrine
+  // of the encoder holds for the list too: hardware MFTs only, and exactly the
+  // enumeration the encoder itself runs, so the list cannot drift from it.
+  const host = stripComments(read(`${PGM_HELPER}/src/platform/platform_host_win.cpp`));
+  const enumerations = (source) => [...source.matchAll(/\bMFTEnum(Ex|2)?\s*\(([\s\S]*?)\)\s*;/g)];
+  const calls = enumerations(host);
+  assert.equal(calls.length, 1, "exactly one MFT enumeration in the Windows host");
+  assert.equal(calls[0][1], "Ex", "the enumeration must be MFTEnumEx");
+  const encoderCalls = enumerations(stripComments(read("apps/bridge/native/live-stream/src/mf_encoder.cpp")));
+  assert.equal(encoderCalls.length, 1);
+  const normalize = (text) => text.replace(/\s+/g, " ").trim();
+  assert.equal(normalize(calls[0][2]), normalize(encoderCalls[0][2]), "the probe must enumerate with the encoder's own arguments");
+  assert.match(calls[0][2], /^MFT_CATEGORY_VIDEO_ENCODER,\s*MFT_ENUM_FLAG_HARDWARE \| MFT_ENUM_FLAG_SORTANDFILTER,/);
+  assert.match(host, /MFT_REGISTER_TYPE_INFO inputType = \{MFMediaType_Video, MFVideoFormat_NV12\};/);
+  assert.match(host, /MFT_REGISTER_TYPE_INFO outputType = \{MFMediaType_Video, MFVideoFormat_H264\};/);
+  for (const forbidden of [
+    "MFT_ENUM_FLAG_SYNCMFT",
+    "MFT_ENUM_FLAG_ASYNCMFT",
+    "MFT_ENUM_FLAG_ALL",
+    "MFT_ENUM_FLAG_TRANSCODE_ONLY",
+    "ActivateObject",
+    "CoCreateInstance",
+  ]) {
+    assert.ok(!host.includes(forbidden), `${forbidden} must not appear in the Windows host`);
+  }
+
+  // Additive: `encoder` stays the plain backend name, the list is its own field and macOS has none.
+  const main = read(`${PGM_HELPER}/src/main.cpp`);
+  assert.match(main, /",\\"encoder\\":" << probeEncoderJson\(\)/);
+  assert.match(main, /\(encoderCandidates\.empty\(\) \? std::string\(\) : ",\\"encoder_candidates\\":" \+ encoderCandidates\)/);
+  assert.match(host, /std::string probeEncoderJson\(\) \{ return "\\"mediafoundation\\""; \}/);
+  assert.match(
+    read(`${PGM_HELPER}/src/platform/platform_host_mac.mm`),
+    /std::string probeEncoderCandidatesJson\(\) \{ return ""; \}/,
+  );
+});
+
 test("the pure modules of this unit stay free of platform code", () => {
   // pgm_core is compiled wherever this directory is built, with or without the switch.
   const core = cmake.match(/add_library\(pgm_core STATIC\n([\s\S]*?)\)/);
