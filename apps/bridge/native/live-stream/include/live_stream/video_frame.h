@@ -28,7 +28,10 @@ struct CapturedFrame {
    */
   FramePlane planes[3];
   uint32_t planeCount = 0;
-  /** Opaque platform sample, borrowed for the callback (Windows: IMFSample*); nullptr elsewhere. */
+  /**
+   * Opaque platform sample, borrowed for the callback (Windows: IMFSample*); nullptr elsewhere.
+   * Informational only: the encoders read `pixelBuffer` / `planes` and neither keep nor forward it.
+   */
   void *nativeHandle = nullptr;
   uint32_t width = 0;
   uint32_t height = 0;
