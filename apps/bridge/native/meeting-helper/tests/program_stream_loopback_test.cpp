@@ -307,6 +307,7 @@ struct TestEncoderState {
   bool failConfigure = false;
   int configureAttempts = 0;
   int failedAttempts = 0;
+  std::vector<std::chrono::steady_clock::time_point> attemptTimes;
   std::vector<EncodeTarget> configured;
   uint64_t frames = 0;
   uint64_t forcedKeyframes = 0;
@@ -390,6 +391,7 @@ class TestEncoder final : public VideoEncoder {
     TestEncoderState &state = encoderState();
     std::lock_guard<std::mutex> lock(state.mutex);
     ++state.configureAttempts;
+    state.attemptTimes.push_back(std::chrono::steady_clock::now());
     if (state.failConfigure) {
       ++state.failedAttempts;
       errorCode = "encoder_unavailable";
@@ -462,6 +464,19 @@ int configureAttempts() {
   TestEncoderState &state = encoderState();
   std::lock_guard<std::mutex> lock(state.mutex);
   return state.configureAttempts;
+}
+
+int failedAttempts() {
+  TestEncoderState &state = encoderState();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  return state.failedAttempts;
+}
+
+/** Milliseconds between two set-up attempts (0-based, in the order they ran). */
+long long msBetweenAttempts(size_t first, size_t second) {
+  TestEncoderState &state = encoderState();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  return std::chrono::duration_cast<std::chrono::milliseconds>(state.attemptTimes.at(second) - state.attemptTimes.at(first)).count();
 }
 
 size_t configuredEncoders() {
@@ -591,11 +606,11 @@ int main() {
     fail("unavailable status: " + status);
   }
   {
-    // One attempt, then one more per elapsed retry pause (2 s): never one per frame.
+    // One attempt, then one more per elapsed retry pause (3 s): never one per frame.
     const auto elapsedMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - joinedAt).count();
     const int attempts = configureAttempts();
-    if (attempts < 1 || attempts > 1 + static_cast<int>(elapsedMs / 2000)) {
+    if (attempts < 1 || attempts > 1 + static_cast<int>(elapsedMs / 3000)) {
       fail("the failed encoder set-up ran " + std::to_string(attempts) + " times in " + std::to_string(elapsedMs) + " ms");
     }
   }
@@ -608,8 +623,12 @@ int main() {
     std::lock_guard<std::mutex> lock(encoderState().mutex);
     encoderState().failConfigure = false;
   }
-  if (!waitFor([&] { return configuredEncoders() >= 1; }, 10000)) {
+  if (!waitFor([&] { return configuredEncoders() >= 1; }, 12000)) {
     fail("the encoder set-up was not retried after the pause");
+  }
+  // The same target is not tried again before the pause is over.
+  if (msBetweenAttempts(0, 1) < 2800) {
+    fail("the failed target was tried again after " + std::to_string(msBetweenAttempts(0, 1)) + " ms");
   }
 #endif
 
@@ -729,6 +748,30 @@ int main() {
         fail("encoder_configured event " + std::to_string(i) + ": " + events[i]);
       }
     }
+#if defined(PROGRAM_STREAM_TEST_ENCODER)
+    // A failed set-up holds back its own target only: when the program changes its size right after a
+    // failure, the new target is tried at once instead of after the retry pause.
+    {
+      std::lock_guard<std::mutex> lock(encoderState().mutex);
+      encoderState().failConfigure = true;
+    }
+    const int failedBefore = failedAttempts();
+    const size_t attemptsBefore = static_cast<size_t>(configureAttempts());
+    publisher.start(960, 540);
+    if (!waitFor([&] { return failedAttempts() == failedBefore + 1; }, 5000)) {
+      fail("no set-up attempt for the 960x540 program");
+    }
+    publisher.start(640, 360);
+    if (!waitFor([&] { return failedAttempts() == failedBefore + 2; }, 2500)) {
+      fail("a failed set-up held back the attempt for another target");
+    }
+    if (msBetweenAttempts(attemptsBefore, attemptsBefore + 1) >= 2500) {
+      fail("the attempt for another target waited for the retry pause");
+    }
+    if (!contains(stream.statusJson(), "\"encoder\":null") || !contains(stream.statusJson(), "\"code\":\"encoder_unavailable\"")) {
+      fail("status after the failed reconfiguration: " + stream.statusJson());
+    }
+#endif
     second->close();
   }
 

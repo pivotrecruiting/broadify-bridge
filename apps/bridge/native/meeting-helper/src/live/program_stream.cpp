@@ -47,7 +47,8 @@ struct ProgramStream::Impl {
   std::string lastErrorCode;
   std::string lastErrorMessage;
   std::unique_ptr<ProgramFrameConverter> converter = createProgramFrameConverter();
-  // After a failed encoder set-up: no new attempt before this time (never in the future with a zero retry interval).
+  // After a failed encoder set-up: the target that failed and the earliest time for the next attempt at it.
+  live::EncodeTarget refusedTarget;
   std::chrono::steady_clock::time_point encoderRetryAt{};
   // Worker only: the frame taken out of the store for a converter that must not run under the store lock.
   PreviewFrame frameCopy;
@@ -81,12 +82,19 @@ struct ProgramStream::Impl {
     encoderConfigured = false;
   }
 
-  // A converter with a retry interval spaces out encoder set-ups after a failure; without one every frame asks again.
-  bool encoderRetryPausedLocked() const {
-    return converter->encoderRetryInterval().count() > 0 && std::chrono::steady_clock::now() < encoderRetryAt;
+  // A converter with a retry interval spaces out the set-up attempts for a target that failed (another
+  // target, i.e. another frame size or profile, is tried at once); without one every frame asks again.
+  bool encoderRetryPausedLocked(const live::EncodeTarget &wanted) const {
+    return converter->encoderRetryInterval().count() > 0 && wanted.width == refusedTarget.width &&
+           wanted.height == refusedTarget.height && wanted.bitrateKbps == refusedTarget.bitrateKbps &&
+           std::chrono::steady_clock::now() < encoderRetryAt;
   }
 
-  void noteEncoderFailureLocked() { encoderRetryAt = std::chrono::steady_clock::now() + converter->encoderRetryInterval(); }
+  // The interval counts from the end of the attempt: a set-up that fails slowly is not tried again at once.
+  void noteEncoderFailureLocked(const live::EncodeTarget &wanted) {
+    refusedTarget = wanted;
+    encoderRetryAt = std::chrono::steady_clock::now() + converter->encoderRetryInterval();
+  }
 
   bool ensureEncoderLocked(uint32_t width, uint32_t height) {
     const live::EncodeTarget wanted =
@@ -95,7 +103,7 @@ struct ProgramStream::Impl {
         wanted.bitrateKbps == target.bitrateKbps) {
       return true;
     }
-    if (encoderRetryPausedLocked()) {
+    if (encoderRetryPausedLocked(wanted)) {
       return false;  // last_error still names the failed attempt
     }
     teardownEncoderLocked();
@@ -103,7 +111,7 @@ struct ProgramStream::Impl {
     if (!encoder) {
       lastErrorCode = "encoder_unavailable";
       lastErrorMessage = "No hardware H.264 encoder on this machine.";
-      noteEncoderFailureLocked();
+      noteEncoderFailureLocked(wanted);
       return false;
     }
     encoder->onAccessUnit = [this](live::EncodedAccessUnit &&unit) { onAccessUnit(std::move(unit)); };
@@ -113,7 +121,7 @@ struct ProgramStream::Impl {
       lastErrorCode = code;
       lastErrorMessage = error;
       encoder.reset();
-      noteEncoderFailureLocked();
+      noteEncoderFailureLocked(wanted);
       return false;
     }
     target = wanted;

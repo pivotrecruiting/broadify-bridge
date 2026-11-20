@@ -58,10 +58,11 @@ class ProgramFrameConverter {
   virtual bool runsUnderStoreLock() const = 0;
 
   /**
-   * Pause before the worker asks the platform for an encoder again after a
-   * failed set-up. Zero asks again with every frame (VideoToolbox answers at
-   * once); Media Foundation enumerates and activates driver MFTs on a new
-   * thread for every attempt.
+   * Pause before the worker asks the platform again for an encoder with a
+   * target whose set-up just failed; another target is tried at once. Zero
+   * asks again with every frame (VideoToolbox answers at once); Media
+   * Foundation enumerates and activates driver MFTs on a new thread for
+   * every attempt.
    */
   virtual std::chrono::milliseconds encoderRetryInterval() const = 0;
 };
