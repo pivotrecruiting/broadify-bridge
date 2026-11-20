@@ -824,8 +824,10 @@ jobs:
         run: |
           set -uo pipefail
           unset BROADIFY_PGM_WINDOWS
-          output="$(bash scripts/build-meeting-helper.sh 2>&1)"
-          code=$?
+          # The runner starts bash with errexit: the build that is expected to
+          # fail must hand over its exit code instead of ending the step.
+          code=0
+          output="$(bash scripts/build-meeting-helper.sh 2>&1)" || code=$?
           echo "$output"
           if [[ $code -eq 0 ]]; then
             echo "::error::the default build accepted a build directory configured with BROADIFY_PGM_WINDOWS=1"
