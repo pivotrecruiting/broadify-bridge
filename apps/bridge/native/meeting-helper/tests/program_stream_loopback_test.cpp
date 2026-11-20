@@ -39,6 +39,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -286,7 +287,8 @@ int consumerCount(MeetingState &state) {
 
 std::vector<std::string> encoderConfiguredEvents(const std::string &path) {
   std::vector<std::string> events;
-  std::ifstream file(path);
+  // The path is UTF-8, like the one the event log writes to.
+  std::ifstream file(std::filesystem::u8path(path));
   std::string line;
   while (std::getline(file, line)) {
     if (contains(line, "\"type\":\"meeting_program_stream\"") && contains(line, "\"event\":\"encoder_configured\"")) {
@@ -546,8 +548,10 @@ std::unique_ptr<VideoEncoder> createHardwareEncoder() { return std::make_unique<
 
 int main() {
   rtc::InitLogger(rtc::LogLevel::Warning);
-  const std::string eventLog =
-      (std::filesystem::temp_directory_path() / (std::string(TEST_NAME) + "-events.jsonl")).u8string();
+  // One file per run: the same test may run in another checkout at the same time.
+  const std::string eventLog = (std::filesystem::temp_directory_path() /
+                                (std::string(TEST_NAME) + "-" + std::to_string(std::random_device{}()) + "-events.jsonl"))
+                                   .u8string();
   broadify::helper::setHelperEventLogPath(eventLog);
 
   MeetingState state;
@@ -610,7 +614,9 @@ int main() {
     state.programDirty = false;
     revisionBefore = state.programRevision;
   }
+#if defined(PROGRAM_STREAM_TEST_ENCODER)
   const auto joinedAt = std::chrono::steady_clock::now();
+#endif
   std::unique_ptr<Browser> viewer = joinViewer(stream, "viewer", "remote");
   if (!waitFor([&] { return consumerCount(state) == 1; }, 2000)) {
     fail("the worker did not register as a preview consumer for its viewer");
