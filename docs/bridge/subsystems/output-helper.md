@@ -64,6 +64,19 @@ Bei Spawn-, Exit- oder Timeout-Fehlern
 enthaelt die configure()-Fehlermeldung die letzten stderr-Zeilen und, falls ein
 Helper sie vorher gesendet hat, den `fatal.code`.
 
+stderr wird zeilenweise gepuffert: ein Rest ohne Zeilenende wartet auf den
+naechsten Chunk und wird beim Exit bzw. Ende der Pipe geloggt, damit Zeilen
+nicht mitten im Text auf zwei Log-Eintraege verteilt werden. Der Log-Level pro
+Zeile kommt aus `stderrLineLevel` (DeckLink:
+`classifyDeckLinkHelperStderrLine` in `decklink-helper-stderr.ts`):
+`Playback stats:` und `Buffered video frame count:` → debug, als
+`(tolerated)` markierte Zeilen → info, Zeilen mit Fehlervokabular
+(`failed`, `error`, `not found`, `invalid`, `not supported`, `mismatch`,
+`stale`, ...) → warn, alles andere → info. Harte Fehler meldet der Helper
+zusaetzlich als `fatal`-Event auf stdout; nur dieser Pfad landet auf error.
+Ohne `stderrLineLevel` gilt weiterhin der feste `stderrLogLevel`
+(Display-Helper: warn).
+
 Nach `ready` werden unerwartete Exits als Adapter-Lifecycle an den
 `GraphicsManager` weitergereicht. Ein angeforderter `stop()` unterdrueckt dieses
 Recovery-Signal. Helper duerfen additiv `playback_started`, `fatal` und
