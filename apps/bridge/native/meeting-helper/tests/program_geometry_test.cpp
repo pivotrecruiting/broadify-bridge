@@ -1,10 +1,12 @@
 // Pins the compositor geometry that changed for portrait programs: on a 16:9
-// canvas the keyed-presenter scale and the camera PiP inset must be exactly
-// the former width-relative values; on a 9:16 canvas the presenter is scaled
-// uniformly (cover) and the inset is sized against the short edge.
+// canvas with a 16:9 camera the keyed-presenter scale and the camera PiP
+// inset must be exactly the former width-relative values; the presenter is
+// always scaled uniformly by the canvas height (never squeezed, never cropped
+// vertically) and the inset is sized against the short edge on a 9:16 canvas.
 #include "compose/program_geometry.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -22,7 +24,7 @@ namespace {
 
 using broadify::meeting::cameraPipInsetGeometry;
 using broadify::meeting::CameraPipInsetGeometry;
-using broadify::meeting::keyedPresenterCoverScale;
+using broadify::meeting::keyedPresenterHeightFitScale;
 
 // The geometry drawCameraPipInset used before the portrait change.
 struct LegacyPipInset {
@@ -69,38 +71,84 @@ void expectPipParity(uint32_t width, uint32_t height, uint32_t pipWidth,
   CHECK(current.y == legacy.y);
 }
 
+struct PresenterCase {
+  uint32_t canvasWidth, canvasHeight, sourceWidth, sourceHeight;
+};
+
+// The per-axis factors drawKeyedPresenterLayer / the GPU plan used before the
+// portrait change (independent stretch on X and Y).
+double legacyKx(const PresenterCase &entry) {
+  return static_cast<double>(entry.canvasWidth) /
+         static_cast<double>(entry.sourceWidth);
+}
+
+double legacyKy(const PresenterCase &entry) {
+  return static_cast<double>(entry.canvasHeight) /
+         static_cast<double>(entry.sourceHeight);
+}
+
+bool nearlyEqual(double left, double right) {
+  return std::abs(left - right) <= 1e-9;
+}
+
 void testKeyedPresenterScale() {
   // Matching aspect: exactly the former per-axis factors (kx == ky).
-  const struct {
-    uint32_t canvasWidth, canvasHeight, sourceWidth, sourceHeight;
-  } sameAspect[] = {
+  const PresenterCase sameAspect[] = {
       {1920, 1080, 1920, 1080}, {1920, 1080, 1280, 720},
       {1920, 1080, 3840, 2160}, {1920, 1080, 960, 540},
       {1280, 720, 1920, 1080},  {1280, 720, 1280, 720},
   };
   for (const auto &entry : sameAspect) {
-    const double legacyKx = static_cast<double>(entry.canvasWidth) /
-                            static_cast<double>(entry.sourceWidth);
-    const double legacyKy = static_cast<double>(entry.canvasHeight) /
-                            static_cast<double>(entry.sourceHeight);
-    const double scale = keyedPresenterCoverScale(
-        entry.canvasWidth, entry.canvasHeight, entry.sourceWidth,
-        entry.sourceHeight);
-    CHECK(scale == legacyKx);
-    CHECK(scale == legacyKy);
+    const double scale =
+        keyedPresenterHeightFitScale(entry.canvasHeight, entry.sourceHeight);
+    CHECK(scale == legacyKx(entry));
+    CHECK(scale == legacyKy(entry));
   }
 
-  // Portrait canvas with a landscape camera: uniform cover, i.e. the camera
-  // height fills the canvas height and the sides are cropped (no squeeze).
-  const double portrait = keyedPresenterCoverScale(1080, 1920, 1920, 1080);
-  CHECK(portrait == 1920.0 / 1080.0);
-  CHECK(portrait * 1080.0 >= 1920.0);
-  CHECK(portrait * 1920.0 >= 1080.0);
-  // 4:3 camera on a 16:9 canvas: covers the width instead of stretching.
-  CHECK(keyedPresenterCoverScale(1920, 1080, 640, 480) == 3.0);
+  // Camera at least as wide as the canvas aspect - every landscape camera on
+  // the 9:16 canvas, an ultrawide camera on the 16:9 canvas: the height fit
+  // is the uniform cover factor max(kx, ky). The camera height fills the
+  // canvas height and the sides are cropped (no squeeze).
+  const PresenterCase widerThanCanvas[] = {
+      {1080, 1920, 1920, 1080}, {1080, 1920, 1280, 720},
+      {1080, 1920, 3840, 2160}, {1080, 1920, 640, 480},
+      {1080, 1920, 1280, 960},  {1920, 1080, 2560, 1080},
+  };
+  for (const auto &entry : widerThanCanvas) {
+    const double scale =
+        keyedPresenterHeightFitScale(entry.canvasHeight, entry.sourceHeight);
+    CHECK(scale == std::max(legacyKx(entry), legacyKy(entry)));
+    CHECK(nearlyEqual(scale * entry.sourceHeight, entry.canvasHeight));
+    CHECK(scale * entry.sourceWidth >= entry.canvasWidth);
+  }
+  CHECK(keyedPresenterHeightFitScale(1920, 1080) == 1920.0 / 1080.0);
+
+  // Camera narrower than the canvas (4:3 on 16:9): complete and undistorted,
+  // with the background left and right of the 1440x1080 camera picture. The
+  // cover factor max(kx, ky) (3.0 / 1.5) would scale the camera to 1440 rows
+  // and cut the head off the bottom-anchored presenter.
+  const struct {
+    PresenterCase geometry;
+    double expectedScale;
+  } narrowerThanCanvas[] = {
+      {{1920, 1080, 640, 480}, 2.25},
+      {{1920, 1080, 1280, 960}, 1.125},
+  };
+  for (const auto &entry : narrowerThanCanvas) {
+    const PresenterCase &geometry = entry.geometry;
+    const double scale = keyedPresenterHeightFitScale(geometry.canvasHeight,
+                                                      geometry.sourceHeight);
+    CHECK(scale == entry.expectedScale);
+    CHECK(scale == legacyKy(geometry));
+    CHECK(scale < legacyKx(geometry));
+    CHECK(scale * geometry.sourceHeight == 1080.0);
+    CHECK(scale * geometry.sourceWidth == 1440.0);
+    CHECK((geometry.canvasWidth - scale * geometry.sourceWidth) / 2.0 == 240.0);
+  }
+
   // Degenerate input never divides by zero.
-  CHECK(keyedPresenterCoverScale(1920, 1080, 0, 0) == 1.0);
-  CHECK(keyedPresenterCoverScale(0, 0, 1920, 1080) == 1.0);
+  CHECK(keyedPresenterHeightFitScale(1080, 0) == 1.0);
+  CHECK(keyedPresenterHeightFitScale(0, 1080) == 1.0);
 }
 
 void testCameraPipInset() {

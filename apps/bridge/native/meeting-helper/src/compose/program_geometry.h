@@ -6,24 +6,20 @@
 namespace broadify::meeting {
 
 // Source-pixel -> canvas-pixel factor of the keyed presenter layer, before the
-// speaker-layout scale. Uniform "cover": the larger of the two axis ratios, so
-// a landscape camera on a portrait canvas (1920x1080 on 1080x1920) keeps its
-// proportions instead of being squeezed. When camera and canvas share an
-// aspect ratio both ratios are equal and the result is the former per-axis
-// factor.
-inline double keyedPresenterCoverScale(uint32_t canvasWidth,
-                                       uint32_t canvasHeight,
-                                       uint32_t sourceWidth,
-                                       uint32_t sourceHeight) {
-  if (canvasWidth == 0u || canvasHeight == 0u || sourceWidth == 0u ||
-      sourceHeight == 0u) {
+// speaker-layout scale. Uniform "height fit": the camera height fills the
+// canvas height and the same factor applies to both axes, so the presenter is
+// never squeezed and - being anchored at the bottom - never loses the head.
+// - Camera and canvas share an aspect ratio: the former per-axis factor.
+// - Camera wider than the canvas (1920x1080 on 1080x1920): the sides are
+//   cropped around the speaker position.
+// - Camera narrower than the canvas (640x480 on 1920x1080): the background
+//   stays visible left and right of the camera picture.
+inline double keyedPresenterHeightFitScale(uint32_t canvasHeight,
+                                           uint32_t sourceHeight) {
+  if (canvasHeight == 0u || sourceHeight == 0u) {
     return 1.0;
   }
-  const double scaleX =
-      static_cast<double>(canvasWidth) / static_cast<double>(sourceWidth);
-  const double scaleY =
-      static_cast<double>(canvasHeight) / static_cast<double>(sourceHeight);
-  return std::max(scaleX, scaleY);
+  return static_cast<double>(canvasHeight) / static_cast<double>(sourceHeight);
 }
 
 // Placement of the conference camera picture-in-picture inset (bottom-right

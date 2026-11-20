@@ -1042,11 +1042,13 @@ void drawKeyedPresenterLayer(std::vector<uint8_t> &frame,
 
   const double sourceCenterX = static_cast<double>(cameraFrame->width) * 0.5;
   const double sourceCenterY = static_cast<double>(cameraFrame->height) * 0.5;
-  // Uniform cover scale: the presenter keeps its proportions when camera and
-  // canvas aspect differ (landscape camera on a portrait canvas). With equal
-  // aspects both axes had this same factor before.
-  const double sourceToCanvas = keyedPresenterCoverScale(
-      width, height, cameraFrame->width, cameraFrame->height);
+  // Uniform height-fit scale: the presenter keeps its proportions and its full
+  // height when camera and canvas aspect differ. A wider camera (landscape on
+  // a portrait canvas) is cropped left/right, a narrower one (4:3 on 16:9)
+  // leaves the background beside it. With equal aspects both axes had this
+  // same factor before.
+  const double sourceToCanvas =
+      keyedPresenterHeightFitScale(height, cameraFrame->height);
   const double sourceToCanvasX = sourceToCanvas;
   const double sourceToCanvasY = sourceToCanvas;
 
@@ -1383,12 +1385,13 @@ bool tryRenderProgramFrameGpu(const Options &options,
         }
         const double sourceCenterX = static_cast<double>(cameraFrame->width) * 0.5;
         const double sourceCenterY = static_cast<double>(cameraFrame->height) * 0.5;
-        // Uniform cover scale (see keyedPresenterCoverScale): identical to
-        // the former per-axis factors when camera and canvas aspect match.
-        const double kx = keyedPresenterCoverScale(plan.width, plan.height,
-                                                   cameraFrame->width,
-                                                   cameraFrame->height) *
-                          scale;
+        // Uniform height-fit scale (see keyedPresenterHeightFitScale):
+        // identical to the former per-axis factors when camera and canvas
+        // aspect match. Outside the scaled camera rectangle the shader's
+        // source-bounds check leaves the background untouched.
+        const double kx =
+            keyedPresenterHeightFitScale(plan.height, cameraFrame->height) *
+            scale;
         const double ky = kx;
         const double targetCenterX = static_cast<double>(plan.width) * 0.5 + offsetX;
         const double targetBottomY = static_cast<double>(plan.height) - 0.5;

@@ -36,9 +36,15 @@ helper renders a real 1080x1920 program:
 
 - **Capture stays landscape.** Camera modes and screen-capture bounds are
   requested with `captureRequestSize()` (`common/options.h`), i.e. 1920x1080
-  for a 1080x1920 canvas. The compositor cover-fits the camera; the keyed
-  presenter is scaled uniformly (`compose/program_geometry.h`) instead of
-  per axis, so it is never squeezed.
+  for a 1080x1920 canvas. The compositor cover-fits the un-keyed camera.
+- **The keyed presenter is scaled uniformly by the canvas height**
+  (`keyedPresenterHeightFitScale` in `compose/program_geometry.h`) instead of
+  per axis: it is never squeezed and, anchored at the bottom, never cropped
+  vertically. A camera wider than the canvas (any landscape camera on 9:16,
+  factor 1.78 for 1920x1080) is cropped left and right around the speaker
+  position; a camera narrower than the canvas (4:3 on 16:9, 640x480 becomes
+  1440x1080) leaves the background visible beside it. With a 16:9 camera on a
+  16:9 canvas nothing changes.
 - **Canvas-sized sinks** follow the canvas unchanged: FrameBus, MJPEG preview,
   WebRTC program stream and the recorder (the file is 1080x1920).
 - **The virtual camera is a 16:9-only sink.** The helper pillarboxes the
