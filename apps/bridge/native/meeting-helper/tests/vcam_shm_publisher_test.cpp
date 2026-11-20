@@ -1,6 +1,7 @@
 #include "preview/vcam_shm_layout.h"
 #include "preview/vcam_shm_publisher.h"
 #include "preview/vcam_shm_ring_win.h"
+#include "util/frame_fit.h"
 #include "util/pixel_swizzle.h"
 
 #ifndef NOMINMAX
@@ -258,6 +259,75 @@ void testSubmitBufferKeepsProgramFrameAndPublishesContent() {
   publisher.stop();
 }
 
+// A portrait program frame (1080x1920) is pillarboxed into the 16:9 ring on
+// the publisher thread: the ring is created at 1920x1080 and receives the
+// program between opaque black bars. Without the fit publishRgbaAsBgra would
+// reject the frame (geometry mismatch) and the virtual camera would freeze.
+void testPortraitFrameIsPillarboxedIntoLandscapeRing() {
+  const std::wstring controlName =
+      L"Local\\BroadifyVcamPublisherPortraitCtest-" +
+      std::to_wstring(GetCurrentProcessId());
+  constexpr uint32_t kProgramWidth = 1080;
+  constexpr uint32_t kProgramHeight = 1920;
+  const FrameGeometry ringGeometry =
+      vcamOutputGeometry(kProgramWidth, kProgramHeight);
+  CHECK(ringGeometry.width == 1920u);
+  CHECK(ringGeometry.height == 1080u);
+  VcamShmRingWin ring;
+  CHECK(ring.createWithControlName(ringGeometry.width, ringGeometry.height, 30,
+                                   35u, controlName, false)
+            .ok);
+  VcamShmPublisher publisher;
+  publisher.start(&ring);
+
+  // Solid RGBA (200, 40, 90, 255): expected in the ring as BGRA (90, 40, 200).
+  std::vector<uint8_t> programFrame(static_cast<size_t>(kProgramWidth) *
+                                    kProgramHeight * 4u);
+  for (size_t offset = 0; offset < programFrame.size(); offset += 4u) {
+    programFrame[offset + 0u] = 200u;
+    programFrame[offset + 1u] = 40u;
+    programFrame[offset + 2u] = 90u;
+    programFrame[offset + 3u] = 255u;
+  }
+  CHECK(publisher.submitRgba(kProgramWidth, kProgramHeight, programFrame, 0u));
+
+  const size_t expectedBytes =
+      static_cast<size_t>(ringGeometry.width) * ringGeometry.height * 4u;
+  const FitRect rect = containRect(kProgramWidth, kProgramHeight,
+                                   ringGeometry.width, ringGeometry.height);
+  CHECK(rect.x == 656u && rect.width == 608u && rect.height == 1080u);
+  CopiedFrame copied;
+  bool received = false;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (tryCopyNewestFromControl(controlName, copied) &&
+        copied.data.size() == expectedBytes) {
+      received = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(received);
+  CHECK(copied.width == ringGeometry.width);
+  CHECK(copied.height == ringGeometry.height);
+  for (uint32_t y = 0; y < ringGeometry.height; y += 119u) {
+    for (uint32_t x = 0; x < ringGeometry.width; ++x) {
+      const uint8_t *pixel =
+          copied.data.data() +
+          (static_cast<size_t>(y) * ringGeometry.width + x) * 4u;
+      if (x >= rect.x && x < rect.x + rect.width) {
+        CHECK(pixel[0] == 90u && pixel[1] == 40u && pixel[2] == 200u &&
+              pixel[3] == 255u);
+      } else {
+        CHECK(pixel[0] == 0u && pixel[1] == 0u && pixel[2] == 0u &&
+              pixel[3] == 255u);
+      }
+    }
+  }
+  publisher.stop();
+}
+
 }  // namespace
 
 int main() {
@@ -266,6 +336,7 @@ int main() {
   testLatestWinsDropsPendingFrame();
   testSubmitIsBoundedWhileRingPublishIsLocked();
   testSubmitBufferKeepsProgramFrameAndPublishesContent();
+  testPortraitFrameIsPillarboxedIntoLandscapeRing();
   std::cout << "vcam_shm_publisher_test passed\n";
   return 0;
 }

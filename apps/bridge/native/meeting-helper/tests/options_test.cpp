@@ -57,6 +57,32 @@ int main() {
   CHECK(defaults.previewPort == 9123u);
   CHECK(defaults.parentPid == -1);
 
+  // Capture backends are always asked for a landscape size: a landscape
+  // canvas passes through unchanged, a portrait canvas is transposed.
+  {
+    using broadify::meeting::CaptureRequestSize;
+    using broadify::meeting::captureRequestSize;
+    const CaptureRequestSize landscape = captureRequestSize(defaults);
+    CHECK(landscape.width == 1920u);
+    CHECK(landscape.height == 1080u);
+    const CaptureRequestSize small = captureRequestSize(options);
+    CHECK(small.width == 1280u);
+    CHECK(small.height == 720u);
+    const Options portrait = parseOptions(std::vector<std::string>{
+        "meeting-helper", "--width", "1080", "--height", "1920"});
+    CHECK(portrait.width == 1080u);
+    CHECK(portrait.height == 1920u);
+    const CaptureRequestSize transposed = captureRequestSize(portrait);
+    CHECK(transposed.width == 1920u);
+    CHECK(transposed.height == 1080u);
+    Options square;
+    square.width = 1080u;
+    square.height = 1080u;
+    const CaptureRequestSize squareSize = captureRequestSize(square);
+    CHECK(squareSize.width == 1080u);
+    CHECK(squareSize.height == 1080u);
+  }
+
   // The argv wrapper decodes to the same vector shape (args[0] = program).
   // On Windows this reads the real command line of the test process, so only
   // the shape is asserted there; elsewhere the bytes must be identical.

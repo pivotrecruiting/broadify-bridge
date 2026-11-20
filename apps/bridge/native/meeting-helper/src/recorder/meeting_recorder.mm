@@ -2,19 +2,18 @@
 
 #if defined(__APPLE__)
 #include "recorder/recorder_encode_policy.h"
+#include "recorder/recorder_video_worker.h"
 #include "recorder/recorder_writer_factory.h"
-#include "util/helper_event_log.h"
-#include "util/json_utils.h"
 #endif
 
 #include <chrono>
 #include <cstdlib>
+#include <memory>
 #include <mutex>
 
 #if defined(__APPLE__)
 #include <sys/statvfs.h>
 
-#import <Accelerate/Accelerate.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
@@ -33,27 +32,6 @@ constexpr uint64_t kMinFreeDiskBytes = 500ull * 1024ull * 1024ull;
 double secondsSince(std::chrono::steady_clock::time_point start) {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
       .count();
-}
-
-// One JSON line per recorder incident, so a writer death is pinpointed the
-// moment it happens instead of surfacing minutes later as an opaque status
-// string at stop. Goes through the helper event log (stdout + sidecar file -
-// stdout alone is invisible on macOS, where the bridge launches via `open`).
-void logRecorderEvent(const char *event, const std::string &detail) {
-  emitHelperEvent("{\"type\":\"meeting_recorder\",\"event\":\"" +
-                  std::string(event) + "\",\"detail\":\"" + jsonEscape(detail) +
-                  "\"}");
-}
-
-// Full NSError description (domain, code, userInfo with any underlying error)
-// for the log; localizedDescription alone collapses to phrases like "The
-// operation could not be completed".
-std::string describeError(NSError *error, const char *fallback) {
-  if (error == nil) {
-    return fallback;
-  }
-  const char *description = [[error description] UTF8String];
-  return description != nullptr ? description : fallback;
 }
 
 // Blocks briefly to resolve microphone authorization. Returns true only when
@@ -116,14 +94,18 @@ struct MeetingRecorder::Impl {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t fps = 30;
+  // Counters of the last (or current) recording; while a worker is alive
+  // status() reads the live values from it, these hold the final values
+  // after stop so recording.status keeps reporting them.
   uint64_t videoFrames = 0;
-  uint64_t duplicatedFrames = 0;
   uint64_t droppedFrames = 0;
-  bool cfrEnabled = true;
-  bool cfrDropLogged = false;
-  bool cfrDiscontinuityLogged = false;
-  RecorderFrameClock frameClock{30};
+  uint64_t queuedFrames = 0;
   std::chrono::steady_clock::time_point startedAt;
+
+  // Encodes the program frames on its own thread; appendVideoFrame only
+  // copies into its mailbox. Shared so the pipeline thread can offer a
+  // frame without holding the recorder mutex during the copy.
+  std::shared_ptr<RecorderVideoWorker> videoWorker;
 
   AVAssetWriter *writer = nil;
   AVAssetWriterInput *videoInput = nil;
@@ -147,9 +129,7 @@ struct MeetingRecorder::Impl {
     audioQueue = nil;
     sessionStart = kCMTimeInvalid;
     partPath.clear();
-    cfrEnabled = true;
-    cfrDropLogged = false;
-    cfrDiscontinuityLogged = false;
+    videoWorker.reset();
   }
 };
 
@@ -330,6 +310,21 @@ bool MeetingRecorder::start(const std::string &filePath,
     [audioOutput setSampleBufferDelegate:delegate queue:audioQueue];
     [micSession startRunning];
 
+    // Video encode worker: swizzle + CFR planning + writer append run on its
+    // thread, fed by appendVideoFrame through a latest-wins mailbox.
+    const char *cfrEnv = getenv("BROADIFY_MEETING_RECORDER_CFR");
+    RecorderVideoWorker::Config workerConfig;
+    workerConfig.writer = writer;
+    workerConfig.videoInput = videoInput;
+    workerConfig.videoAdaptor = adaptor;
+    workerConfig.sessionStart = sessionStart;
+    workerConfig.width = width;
+    workerConfig.height = height;
+    workerConfig.fps = safeFps;
+    workerConfig.cfrEnabled = !(cfrEnv != nullptr && std::string(cfrEnv) == "0");
+    auto videoWorker = std::make_shared<RecorderVideoWorker>(workerConfig);
+    videoWorker->start();
+
     // Publish the finished pipeline under a short lock (K-04).
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->writer = writer;
@@ -347,13 +342,9 @@ bool MeetingRecorder::start(const std::string &filePath,
     impl_->height = height;
     impl_->fps = safeFps;
     impl_->videoFrames = 0;
-    impl_->duplicatedFrames = 0;
     impl_->droppedFrames = 0;
-    const char *cfrEnv = getenv("BROADIFY_MEETING_RECORDER_CFR");
-    impl_->cfrEnabled = !(cfrEnv != nullptr && std::string(cfrEnv) == "0");
-    impl_->cfrDropLogged = false;
-    impl_->cfrDiscontinuityLogged = false;
-    impl_->frameClock = RecorderFrameClock(safeFps);
+    impl_->queuedFrames = 0;
+    impl_->videoWorker = videoWorker;
     impl_->startedAt = std::chrono::steady_clock::now();
     impl_->lastError.clear();
     impl_->starting = false;
@@ -364,138 +355,48 @@ bool MeetingRecorder::start(const std::string &filePath,
 
 void MeetingRecorder::appendVideoFrame(const uint8_t *rgba, uint32_t width,
                                        uint32_t height) {
-  std::lock_guard<std::mutex> lock(impl_->mutex);
-  if (!impl_->active || rgba == nullptr) {
+  // Pipeline thread. Only the bookkeeping runs under the recorder mutex; the
+  // frame copy into the worker's mailbox (~0.2 ms at 1080p) runs without it
+  // so the microphone callback is never blocked behind a frame copy.
+  std::shared_ptr<RecorderVideoWorker> worker;
+  CMTime sessionStart = kCMTimeInvalid;
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (!impl_->active || rgba == nullptr) {
+      return;
+    }
+    if (width != impl_->width || height != impl_->height) {
+      return;  // geometry changed mid-recording; skip until it matches
+    }
+    worker = impl_->videoWorker;
+    sessionStart = impl_->sessionStart;
+  }
+  if (worker == nullptr || !CMTIME_IS_VALID(sessionStart)) {
     return;
   }
-  if (width != impl_->width || height != impl_->height) {
-    return;  // geometry changed mid-recording; skip until it matches
-  }
-  if (impl_->videoInput == nil || !CMTIME_IS_VALID(impl_->sessionStart)) {
-    return;
-  }
-  CVPixelBufferPoolRef pool = impl_->videoAdaptor.pixelBufferPool;
-  if (pool == nullptr) {
-    return;
-  }
+  // Capture time relative to the writer session, taken NOW on the tick
+  // thread: the worker plans the CFR grid from this value, so a slow encoder
+  // shifts nothing on the recorded timeline.
   const CMTime now = CMClockGetTime(CMClockGetHostTimeClock());
-  const CMTime elapsed = CMTimeSubtract(now, impl_->sessionStart);
-  const double elapsedSeconds = CMTimeGetSeconds(elapsed);
+  const double elapsedSeconds =
+      CMTimeGetSeconds(CMTimeSubtract(now, sessionStart));
   const uint64_t elapsedNs =
       elapsedSeconds > 0.0
           ? static_cast<uint64_t>(elapsedSeconds * 1000000000.0)
           : 0ull;
-  @autoreleasepool {
-    CVPixelBufferRef pixelBuffer = nullptr;
-    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool,
-                                           &pixelBuffer) != kCVReturnSuccess ||
-        pixelBuffer == nullptr) {
-      return;
-    }
-    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-    uint8_t *dst =
-        static_cast<uint8_t *>(CVPixelBufferGetBaseAddress(pixelBuffer));
-    const size_t dstStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
-    // RGBA8 -> BGRA8 (swap R and B) honouring the pixel buffer's row padding.
-    vImage_Buffer src{const_cast<uint8_t *>(rgba), height, width,
-                      static_cast<size_t>(width) * 4u};
-    vImage_Buffer out{dst, height, width, dstStride};
-    const uint8_t permuteMap[4] = {2, 1, 0, 3};
-    vImagePermuteChannels_ARGB8888(&src, &out, permuteMap, kvImageNoFlags);
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-    CVBufferSetAttachment(
-        pixelBuffer, kCVImageBufferColorPrimariesKey,
-        kCVImageBufferColorPrimaries_ITU_R_709_2,
-        kCVAttachmentMode_ShouldPropagate);
-    CVBufferSetAttachment(
-        pixelBuffer, kCVImageBufferTransferFunctionKey,
-        kCVImageBufferTransferFunction_ITU_R_709_2,
-        kCVAttachmentMode_ShouldPropagate);
-    CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey,
-                          kCVImageBufferYCbCrMatrix_ITU_R_709_2,
-                          kCVAttachmentMode_ShouldPropagate);
-
-    const auto handleWriterFailure = [&] {
-      if (impl_->writer.status == AVAssetWriterStatusFailed &&
-          impl_->lastError.empty()) {
-        // REC-02: a failed writer (disk full, I/O error) used to be silently
-        // ignored - the recording looked healthy while writing nothing.
-        // Surface it once via recording.status (which streams to the webapp).
-        impl_->lastError = impl_->writer.error != nil
-                               ? ([[impl_->writer.error localizedDescription]
-                                      UTF8String]
-                                      ?: "writer_failed")
-                               : "writer_failed";
-        logRecorderEvent(
-            "writer_failed",
-            describeError(impl_->writer.error, "writer_failed") +
-                " after " + std::to_string(impl_->videoFrames) + " frames");
-      }
-    };
-
-    if (!impl_->cfrEnabled) {
-      if (!impl_->videoInput.isReadyForMoreMediaData) {
-        ++impl_->droppedFrames;
-        CVPixelBufferRelease(pixelBuffer);
-        return;
-      }
-      if ([impl_->videoAdaptor appendPixelBuffer:pixelBuffer
-                            withPresentationTime:now]) {
-        ++impl_->videoFrames;
-      } else {
-        handleWriterFailure();
-      }
-      CVPixelBufferRelease(pixelBuffer);
-      return;
-    }
-
-    const RecorderFrameClock::Plan plan = impl_->frameClock.plan(elapsedNs);
-    if (plan.discontinuity && !impl_->cfrDiscontinuityLogged) {
-      logRecorderEvent("cfr_discontinuity",
-                       "jumped to frame " + std::to_string(plan.firstIndex));
-      impl_->cfrDiscontinuityLogged = true;
-    }
-    uint32_t written = 0;
-    for (uint32_t i = 0; i < plan.count; ++i) {
-      if (!impl_->videoInput.isReadyForMoreMediaData) {
-        impl_->droppedFrames += plan.count - i;
-        if (!impl_->cfrDropLogged) {
-          logRecorderEvent("cfr_drop",
-                           "encoder busy at frame " +
-                               std::to_string(plan.firstIndex + i));
-          impl_->cfrDropLogged = true;
-        }
-        break;
-      }
-      const CMTime presentationTime =
-          CMTimeAdd(impl_->sessionStart,
-                    CMTimeMake(static_cast<int64_t>(plan.firstIndex + i),
-                               static_cast<int32_t>(impl_->fps)));
-      if ([impl_->videoAdaptor appendPixelBuffer:pixelBuffer
-                            withPresentationTime:presentationTime]) {
-        ++written;
-      } else {
-        handleWriterFailure();
-        break;
-      }
-    }
-    impl_->frameClock.commit(written);
-    impl_->videoFrames += written;
-    if (written > 1) {
-      impl_->duplicatedFrames += written - 1;
-    }
-    CVPixelBufferRelease(pixelBuffer);
-  }
+  worker->offer(rgba, width, height, elapsedNs);
 }
 
 void MeetingRecorder::stop() {
   // Detach the capture pipeline first (outside the lock) so an in-flight audio
-  // callback can finish and no new samples arrive, then finalize the file.
+  // callback can finish and no new samples arrive, then drain the video
+  // worker, then finalize the file.
   AVCaptureSession *micSession = nil;
   AVCaptureAudioDataOutput *audioOutput = nil;
   AVAssetWriter *writer = nil;
   AVAssetWriterInput *videoInput = nil;
   AVAssetWriterInput *audioInput = nil;
+  std::shared_ptr<RecorderVideoWorker> worker;
   std::string finalPath;
   std::string partPath;
   {
@@ -509,6 +410,7 @@ void MeetingRecorder::stop() {
     writer = impl_->writer;
     videoInput = impl_->videoInput;
     audioInput = impl_->audioInput;
+    worker = impl_->videoWorker;
     finalPath = impl_->filePath;
     partPath = impl_->partPath;
   }
@@ -520,62 +422,35 @@ void MeetingRecorder::stop() {
     if (micSession != nil) {
       [micSession stopRunning];
     }
-    if (videoInput != nil) {
-      [videoInput markAsFinished];
-    }
-    if (audioInput != nil) {
-      [audioInput markAsFinished];
-    }
-    if (writer != nil) {
-      dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-      [writer finishWritingWithCompletionHandler:^{
-        dispatch_semaphore_signal(sem);
-      }];
-      const long finishTimedOut = dispatch_semaphore_wait(
-          sem, dispatch_time(DISPATCH_TIME_NOW,
-                             (int64_t)kRecorderFinalizeTimeoutMs *
-                                 (int64_t)NSEC_PER_MSEC));
-      if (finishTimedOut != 0 &&
-          writer.status != AVAssetWriterStatusCompleted) {
-        // Previously this fell through silently: no rename, no error - the
-        // recording just vanished. Report it like any other finalize failure.
-        logRecorderEvent("finalize_timeout",
-                         "finishWriting exceeded " +
-                             std::to_string(kRecorderFinalizeTimeoutMs) +
-                             "ms (status=" +
-                             std::to_string((long)writer.status) + ")");
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (impl_->lastError.empty()) {
-          impl_->lastError = "finalize_timeout";
-        }
+
+    // Stop accepting, drain the mailbox and join the worker BEFORE the
+    // inputs are marked finished, so every frame the tick handed over is
+    // either in the file or counted as dropped.
+    RecorderVideoWorker::Counters counters;
+    if (worker != nullptr) {
+      worker->stop();
+      counters = worker->counters();
+      const std::string workerError = worker->lastError();
+      std::lock_guard<std::mutex> lock(impl_->mutex);
+      impl_->videoFrames = counters.videoFrames;
+      impl_->droppedFrames = counters.droppedFrames;
+      impl_->queuedFrames = 0;
+      if (impl_->lastError.empty() && !workerError.empty()) {
+        impl_->lastError = workerError;
       }
-      if (writer.status == AVAssetWriterStatusFailed && writer.error != nil) {
-        logRecorderEvent("finish_failed",
-                         describeError(writer.error, "finish_failed"));
+    }
+
+    if (writer != nil) {
+      const RecorderFinalizeResult result = finalizeRecorderWriter(
+          writer, videoInput, audioInput, counters.videoFrames, partPath,
+          finalPath, kRecorderFinalizeTimeoutMs);
+      if (!result.error.empty()) {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->lastError = [[writer.error localizedDescription] UTF8String]
-                               ?: "finish_failed";
-      } else if (writer.status == AVAssetWriterStatusCompleted &&
-                 !partPath.empty() && !finalPath.empty()) {
-        // REC-03: only a fully finalized file gets the real name. On failure
-        // or crash the ".part" sidecar remains (its fMP4 fragments stay
-        // playable) and never masquerades as a finished recording.
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *from = [NSString stringWithUTF8String:partPath.c_str()];
-        NSString *to = [NSString stringWithUTF8String:finalPath.c_str()];
-        [fm removeItemAtPath:to error:nil];
-        NSError *renameError = nil;
-        if (![fm moveItemAtPath:from toPath:to error:&renameError]) {
-          logRecorderEvent("rename_failed",
-                           describeError(renameError, "rename_failed"));
-          std::lock_guard<std::mutex> lock(impl_->mutex);
-          impl_->lastError =
-              renameError != nil
-                  ? ([[renameError localizedDescription] UTF8String]
-                         ?: "rename_failed")
-                  : "rename_failed";
-        } else {
-          logRecorderEvent("completed", finalPath);
+        const bool overwrite =
+            result.outcome == RecorderFinalizeOutcome::FinishFailed ||
+            result.outcome == RecorderFinalizeOutcome::RenameFailed;
+        if (overwrite || impl_->lastError.empty()) {
+          impl_->lastError = result.error;
         }
       }
     }
@@ -590,9 +465,25 @@ RecordingStatus MeetingRecorder::status() const {
   RecordingStatus status;
   status.active = impl_->active;
   status.filePath = impl_->filePath;
-  status.videoFrames = impl_->videoFrames;
+  if (impl_->videoWorker != nullptr) {
+    const RecorderVideoWorker::Counters counters = impl_->videoWorker->counters();
+    status.videoFrames = counters.videoFrames;
+    status.droppedFrames = counters.droppedFrames;
+    status.queuedFrames = counters.queuedFrames;
+    if (impl_->lastError.empty()) {
+      // REC-02: a writer failure seen by the worker streams to the webapp
+      // through recording.status while the recording is still "active".
+      status.lastError = impl_->videoWorker->lastError();
+    } else {
+      status.lastError = impl_->lastError;
+    }
+  } else {
+    status.videoFrames = impl_->videoFrames;
+    status.droppedFrames = impl_->droppedFrames;
+    status.queuedFrames = impl_->queuedFrames;
+    status.lastError = impl_->lastError;
+  }
   status.elapsedSeconds = impl_->active ? secondsSince(impl_->startedAt) : 0.0;
-  status.lastError = impl_->lastError;
   return status;
 }
 

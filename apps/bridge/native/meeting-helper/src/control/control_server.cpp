@@ -253,6 +253,7 @@ std::string keyerMetricsJson(const KeyerMetrics &metrics) {
          << ",\"keyer_publish_to_program_ms\":" << metricNumber(metrics.keyerPublishToProgramMs)
          << ",\"program_frame_interval_ms\":" << metricNumber(metrics.programFrameIntervalMs)
          << ",\"program_frame_ms\":" << metricNumber(metrics.programFrameMs)
+         << ",\"recorder_ms\":" << metricNumber(metrics.recorderMs)
          << ",\"mjpeg_encode_ms\":" << metricNumber(metrics.mjpegEncodeMs)
          << ",\"vcam_publish_ms\":" << metricNumber(metrics.vcamPublishMs)
          << ",\"keyer_fps\":" << metricNumber(metrics.keyerFps)
@@ -362,6 +363,10 @@ std::string recordingStatusJson(const RecordingStatus &s) {
       << "\"file_path\":\"" << jsonEscape(s.filePath) << "\","
       << "\"elapsed_seconds\":" << s.elapsedSeconds << ","
       << "\"video_frames\":" << s.videoFrames << ","
+      // Frames the recorder could not encode / frames waiting for the macOS
+      // recorder worker (Nov 2026, additive counters).
+      << "\"dropped_frames\":" << s.droppedFrames << ","
+      << "\"queued_frames\":" << s.queuedFrames << ","
       // Additive audio diagnostics (Windows fills them, macOS/stub: null).
       << "\"audio_samples_written\":"
       << optionalCounterJson(s.audioSamplesWritten) << ","
@@ -588,7 +593,10 @@ std::string handleRpc(const std::string &line,
       state.cameraStalled = false;
       return okResponse(id, "{\"ok\":true,\"camera_index\":" + std::to_string(cameraIndex) + ",\"backend\":\"native\",\"reopened\":false}");
     }
-    const bool started = camera.start(cameraIndex, options.width, options.height, options.fps);
+    // Cameras only offer landscape modes: a portrait canvas still requests
+    // the landscape equivalent and the compositor cover-fits it.
+    const CaptureRequestSize captureSize = captureRequestSize(options);
+    const bool started = camera.start(cameraIndex, captureSize.width, captureSize.height, options.fps);
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.cameraRunning = started;
@@ -610,7 +618,8 @@ std::string handleRpc(const std::string &line,
     if (!camera.isRunning()) {
       return okResponse(id, "{\"ok\":true,\"reopened\":false}");
     }
-    const bool reopened = camera.reopen(options.width, options.height, options.fps);
+    const CaptureRequestSize captureSize = captureRequestSize(options);
+    const bool reopened = camera.reopen(captureSize.width, captureSize.height, options.fps);
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.cameraRunning = camera.isRunning();
@@ -668,10 +677,11 @@ std::string handleRpc(const std::string &line,
     const ScreenCaptureStatus beforeStatus = screen.status();
     const bool reopened =
         beforeStatus.running && beforeStatus.sourceId != sourceId;
+    const CaptureRequestSize captureSize = captureRequestSize(options);
     const bool started = screen.start(
         sourceId,
         ScreenCaptureStartOptions{
-            options.width, options.height, options.fps,
+            captureSize.width, captureSize.height, options.fps,
             extractBoolField(line, "include_cursor", true)});
     if (!started) {
       const std::string lastError = screen.lastError();
@@ -711,9 +721,10 @@ std::string handleRpc(const std::string &line,
           caps.unsupportedReason.empty() ? "system_picker_unavailable"
                                          : caps.unsupportedReason);
     }
+    const CaptureRequestSize captureSize = captureRequestSize(options);
     const bool picked = screen.presentPicker(
         ScreenCaptureStartOptions{
-            options.width, options.height, options.fps,
+            captureSize.width, captureSize.height, options.fps,
             extractBoolField(line, "include_cursor", true)});
     if (!picked) {
       const std::string lastError = screen.lastError();
@@ -810,8 +821,9 @@ std::string handleRpc(const std::string &line,
       }
       indices = std::move(resolved);
     }
-    const bool started =
-        camera.startSet(indices, options.width, options.height, options.fps);
+    const CaptureRequestSize captureSize = captureRequestSize(options);
+    const bool started = camera.startSet(indices, captureSize.width,
+                                         captureSize.height, options.fps);
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.cameraRunning = started;

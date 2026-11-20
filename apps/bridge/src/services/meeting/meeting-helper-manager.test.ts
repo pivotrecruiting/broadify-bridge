@@ -1,6 +1,11 @@
 import { normalize } from "node:path";
 import { setBridgeContext } from "../bridge-context.js";
 import {
+  diffMeetingSummary,
+  summarizeMeetingStatus,
+} from "../session-log/meeting-session-events.js";
+import { recordSwitcherEvent } from "../session-log/session-log-service.js";
+import {
   HELPER_NOT_REACHABLE_CODE,
   MeetingHelperRequestError,
 } from "./meeting-helper-client.js";
@@ -15,6 +20,22 @@ import {
   resolveMeetingHelperForwardedEnvArgs,
   resolveMeetingModelsDir,
 } from "./meeting-helper-manager.js";
+import type { MeetingStatusT } from "./meeting-status-types.js";
+
+// SessionEventLog sink and status diff spied (real implementations); the
+// on/off switch (isSessionLogEnabled) stays real.
+jest.mock("../session-log/session-log-service.js", () => ({
+  ...jest.requireActual("../session-log/session-log-service.js"),
+  recordSwitcherEvent: jest.fn(),
+}));
+jest.mock("../session-log/meeting-session-events.js", () => {
+  const actual = jest.requireActual("../session-log/meeting-session-events.js");
+  return {
+    ...actual,
+    summarizeMeetingStatus: jest.fn(actual.summarizeMeetingStatus),
+    diffMeetingSummary: jest.fn(actual.diffMeetingSummary),
+  };
+});
 
 describe("meeting-helper-manager", () => {
   const mockPublishBridgeEvent = jest.fn();
@@ -51,6 +72,195 @@ describe("meeting-helper-manager", () => {
         platform: process.platform,
         manager: { platform: process.platform },
       });
+    });
+  });
+
+  describe("program_format", () => {
+    type InternalsT = {
+      state: string;
+      lastStartOptions: { width?: number; height?: number; fps?: number };
+    };
+
+    it("is null while the engine is not running", async () => {
+      const manager = new MeetingHelperManager();
+
+      expect(manager.getProgramFormat()).toBeNull();
+      expect(manager.getStatus().program_format).toBeNull();
+      await expect(manager.getFullStatus()).resolves.toMatchObject({
+        program_format: null,
+        manager: { program_format: null },
+      });
+    });
+
+    it("reports the start options with the engine defaults filled in", () => {
+      const manager = new MeetingHelperManager();
+      const internals = manager as unknown as InternalsT;
+      internals.state = "running";
+
+      internals.lastStartOptions = {};
+      expect(manager.getStatus().program_format).toEqual({
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      });
+
+      internals.lastStartOptions = { width: 1080, height: 1920 };
+      expect(manager.getProgramFormat()).toEqual({
+        width: 1080,
+        height: 1920,
+        fps: 30,
+      });
+    });
+
+    it("is part of the full status of a running engine", async () => {
+      const manager = new MeetingHelperManager();
+      const internals = manager as unknown as InternalsT & { client: unknown };
+      internals.state = "running";
+      internals.lastStartOptions = { width: 1080, height: 1920, fps: 25 };
+      internals.client = {
+        getState: jest.fn(async () => ({})),
+        framebusStatus: jest.fn(async () => ({})),
+        keyerGet: jest.fn(async () => ({})),
+        recordingStatus: jest.fn(async () => ({})),
+        virtualCameraStatus: jest.fn(async () => ({})),
+      };
+
+      const status = await manager.getFullStatus();
+
+      expect(status.program_format).toEqual({ width: 1080, height: 1920, fps: 25 });
+      expect(status.manager.program_format).toEqual(status.program_format);
+    });
+
+    it("a start while running keeps the options of the running engine", async () => {
+      const manager = new MeetingHelperManager();
+      const internals = manager as unknown as InternalsT;
+      internals.state = "running";
+      internals.lastStartOptions = { width: 1920, height: 1080, fps: 30 };
+
+      const status = await manager.start({ width: 1080, height: 1920 });
+
+      // A crash-recovery restart replays lastStartOptions: a no-op start must
+      // not swap the geometry underneath the running engine.
+      expect(internals.lastStartOptions).toEqual({ width: 1920, height: 1080, fps: 30 });
+      expect(status.program_format).toEqual({ width: 1920, height: 1080, fps: 30 });
+    });
+  });
+
+  describe("getPendingStart", () => {
+    type StartOptionsT = { width?: number; height?: number; fps?: number };
+    type InternalsT = {
+      state: string;
+      lastStartOptions: StartOptionsT;
+      startPromise: Promise<unknown> | null;
+      startInternal: (options: StartOptionsT) => Promise<unknown>;
+      handleProcessExit: (code: number | null) => void;
+    };
+
+    /** Replaces the helper spawn with a start the test finishes by hand. */
+    const stubHelperSpawn = (manager: MeetingHelperManager) => {
+      const internals = manager as unknown as InternalsT;
+      let finish!: (status: unknown) => void;
+      const startInternal = jest.fn(
+        (_options: StartOptionsT) =>
+          new Promise<unknown>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      internals.startInternal = startInternal;
+      return {
+        internals,
+        startInternal,
+        finish: (status: unknown) => finish(status),
+      };
+    };
+
+    it("is null while no start is in flight", () => {
+      const manager = new MeetingHelperManager();
+
+      expect(manager.getPendingStart()).toBeNull();
+    });
+
+    it("reports a start from the call to start() on, with the defaults filled in", async () => {
+      const manager = new MeetingHelperManager();
+      const { finish } = stubHelperSpawn(manager);
+
+      const started = manager.start({ width: 1080, height: 1920 });
+      // No await before this read: start() claims the start synchronously.
+      // meeting_engine_start decides and starts in one tick and relies on it.
+      const pending = manager.getPendingStart();
+
+      expect(pending?.format).toEqual({ width: 1080, height: 1920, fps: 30 });
+
+      finish({ state: "running" });
+      await expect(pending?.settled).resolves.toEqual({ state: "running" });
+      await started;
+      expect(manager.getPendingStart()).toBeNull();
+    });
+
+    it("keeps its geometry when a second start joins it", async () => {
+      const manager = new MeetingHelperManager();
+      const { internals, startInternal, finish } = stubHelperSpawn(manager);
+
+      const first = manager.start({ width: 1920, height: 1080 });
+      const second = manager.start({ width: 1080, height: 1920 });
+
+      expect(startInternal).toHaveBeenCalledTimes(1);
+      expect(startInternal).toHaveBeenCalledWith({ width: 1920, height: 1080 });
+      expect(manager.getPendingStart()?.format).toEqual({
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      });
+      // What a crash-recovery restart replays stays the first start's.
+      expect(internals.lastStartOptions).toEqual({ width: 1920, height: 1080 });
+
+      finish({ state: "running" });
+      await expect(second).resolves.toEqual({ state: "running" });
+      await first;
+    });
+
+    it("reports a crash-recovery restart with the geometry it replays", async () => {
+      jest.useFakeTimers();
+      try {
+        const manager = new MeetingHelperManager();
+        const { internals, startInternal, finish } = stubHelperSpawn(manager);
+        internals.state = "running";
+        internals.lastStartOptions = { width: 1080, height: 1920, fps: 25 };
+
+        internals.handleProcessExit(null);
+        // Only the restart timer is armed: a start() now would supersede it
+        // and spawn with its own options, so nothing is pending yet.
+        expect(manager.getPendingStart()).toBeNull();
+
+        jest.runOnlyPendingTimers();
+        expect(startInternal).toHaveBeenCalledWith({
+          width: 1080,
+          height: 1920,
+          fps: 25,
+        });
+        const pending = manager.getPendingStart();
+        expect(pending?.format).toEqual({ width: 1080, height: 1920, fps: 25 });
+
+        // Keep the failed attempt below from arming the next restart timer.
+        manager.beginShutdown();
+        finish({ state: "error" });
+        await expect(pending?.settled).resolves.toEqual({ state: "error" });
+        expect(manager.getPendingStart()).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("is null once the engine runs, while the start still finishes its publish", () => {
+      const manager = new MeetingHelperManager();
+      const internals = manager as unknown as InternalsT;
+      internals.startPromise = new Promise(() => undefined);
+      internals.state = "starting";
+      expect(manager.getPendingStart()).not.toBeNull();
+
+      // start() is a no-op for a running engine; it would not join anything.
+      internals.state = "running";
+      expect(manager.getPendingStart()).toBeNull();
     });
   });
 
@@ -387,6 +597,41 @@ describe("meeting-helper-manager", () => {
           data: expect.objectContaining({ code: "vcam_raw_bind_failed" }),
         }),
       );
+    });
+
+    it("mirrors the camera format selection into the bridge log without a status publish", () => {
+      // camera_format_selected (macOS, Nov 2026) is a one-shot diagnostic per
+      // camera open: it belongs in the bridge log next to meeting_recorder
+      // lines, but it is no state transition and must not force a publish.
+      const manager = new MeetingHelperManager();
+      const publishStatus = jest.fn(async () => {});
+      const internals = manager as unknown as {
+        publishStatus: (reason: string, force: boolean) => Promise<void>;
+        handleStdoutLine: (line: string, logger: typeof mockLogger) => void;
+      };
+      internals.publishStatus = publishStatus;
+      mockLogger.info.mockClear();
+      mockPublishBridgeEvent.mockClear();
+
+      const line = JSON.stringify({
+        type: "camera_format_selected",
+        camera_index: 0,
+        width: 1920,
+        height: 1080,
+        fps: 30.00003,
+        match: "tolerant",
+        applied_fps: 30.00003,
+      });
+      internals.handleStdoutLine(line, mockLogger);
+      internals.handleStdoutLine(
+        JSON.stringify({ type: "camera_format_apply_failed", reason: "exception" }),
+        mockLogger,
+      );
+
+      expect(mockLogger.info).toHaveBeenCalledWith(`[MeetingHelper] ${line}`);
+      expect(mockLogger.info).toHaveBeenCalledTimes(2);
+      expect(publishStatus).not.toHaveBeenCalled();
+      expect(mockPublishBridgeEvent).not.toHaveBeenCalled();
     });
 
     it("forwards a camera stall as both a status publish and one error event", () => {
@@ -993,6 +1238,75 @@ describe("meeting-helper-manager", () => {
       camera = 1;
       await internals.publishStatus("status_poll", false);
       expect(statusEvents()).toBe(2);
+    });
+  });
+
+  describe("session event log (ADR-0008)", () => {
+    type StatusInternalsT = {
+      publishStatus: (reason: string, force: boolean) => Promise<void>;
+    };
+
+    const statusWithRecording = (
+      manager: MeetingHelperManager,
+      active: boolean,
+    ): MeetingStatusT => ({
+      manager: manager.getStatus(),
+      engine: { program_revision: 3 },
+      recording: { active },
+      call: { active: false, call_id: null },
+      content_source: { video: null, browser: null },
+      camera_permission_status: null,
+    });
+
+    it("neither summarizes nor diffs the status without a post-production URL", async () => {
+      const manager = new MeetingHelperManager();
+      jest
+        .spyOn(manager, "getFullStatus")
+        .mockResolvedValue(statusWithRecording(manager, true));
+
+      await (manager as unknown as StatusInternalsT).publishStatus("status_poll", true);
+
+      expect(summarizeMeetingStatus).not.toHaveBeenCalled();
+      expect(diffMeetingSummary).not.toHaveBeenCalled();
+      expect(recordSwitcherEvent).not.toHaveBeenCalled();
+      // The status itself still goes out.
+      expect(mockPublishBridgeEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ event: "meeting_status" }),
+      );
+    });
+
+    it("records recorder and program changes once a post-production URL is set", async () => {
+      setBridgeContext({
+        userDataDir: "/tmp",
+        logPath: "/tmp/bridge.log",
+        logger: mockLogger,
+        publishBridgeEvent: mockPublishBridgeEvent,
+        postproApiUrl: "https://postpro.example",
+      });
+      const manager = new MeetingHelperManager();
+      const getFullStatus = jest
+        .spyOn(manager, "getFullStatus")
+        .mockResolvedValue(statusWithRecording(manager, true));
+      const internals = manager as unknown as StatusInternalsT;
+
+      await internals.publishStatus("status_poll", true);
+      getFullStatus.mockResolvedValue(statusWithRecording(manager, false));
+      await internals.publishStatus("status_poll", true);
+
+      expect(
+        (recordSwitcherEvent as jest.Mock).mock.calls.map(([event]) => event),
+      ).toEqual([
+        { type: "recording_started", source: "meeting", at_ms: expect.any(Number) },
+        {
+          type: "program_changed",
+          source: "meeting",
+          me: 0,
+          input_id: "3",
+          input_name: "camera",
+          at_ms: expect.any(Number),
+        },
+        { type: "recording_stopped", source: "meeting", at_ms: expect.any(Number) },
+      ]);
     });
   });
 });

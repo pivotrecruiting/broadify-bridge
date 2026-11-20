@@ -39,6 +39,7 @@ import { type RelayCommand } from "./relay-command-allowlist.js";
 import { canonXCService } from "./canon-xc/canon-xc-service.js";
 import { canonResponseToCommandResult } from "./canon-xc/canon-xc-command-result.js";
 import { getLiveProgramCapabilities, handlePgmCommand, isPgmCommand } from "./pgm/pgm-command-handler.js";
+import { getMeetingCapabilities } from "./meeting/meeting-capabilities.js";
 import { modeActivationService } from "./mode/mode-activation-service.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "./output-device-modules.js";
 import { powerSocketService } from "./power/power-socket-service.js";
@@ -135,6 +136,9 @@ export class CommandRouter {
                   presetRecall: true,
                 },
                 live_program: getLiveProgramCapabilities(),
+                // Absent on older bridges; the web app then hides the
+                // program-format switch (portrait meeting program, ADR-0007).
+                meeting: getMeetingCapabilities(),
                 // The web app sends mode_activate only when this is present;
                 // older bridges restored Studio state at startup on their own.
                 mode_activation: true,

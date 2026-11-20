@@ -34,7 +34,11 @@ per WebRTC mit Hardware-H.264 und Opus, kleinste Latenz, macOS und Windows. Ents
   Helper streamt sein zusammengesetztes Kamerabild über `ProgramStream` (`src/live/program_stream.mm`): eigener
   Thread am `PreviewFrameStore`, ohne Zuschauer keine Kopie und kein Encoder, mit Zuschauern ein Durchgang
   RGBA→BGRA in einen gepoolten IOSurface-`CVPixelBuffer` und asynchrone VideoToolbox-Kodierung; die Frame-Pipeline
-  (virtuelle Kamera, Aufnahme) wartet nie auf den Encoder. RPC `program.viewer.offer/close`,
+  (virtuelle Kamera, Aufnahme) wartet nie auf den Encoder. Der Pool hat die Größe des Programmbilds, nicht die des
+  Encode-Ziels (`src/live/program_stream_frame_copy.mm`): VideoToolbox skaliert auf die Session-Größe (Profil
+  `remote` → 1280×720), die Kopie ist an Breite, Höhe und Zeilenlänge des Puffers gebunden, ein nicht passendes
+  Bild wird verworfen und gezählt (`dropped_frames`). Die Leiter deckelt die kurze Kante, Hochkant bleibt Hochkant
+  (1080×1920 → `lan` 1080×1920, `remote` 720×1280). RPC `program.viewer.offer/close`,
   `program.sessions.list`, `program.stream.status`; Bridge-Befehle `meeting_program_offer/close/sessions/status`
   (gleiche Schemata wie `pgm_webrtc_*`, Mode-Gate Meeting, `bridges:view_program`, Sessions in
   `services/meeting/meeting-program-stream.ts` mit Grenze, Nutzerbindung und Abgleich). Fähigkeit

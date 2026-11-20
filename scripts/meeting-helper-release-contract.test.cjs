@@ -369,21 +369,47 @@ test("recorder finalize timeout stays below the recording.stop RPC timeout", () 
   );
 
   // Both platform recorders must use the shared constant (no literal
-  // drift) and report the same event name on timeout.
-  for (const source of [
+  // drift) and report the same event name on timeout. On macOS the bounded
+  // finishWriting wait lives in finalizeRecorderWriter
+  // (recorder_writer_factory.mm, ctest-covered); meeting_recorder.mm hands it
+  // the shared constant.
+  const macRecorder = read(
     "apps/bridge/native/meeting-helper/src/recorder/meeting_recorder.mm",
+  );
+  assert.ok(
+    macRecorder.includes("kRecorderFinalizeTimeoutMs"),
+    "meeting_recorder.mm must pass kRecorderFinalizeTimeoutMs to the finalize step",
+  );
+  assert.match(
+    macRecorder,
+    /finalizeRecorderWriter\([\s\S]*?kRecorderFinalizeTimeoutMs\)/,
+    "meeting_recorder.mm must finalize through finalizeRecorderWriter with the shared constant",
+  );
+  for (const source of [
+    "apps/bridge/native/meeting-helper/src/recorder/recorder_writer_factory.mm",
     "apps/bridge/native/meeting-helper/src/recorder/meeting_recorder_mediafoundation.cpp",
   ]) {
     const recorder = read(source);
-    assert.ok(
-      recorder.includes("kRecorderFinalizeTimeoutMs"),
-      `${source} must wait on kRecorderFinalizeTimeoutMs`,
-    );
     assert.ok(
       recorder.includes('"finalize_timeout"'),
       `${source} must report finalize_timeout`,
     );
   }
+  const winRecorder = read(
+    "apps/bridge/native/meeting-helper/src/recorder/meeting_recorder_mediafoundation.cpp",
+  );
+  assert.ok(
+    winRecorder.includes("kRecorderFinalizeTimeoutMs"),
+    "meeting_recorder_mediafoundation.cpp must wait on kRecorderFinalizeTimeoutMs",
+  );
+  const macFactory = read(
+    "apps/bridge/native/meeting-helper/src/recorder/recorder_writer_factory.mm",
+  );
+  assert.match(
+    macFactory,
+    /finalizeTimeoutMs \* \(int64_t\)NSEC_PER_MSEC/,
+    "recorder_writer_factory.mm must bound finishWriting with the passed timeout",
+  );
 });
 
 test("packaged macOS helper verifies the model hashes", () => {

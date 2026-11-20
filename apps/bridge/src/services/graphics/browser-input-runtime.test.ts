@@ -76,6 +76,73 @@ describe("BrowserInputRuntime", () => {
     );
   });
 
+  describe("layer canvas", () => {
+    const upsert = (canvas?: { width: number; height: number }) => {
+      const runtime = new BrowserInputRuntime();
+      runtime.configure({
+        version: 1,
+        outputKey: "browser_input",
+        targets: {},
+        format: { width: 1920, height: 1080, fps: 50 },
+        range: "legal",
+        colorspace: "auto",
+      });
+      runtime.upsertLayer({
+        layerId: "overlay-1",
+        category: "overlays",
+        backgroundMode: "transparent",
+        layout: { x: 0, y: 0, scale: 1 },
+        zIndex: 10,
+        values: {},
+        bindings: {
+          cssVariables: {},
+          textContent: {},
+          textTypes: {},
+          animationClass: "",
+        },
+        bundle: {
+          manifest: {},
+          html: "<div></div>",
+          css: "",
+          schema: {},
+          defaults: {},
+          assets: [],
+        },
+        ...(canvas ? { canvas } : {}),
+      });
+      return runtime;
+    };
+
+    it("keeps the snapshot of a layer without a canvas as it was", () => {
+      const layer = upsert().getSnapshot().layers[0];
+
+      // Exact keys: what the browser page was sent before the field existed.
+      expect(Object.keys(layer).sort()).toEqual([
+        "backgroundMode",
+        "bindings",
+        "category",
+        "css",
+        "html",
+        "layerId",
+        "layout",
+        "presetId",
+        "values",
+        "zIndex",
+      ]);
+    });
+
+    it("carries the canvas of a layer into the snapshot", () => {
+      const canvas = { width: 1080, height: 1920 };
+      const runtime = upsert(canvas);
+
+      expect(runtime.getSnapshot().layers[0].canvas).toEqual(canvas);
+
+      // A layout update keeps it; only another send changes the box.
+      runtime.updateLayout("overlay-1", { x: 10, y: 20, scale: 0.5 });
+      expect(runtime.getSnapshot().layers[0].canvas).toEqual(canvas);
+    });
+  });
+
   it("tracks browser clients and exposes runtime errors", () => {
     const runtime = new BrowserInputRuntime();
 

@@ -22,6 +22,8 @@ export type BridgeContextT = {
   serverMode?: BridgeConfigT["mode"];
   bridgeId?: string;
   bridgeName?: string;
+  /** Post-production web-app base URL (session-log uploads); undefined turns the session log off (ADR-0008). */
+  postproApiUrl?: string;
   pairingCode?: string;
   pairingExpiresAt?: number;
   publishBridgeEvent?: (payload: BridgeEventPayloadT) => void;

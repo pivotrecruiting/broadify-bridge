@@ -174,6 +174,22 @@ async function readRendererConfigureCommand(): Promise<RendererConfigureCommandT
   return decoded.header as RendererConfigureCommandT;
 }
 
+async function readNextCommand(): Promise<Record<string, unknown>> {
+  const socket = clientSocket;
+  if (!socket) {
+    throw new Error("Client socket is not connected");
+  }
+
+  const data = await new Promise<Buffer>((resolve) => {
+    socket.once("data", (chunk) => resolve(chunk));
+  });
+  const decoded = decodeNextIpcPacket(data) as DecodedIpcPacketT;
+  if (decoded.kind !== "packet") {
+    throw new Error("Expected a command packet");
+  }
+  return decoded.header as Record<string, unknown>;
+}
+
 function sendRendererReadyAck(command: RendererConfigureCommandT): void {
   clientSocket?.write(
     encodeIpcPacket({
@@ -495,6 +511,98 @@ describe("ElectronRendererClient", () => {
           fps: 60,
         })
       ).rejects.toThrow("Electron binary not found");
+    });
+
+    describe("layer canvas", () => {
+      const layerInput = {
+        layerId: "l1",
+        html: "<div>test</div>",
+        css: "",
+        values: {},
+        layout: { x: 0, y: 0, scale: 1 },
+        backgroundMode: "transparent" as const,
+        width: 1080,
+        height: 1920,
+        fps: 30,
+        zIndex: 3,
+      };
+
+      /** Sends one layer to a configured renderer and returns the command. */
+      const sendLayer = async (
+        input: Parameters<ElectronRendererClient["renderLayer"]>[0],
+      ): Promise<Record<string, unknown>> => {
+        const c = await initializeClientWithHandshake();
+        try {
+          const configurePromise = readRendererConfigureCommand();
+          const configPromise = c.configureSession({
+            width: 1080,
+            height: 1920,
+            fps: 30,
+            pixelFormat: 1,
+            framebusName: "/test-shm",
+            framebusSlotCount: 2,
+            framebusSize: 4096,
+            backgroundMode: "transparent",
+          });
+          sendRendererReadyAck(await configurePromise);
+          await configPromise;
+
+          const commandPromise = readNextCommand();
+          await c.renderLayer(input);
+          return await commandPromise;
+        } finally {
+          clientSocket?.destroy();
+          clientSocket = null;
+          const mockChild =
+            mockSpawn.mock.results[mockSpawn.mock.results.length - 1]?.value;
+          if (mockChild) {
+            (mockChild as { exitCode: number | null }).exitCode = 0;
+            (mockChild as { signalCode: NodeJS.Signals | null }).signalCode = null;
+          }
+          await c.shutdown();
+        }
+      };
+
+      it(
+        "sends create_layer without a canvas key for a layer on the baseline",
+        async () => {
+          const command = await sendLayer(layerInput);
+
+          // The command the renderer process got before the field existed.
+          expect(command).toStrictEqual({
+            type: "create_layer",
+            token: MOCK_TOKEN,
+            layerId: "l1",
+            html: "<div>test</div>",
+            css: "",
+            values: {},
+            layout: { x: 0, y: 0, scale: 1 },
+            backgroundMode: "transparent",
+            width: 1080,
+            height: 1920,
+            fps: 30,
+            zIndex: 3,
+          });
+        },
+        10000,
+      );
+
+      it(
+        "sends the canvas of the layer with create_layer",
+        async () => {
+          const command = await sendLayer({
+            ...layerInput,
+            canvas: { width: 1080, height: 1920 },
+          });
+
+          expect(command).toMatchObject({
+            type: "create_layer",
+            layerId: "l1",
+            canvas: { width: 1080, height: 1920 },
+          });
+        },
+        10000,
+      );
     });
   });
 

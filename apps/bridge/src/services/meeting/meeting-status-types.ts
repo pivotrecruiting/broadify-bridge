@@ -1,3 +1,4 @@
+import type { MeetingProgramFormatT } from "@broadify/protocol";
 import type { MeetingHelperManagerStatusT } from "./meeting-helper-manager.js";
 
 export type MeetingContentGeometryT = {
@@ -128,6 +129,8 @@ export type MeetingStatusT = {
   call: { active: boolean; call_id: string | null };
   content_source: MeetingContentSourceT;
   camera_permission_status: string | null;
+  /** Geometry of the running engine; null while it is not running. */
+  program_format: MeetingProgramFormatT | null;
 };
 
 export type MeetingStatusEventT = {

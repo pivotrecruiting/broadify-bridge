@@ -104,6 +104,7 @@ Schema: `GraphicsSendSchema`
 ```
 
 **Validierung / Regeln**
+- `canvas` (optional, Geschwister von `layout`): `{ "width": 1080, "height": 1920 }`, ganze Zahlen von 16 bis 7680. Größe der Ebenen-Box – Ebenen-Host und `#graphic-root` – in Ebenen-Pixeln **vor** der Layout-Transformation; das Layout positioniert diese Box. Ohne das Feld ist die Box 1920×1080 wie bisher. Ein weiteres `graphics_send` derselben `layerId` setzt die Box neu (anderes `canvas`, oder ohne Feld wieder 1920×1080); `graphics_update_layout` ändert sie nicht. Ungültige Werte werden wie jedes andere ungültige Feld abgelehnt. Unterstützung: `capabilities.meeting.layer_canvas` (ADR-0007). Bridges ohne die Capability werten das Feld nicht aus (sie entfernen es, sehr alte lehnen den Send ab) – nur mit Capability senden.
 - `durationMs` erfordert `presetId`.
 - `presetId` ist **exklusiv**: ein Send mit `presetId` räumt konkurrierende Ebenen derselben Replace-Gruppe (alle Nicht-`backgrounds`) weg (`prepareBeforeRender` → `removeLayersNotInPreset`) und setzt das aktive Preset.
 - `reportPresetId` ist **reporting-only**: es lässt die Ebene unter `graphics_status.activePresets` erscheinen (damit Steuer-Clients den aktiven Preset-Zustand spiegeln), nimmt aber **nie** am exklusiven Ownership-Pfad teil und setzt kein aktives Preset. Additive Ebenen (Meeting-Presets, die mit der Content-Ebene und über Kategorien hinweg koexistieren) senden `reportPresetId` statt `presetId`. Nicht mit `durationMs` kombinieren (nur `presetId` erfüllt die durationMs-Regel).

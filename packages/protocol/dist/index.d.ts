@@ -440,6 +440,35 @@ export type LiveProgramCapabilitiesT = {
     recording_profile?: "high";
 };
 /**
+ * Advertised in `get_status.capabilities.meeting`. Absent on older bridges:
+ * the web app then treats every flag as false.
+ */
+export type MeetingCapabilitiesT = {
+    /**
+     * `meeting_engine_start` accepts a portrait canvas (height > width, e.g.
+     * 1080x1920). False: the start is refused with
+     * `meeting_program_portrait_unsupported`.
+     */
+    program_portrait: boolean;
+    /**
+     * `graphics_send` honours the optional `canvas { width, height }`: the size
+     * of the layer's box (layer host and `#graphic-root`) before the layout
+     * transform, in plane pixels. Without the flag the box is always 1920x1080,
+     * so send `canvas` only when it is set. A renderer feature: independent of
+     * `program_portrait` and true on every platform.
+     */
+    layer_canvas: boolean;
+};
+/**
+ * Geometry of the running meeting engine, reported as `program_format` in the
+ * meeting status (`null` while the engine is not running).
+ */
+export type MeetingProgramFormatT = {
+    width: number;
+    height: number;
+    fps: number;
+};
+/**
  * Mode-driven Studio restoration (`mode_activate`)
  *
  * The web app's root page is the mode selection; the bridge learns the mode

@@ -1,4 +1,5 @@
 import { getBridgeContext, setBridgeContext } from "../bridge-context.js";
+import { recordSwitcherEvent } from "../session-log/session-log-service.js";
 import { GraphicsError } from "./graphics-errors.js";
 import { GraphicsManager } from "./graphics-manager.js";
 import { GraphicsOutputTransitionError } from "./graphics-output-transition-service.js";
@@ -40,6 +41,12 @@ const mockValidateTemplate = jest.fn(() => ({
 jest.mock("./template-sanitizer.js", () => ({
   sanitizeTemplateCss: (css: string) => mockSanitizeCss(css),
   validateTemplate: (html: string, css: string) => mockValidateTemplate(html, css),
+}));
+
+// SessionEventLog sink spied; the on/off switch (isSessionLogEnabled) stays real.
+jest.mock("../session-log/session-log-service.js", () => ({
+  ...jest.requireActual("../session-log/session-log-service.js"),
+  recordSwitcherEvent: jest.fn(),
 }));
 
 const createRenderer = (): GraphicsRenderer => ({
@@ -1240,6 +1247,68 @@ describe("GraphicsManager with configured outputs", () => {
     expect(status.activePreset).toBeNull();
   });
 
+  describe("layer canvas", () => {
+    const CANVAS = { width: 1080, height: 1920 };
+
+    const createConfiguredManager = async () => {
+      const renderer = createRenderer();
+      const manager = createManagerWithRealTransition(renderer);
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+      const renderLayer = renderer.renderLayer as jest.Mock;
+      return { manager, renderLayer };
+    };
+
+    it("renders a graphics_send without a canvas as before: no canvas reaches the renderer", async () => {
+      const { manager, renderLayer } = await createConfiguredManager();
+
+      await manager.sendLayer(createTestPatternPayload());
+
+      expect(renderLayer).toHaveBeenCalledTimes(1);
+      expect("canvas" in renderLayer.mock.calls[0][0]).toBe(false);
+    });
+
+    it("hands the canvas of a graphics_send to the renderer", async () => {
+      const { manager, renderLayer } = await createConfiguredManager();
+
+      await manager.sendLayer({ ...createTestPatternPayload(), canvas: CANVAS });
+
+      expect(renderLayer).toHaveBeenCalledWith(
+        expect.objectContaining({ layerId: "test-pattern", canvas: CANVAS }),
+      );
+    });
+
+    it("follows the latest graphics_send of a layer: another canvas, then none", async () => {
+      const { manager, renderLayer } = await createConfiguredManager();
+
+      await manager.sendLayer({ ...createTestPatternPayload(), canvas: CANVAS });
+      await manager.sendLayer({
+        ...createTestPatternPayload(),
+        canvas: { width: 720, height: 1280 },
+      });
+      await manager.sendLayer(createTestPatternPayload());
+
+      expect(renderLayer.mock.calls.map(([input]) => input.canvas)).toEqual([
+        CANVAS,
+        { width: 720, height: 1280 },
+        undefined,
+      ]);
+      expect("canvas" in renderLayer.mock.calls[2][0]).toBe(false);
+    });
+
+    it("rejects an invalid canvas like any other invalid field", async () => {
+      const { manager, renderLayer } = await createConfiguredManager();
+
+      await expect(
+        manager.sendLayer({
+          ...createTestPatternPayload(),
+          canvas: { width: 8, height: 1920 },
+        }),
+      ).rejects.toThrow();
+      expect(renderLayer).not.toHaveBeenCalled();
+    });
+  });
+
   describe("usage tracking", () => {
     it("reports shown with plane identity and preset ids", async () => {
       const usageRecorder = createUsageRecorder();
@@ -1366,6 +1435,96 @@ describe("GraphicsManager with configured outputs", () => {
 
       expect(usageRecorder.recordLayerShown).not.toHaveBeenCalled();
       expect(usageRecorder.recordLayerHidden).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("session event log (ADR-0008)", () => {
+    const showUpdateHide = async (manager: GraphicsManager) => {
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+      await manager.sendLayer({
+        ...createTestPatternPayload(),
+        layerId: "lower-third",
+        category: "lower-thirds",
+        presetId: "preset-lt",
+        values: { name: "Ada Lovelace", round: 2 },
+      });
+      await manager.updateValues({
+        layerId: "lower-third",
+        values: { title: "Guest" },
+      });
+      await manager.removeLayer({ layerId: "lower-third" });
+    };
+
+    it("hands no on-air graphic to the recorder without a post-production URL", async () => {
+      await showUpdateHide(createManagerWithRealTransition());
+
+      expect(recordSwitcherEvent).not.toHaveBeenCalled();
+    });
+
+    it("does not read the on-air text fields without a post-production URL", () => {
+      const reads: PropertyKey[] = [];
+      const values = new Proxy<Record<string, unknown>>(
+        { name: "Ada Lovelace" },
+        {
+          get: (target, key) => {
+            reads.push(key);
+            return Reflect.get(target, key);
+          },
+          ownKeys: (target) => {
+            reads.push("ownKeys");
+            return Reflect.ownKeys(target);
+          },
+        },
+      );
+      const internals = createManagerWithRealTransition() as unknown as {
+        recordSessionGraphic: (
+          type: "graphic_shown",
+          layerId: string,
+          templateId: string | null,
+          values: Record<string, unknown> | null,
+        ) => void;
+      };
+
+      internals.recordSessionGraphic("graphic_shown", "lower-third", "preset-lt", values);
+
+      expect(reads).toEqual([]);
+      expect(recordSwitcherEvent).not.toHaveBeenCalled();
+    });
+
+    it("records shown, updated and hidden with the text fields once a post-production URL is set", async () => {
+      setBridgeContext({
+        ...getBridgeContext(),
+        postproApiUrl: "https://postpro.example",
+      });
+
+      await showUpdateHide(createManagerWithRealTransition());
+
+      expect(
+        (recordSwitcherEvent as jest.Mock).mock.calls.map(([event]) => event),
+      ).toEqual([
+        {
+          type: "graphic_shown",
+          source: "studio",
+          graphic_id: "lower-third",
+          template_id: "preset-lt",
+          fields: { name: "Ada Lovelace", round: "2" },
+        },
+        {
+          type: "graphic_updated",
+          source: "studio",
+          graphic_id: "lower-third",
+          template_id: "preset-lt",
+          fields: { name: "Ada Lovelace", round: "2", title: "Guest" },
+        },
+        {
+          type: "graphic_hidden",
+          source: "studio",
+          graphic_id: "lower-third",
+          template_id: null,
+          fields: null,
+        },
+      ]);
     });
   });
 });

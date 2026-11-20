@@ -150,6 +150,15 @@ type RendererLayerLayoutT = {
   rotationZ?: number;
 };
 
+/**
+ * Box of a layer before the layout transform, in plane pixels at render scale
+ * 1. Absent for the 1920x1080 baseline.
+ */
+type RendererLayerCanvasT = {
+  width: number;
+  height: number;
+};
+
 type SingleLayerSnapshotT = {
   layerId: string;
   html: string;
@@ -159,6 +168,7 @@ type SingleLayerSnapshotT = {
   layout: RendererLayerLayoutT;
   backgroundMode: string;
   zIndex?: number;
+  canvas?: RendererLayerCanvasT;
 };
 
 let singleWindow: BrowserWindow | null = null;
@@ -1177,6 +1187,7 @@ async function replaySingleWindowLayers(window: BrowserWindow): Promise<void> {
       layout: layer.layout,
       backgroundMode: layer.backgroundMode,
       zIndex: layer.zIndex,
+      ...(layer.canvas ? { canvas: layer.canvas } : {}),
     };
     await window.webContents.executeJavaScript(
       `window.__createLayer(${JSON.stringify(payload)});`,
@@ -1792,7 +1803,10 @@ async function createLayer(message: {
   height: number;
   fps: number;
   zIndex?: number;
+  canvas?: RendererLayerCanvasT;
 }): Promise<void> {
+  // The snapshot replaces the previous one of this layer as a whole: a send
+  // without a canvas puts the layer back on the 1920x1080 baseline.
   singleLayerSnapshots.set(message.layerId, {
     layerId: message.layerId,
     html: message.html,
@@ -1802,6 +1816,7 @@ async function createLayer(message: {
     layout: message.layout,
     backgroundMode: message.backgroundMode,
     zIndex: message.zIndex,
+    ...(message.canvas ? { canvas: message.canvas } : {}),
   });
 
   const window = await ensureSingleWindow(
@@ -1820,6 +1835,7 @@ async function createLayer(message: {
     layout: message.layout,
     backgroundMode: message.backgroundMode,
     zIndex: message.zIndex,
+    ...(message.canvas ? { canvas: message.canvas } : {}),
   };
 
   await window.webContents.executeJavaScript(
@@ -1832,6 +1848,7 @@ async function createLayer(message: {
       htmlLength: message.html.length,
       cssLength: message.css.length,
       layout: message.layout,
+      ...(message.canvas ? { canvas: message.canvas } : {}),
       zIndex: message.zIndex,
       activeLayerIds: Array.from(singleLayerSnapshots.keys()),
     },
@@ -1984,6 +2001,7 @@ async function handleMessage(message: unknown): Promise<void> {
         height: number;
         fps: number;
         zIndex?: number;
+        canvas?: RendererLayerCanvasT;
       },
     );
     return;

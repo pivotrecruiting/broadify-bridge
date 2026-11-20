@@ -82,6 +82,7 @@ set(MEETING_HELPER_SOURCES
   ../vcam-helper/Shared/src/framebus_reader.c
   Shared/src/framebus_writer.c
   src/capture/camera_source.cpp
+  src/capture/capture_format_selection.cpp
   src/capture/liveness_watchdog.cpp
   src/capture/screen_capture_source.cpp
   src/capture/screen_capture_stub.cpp
@@ -120,6 +121,8 @@ set(MEETING_HELPER_SOURCES
   src/preview/raw_frame_stream_header.cpp
   src/preview/vcam_shm_layout.cpp
   src/preview/vcam_shm_ring_win.cpp
+  src/recorder/recorder_frame_mailbox.cpp
+  src/util/frame_fit.cpp
   src/util/sha256.cpp
   src/util/pixel_swizzle.cpp
   src/util/win_qos.cpp
@@ -143,6 +146,7 @@ if(APPLE)
     src/keyer/coreml_keyer.mm
     src/keyer/gpu_mask_refine.mm
     src/recorder/meeting_recorder.mm
+    src/recorder/recorder_video_worker.mm
     src/recorder/recorder_writer_factory.mm
     src/macos/macos_app.mm
   )
@@ -156,6 +160,9 @@ if(APPLE)
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/recorder/recorder_writer_factory.mm PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  set_source_files_properties(src/recorder/recorder_video_worker.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
   )
   set_source_files_properties(src/capture/camera_avfoundation.mm PROPERTIES
@@ -196,8 +203,8 @@ add_subdirectory(../helper-common helper-common)
 add_subdirectory(../live-stream live-stream)
 
 if(APPLE)
-  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.mm)
-  set_source_files_properties(src/live/program_stream.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  list(APPEND MEETING_HELPER_SOURCES src/live/program_stream.mm src/live/program_stream_frame_copy.mm)
+  set_source_files_properties(src/live/program_stream.mm src/live/program_stream_frame_copy.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   add_executable(meeting-helper MACOSX_BUNDLE ${MEETING_HELPER_SOURCES})
   target_link_libraries(meeting-helper PRIVATE live_stream)
 else()
@@ -364,6 +371,17 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(camera_media_type_rank_test
     tests/camera_media_type_rank_test.cpp
   )
+  # macOS capture-format selection (tolerant fps match, nearest fallback).
+  add_executable(capture_format_selection_test
+    tests/capture_format_selection_test.cpp
+    src/capture/capture_format_selection.cpp
+  )
+  # Latest-wins frame mailbox between the pipeline tick and the recorder
+  # worker thread (macOS recorder).
+  add_executable(recorder_frame_mailbox_test
+    tests/recorder_frame_mailbox_test.cpp
+    src/recorder/recorder_frame_mailbox.cpp
+  )
   add_executable(latest_frame_slot_test
     tests/latest_frame_slot_test.cpp
   )
@@ -439,6 +457,16 @@ if(MEETING_HELPER_BUILD_TESTS)
     tests/options_test.cpp
     src/common/options.cpp
   )
+  # Portrait program support: the keyed presenter and the camera PiP keep
+  # their 16:9 geometry (numeric parity) and get a defined 9:16 geometry.
+  add_executable(program_geometry_test
+    tests/program_geometry_test.cpp
+  )
+  # Contain-fit (pillarbox) of a portrait program into the 16:9 virtual camera.
+  add_executable(frame_fit_test
+    tests/frame_fit_test.cpp
+    src/util/frame_fit.cpp
+  )
   add_executable(tier_handover_test
     tests/tier_handover_test.cpp
     src/pipeline/tier_handover.cpp
@@ -469,6 +497,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     src/preview/raw_frame_server.cpp
     src/preview/raw_frame_stream_header.cpp
     src/preview/preview_frame_store.cpp
+    src/util/frame_fit.cpp
     src/util/pixel_swizzle.cpp
     src/util/win_qos.cpp
   )
@@ -490,6 +519,7 @@ if(MEETING_HELPER_BUILD_TESTS)
       src/preview/vcam_shm_layout.cpp
       src/preview/vcam_shm_publisher.cpp
       src/preview/vcam_shm_ring_win.cpp
+      src/util/frame_fit.cpp
       src/util/pixel_swizzle.cpp
     )
     target_include_directories(shm_frame_reader_no_frame_test PRIVATE
@@ -498,6 +528,7 @@ if(MEETING_HELPER_BUILD_TESTS)
   endif()
   set(CONTROL_SERVER_TEST_SOURCES
     tests/control_server_test.cpp
+    src/common/options.cpp
     src/control/control_server.cpp
     src/live/program_stream_stub.cpp
     src/capture/camera_source.cpp
@@ -555,6 +586,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     ort_session_options_policy_test
     inference_provider_test
     camera_media_type_rank_test
+    capture_format_selection_test
+    recorder_frame_mailbox_test
     camera_reopen_policy_test
     latest_frame_slot_test
     guarded_frame_slot_test
@@ -574,6 +607,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     media_page_cache_test
     background_image_cache_test
     options_test
+    program_geometry_test
+    frame_fit_test
     tier_handover_test
     matting_backend_test
     matting_common_test
@@ -595,17 +630,20 @@ if(MEETING_HELPER_BUILD_TESTS)
       elseif(helper_test STREQUAL "control_server_test" OR helper_test STREQUAL "program_stream_rpc_test")
         # Both link control_server.cpp + vcam_controller.cpp: needs the same Win32
         # media/COM libraries as the helper binary (MFStartup, CLSIDs, ...).
-        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi d3d11 d3dcompiler dbghelp advapi32)
+        # shell32: CommandLineToArgvW in common/options.cpp (captureRequestSize).
+        target_link_libraries(${helper_test} PRIVATE ws2_32 mf mfplat mfreadwrite mfuuid ole32 shlwapi shell32 d3d11 d3dcompiler dbghelp advapi32)
       elseif(helper_test STREQUAL "d3d_adapter_select_test")
         target_link_libraries(${helper_test} PRIVATE dxgi)
       elseif(helper_test STREQUAL "options_test")
         # CommandLineToArgvW lives in shell32.
         target_link_libraries(${helper_test} PRIVATE shell32)
       endif()
-    elseif(APPLE AND helper_test STREQUAL "raw_frame_server_test")
+    elseif(APPLE AND (helper_test STREQUAL "raw_frame_server_test" OR
+                      helper_test STREQUAL "frame_fit_test"))
       target_link_libraries(${helper_test} PRIVATE "-framework Accelerate")
     endif()
-    if(NOT WIN32 AND helper_test STREQUAL "liveness_watchdog_test")
+    if(NOT WIN32 AND (helper_test STREQUAL "liveness_watchdog_test" OR
+                      helper_test STREQUAL "recorder_frame_mailbox_test"))
       target_link_libraries(${helper_test} PRIVATE pthread)
     endif()
     add_test(NAME ${helper_test} COMMAND ${helper_test})
@@ -635,6 +673,8 @@ if(MEETING_HELPER_BUILD_TESTS)
     # microphone access, so it runs headless under ctest.
     add_executable(meeting_recorder_writer_test
       tests/meeting_recorder_writer_test.mm
+      src/recorder/recorder_frame_mailbox.cpp
+      src/recorder/recorder_video_worker.mm
       src/recorder/recorder_writer_factory.mm
     )
     set_source_files_properties(tests/meeting_recorder_writer_test.mm PROPERTIES
@@ -643,11 +683,27 @@ if(MEETING_HELPER_BUILD_TESTS)
     target_include_directories(meeting_recorder_writer_test PRIVATE src)
     target_link_libraries(meeting_recorder_writer_test PRIVATE helper_common)
     target_link_libraries(meeting_recorder_writer_test PRIVATE
+      "-framework Accelerate"
       "-framework AVFoundation"
       "-framework CoreMedia"
       "-framework CoreVideo"
       "-framework Foundation"
     )
     add_test(NAME meeting_recorder_writer_test COMMAND meeting_recorder_writer_test)
+    # Regression for the program-stream pixel buffer overflow: drives the
+    # production pool + RGBA->BGRA copy without WebRTC (run it under
+    # -fsanitize=address to see the pre-fix write past the buffer).
+    add_executable(program_stream_scale_test
+      tests/program_stream_scale_test.mm
+      src/live/program_stream_frame_copy.mm
+      src/util/pixel_swizzle.cpp
+    )
+    set_source_files_properties(tests/program_stream_scale_test.mm PROPERTIES
+      COMPILE_FLAGS "-fobjc-arc"
+    )
+    target_include_directories(program_stream_scale_test PRIVATE src)
+    target_link_libraries(program_stream_scale_test PRIVATE live_stream)
+    add_test(NAME program_stream_scale_test COMMAND program_stream_scale_test)
+    set_tests_properties(program_stream_scale_test PROPERTIES TIMEOUT 60)
   endif()
 endif()

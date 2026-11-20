@@ -1,0 +1,244 @@
+{
+  "description": "ATEM replay: recording starts, cut 1->2, DSK1 lower third on/off, USK1 on, recording stops. States are minimal atem-connection 2.5 snapshots.",
+  "steps": [
+    {
+      "at_ms": 1000,
+      "state": {
+        "video": {
+          "mixEffects": [
+            {
+              "programInput": 1,
+              "previewInput": 2,
+              "upstreamKeyers": [
+                {
+                  "onAir": false
+                }
+              ]
+            }
+          ],
+          "downstreamKeyers": [
+            {
+              "onAir": false
+            }
+          ]
+        },
+        "recording": {
+          "status": {
+            "state": 0
+          }
+        },
+        "inputs": {
+          "1": {
+            "longName": "Cam 1"
+          },
+          "2": {
+            "longName": "Cam 2"
+          }
+        }
+      }
+    },
+    {
+      "at_ms": 2000,
+      "state": {
+        "video": {
+          "mixEffects": [
+            {
+              "programInput": 1,
+              "previewInput": 2,
+              "upstreamKeyers": [
+                {
+                  "onAir": false
+                }
+              ]
+            }
+          ],
+          "downstreamKeyers": [
+            {
+              "onAir": false
+            }
+          ]
+        },
+        "recording": {
+          "status": {
+            "state": 1
+          },
+          "duration": {
+            "hours": 0,
+            "minutes": 0,
+            "seconds": 0,
+            "frames": 0
+          }
+        },
+        "inputs": {
+          "1": {
+            "longName": "Cam 1"
+          },
+          "2": {
+            "longName": "Cam 2"
+          }
+        }
+      }
+    },
+    {
+      "at_ms": 3500,
+      "state": {
+        "video": {
+          "mixEffects": [
+            {
+              "programInput": 2,
+              "previewInput": 1,
+              "upstreamKeyers": [
+                {
+                  "onAir": false
+                }
+              ]
+            }
+          ],
+          "downstreamKeyers": [
+            {
+              "onAir": false
+            }
+          ]
+        },
+        "recording": {
+          "status": {
+            "state": 1
+          }
+        },
+        "inputs": {
+          "1": {
+            "longName": "Cam 1"
+          },
+          "2": {
+            "longName": "Cam 2"
+          }
+        }
+      }
+    },
+    {
+      "at_ms": 4000,
+      "state": {
+        "video": {
+          "mixEffects": [
+            {
+              "programInput": 2,
+              "previewInput": 1,
+              "upstreamKeyers": [
+                {
+                  "onAir": false
+                }
+              ]
+            }
+          ],
+          "downstreamKeyers": [
+            {
+              "onAir": true
+            }
+          ]
+        },
+        "recording": {
+          "status": {
+            "state": 1
+          }
+        },
+        "inputs": {
+          "1": {
+            "longName": "Cam 1"
+          },
+          "2": {
+            "longName": "Cam 2"
+          }
+        }
+      }
+    },
+    {
+      "at_ms": 10000,
+      "state": {
+        "video": {
+          "mixEffects": [
+            {
+              "programInput": 2,
+              "previewInput": 1,
+              "upstreamKeyers": [
+                {
+                  "onAir": true
+                }
+              ]
+            }
+          ],
+          "downstreamKeyers": [
+            {
+              "onAir": false
+            }
+          ]
+        },
+        "recording": {
+          "status": {
+            "state": 1
+          }
+        },
+        "inputs": {
+          "1": {
+            "longName": "Cam 1"
+          },
+          "2": {
+            "longName": "Cam 2"
+          }
+        }
+      }
+    },
+    {
+      "at_ms": 20000,
+      "state": {
+        "video": {
+          "mixEffects": [
+            {
+              "programInput": 2,
+              "previewInput": 1,
+              "upstreamKeyers": [
+                {
+                  "onAir": true
+                }
+              ]
+            }
+          ],
+          "downstreamKeyers": [
+            {
+              "onAir": false
+            }
+          ]
+        },
+        "recording": {
+          "status": {
+            "state": 0
+          },
+          "duration": {
+            "hours": 0,
+            "minutes": 0,
+            "seconds": 18,
+            "frames": 12
+          }
+        },
+        "inputs": {
+          "1": {
+            "longName": "Cam 1"
+          },
+          "2": {
+            "longName": "Cam 2"
+          }
+        }
+      }
+    }
+  ],
+  "expected_session_types": [
+    "program_changed",
+    "recording_started",
+    "program_changed",
+    "preview_changed",
+    "keyer_on_air",
+    "keyer_on_air",
+    "keyer_off_air",
+    "recording_stopped"
+  ],
+  "expected_note": "First program_changed is the on-air snapshot at session start; at 10000 USK1 goes on air (me loop) before DSK1 goes off (dsk loop)."
+}
