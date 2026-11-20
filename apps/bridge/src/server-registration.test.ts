@@ -120,6 +120,7 @@ describe("registerServerRoutes", () => {
     );
     expect(capabilities.meeting).toEqual({
       program_portrait: process.platform === "darwin",
+      layer_canvas: true,
     });
   });
 

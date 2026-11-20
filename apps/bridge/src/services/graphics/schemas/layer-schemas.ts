@@ -19,6 +19,19 @@ export const GraphicsLayoutSchema = z
   .strict();
 
 /**
+ * Box of a layer before the layout transform: the size of the layer host and
+ * of its `#graphic-root` container, in plane pixels at render scale 1. The
+ * layout positions that box on the plane. A layer without a canvas keeps the
+ * 1920x1080 design baseline.
+ */
+export const GraphicsLayerCanvasSchema = z
+  .object({
+    width: z.number().int().min(16).max(7680),
+    height: z.number().int().min(16).max(7680),
+  })
+  .strict();
+
+/**
  * Asset descriptor (data is optional for updates).
  */
 export const GraphicsAssetSchema = z
@@ -78,6 +91,10 @@ export const GraphicsSendSchema = z
     category: GraphicsCategorySchema,
     backgroundMode: GraphicsBackgroundModeSchema,
     layout: GraphicsLayoutSchema,
+    // Optional per-layer box (see GraphicsLayerCanvasSchema). A later send for
+    // the same layerId with another canvas resizes the box; without the field
+    // it is 1920x1080 again.
+    canvas: GraphicsLayerCanvasSchema.optional(),
     zIndex: z.number().int(),
     bundle: GraphicsBundleSchema,
     values: z.record(z.unknown()).optional().default({}),
@@ -138,6 +155,7 @@ export const GraphicsRemovePresetSchema = z
   .strict();
 
 export type GraphicsLayoutT = z.infer<typeof GraphicsLayoutSchema>;
+export type GraphicsLayerCanvasT = z.infer<typeof GraphicsLayerCanvasSchema>;
 export type GraphicsAssetT = z.infer<typeof GraphicsAssetSchema>;
 export type GraphicsBundleT = z.infer<typeof GraphicsBundleSchema>;
 export type GraphicsBackgroundModeT = z.infer<typeof GraphicsBackgroundModeSchema>;

@@ -328,6 +328,7 @@ export class ElectronRendererClient implements GraphicsRenderer {
       height: input.height,
       fps: input.fps,
       zIndex: input.zIndex,
+      ...(input.canvas ? { canvas: input.canvas } : {}),
     });
   }
 

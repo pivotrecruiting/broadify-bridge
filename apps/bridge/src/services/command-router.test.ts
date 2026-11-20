@@ -237,7 +237,10 @@ describe("command-router", () => {
       expect(result.success).toBe(true);
       expect(result.data).toMatchObject({
         capabilities: expect.objectContaining({
-          meeting: { program_portrait: process.platform === "darwin" },
+          meeting: {
+            program_portrait: process.platform === "darwin",
+            layer_canvas: true,
+          },
         }),
       });
     });

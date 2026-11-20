@@ -1,5 +1,6 @@
 import type {
   GraphicsBackgroundModeT,
+  GraphicsLayerCanvasT,
   GraphicsLayoutT,
 } from "../graphics-schemas.js";
 
@@ -25,6 +26,12 @@ export type GraphicsRenderLayerInputT = {
   height: number;
   fps: number;
   zIndex?: number;
+  /**
+   * Box of the layer before the layout transform, in plane pixels at render
+   * scale 1. Left out for the 1920x1080 baseline, so a layer without a canvas
+   * reaches the renderer exactly as before the field existed.
+   */
+  canvas?: GraphicsLayerCanvasT;
 };
 
 export type GraphicsRendererClearColorT = {

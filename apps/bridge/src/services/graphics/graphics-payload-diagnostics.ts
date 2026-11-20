@@ -33,6 +33,9 @@ export function summarizeSendPayload(
     durationMs: typeof payload.durationMs === "number" ? payload.durationMs : null,
     backgroundMode: payload.backgroundMode,
     layout: payload.layout,
+    // Only present when the layer carries one: summaries of layers on the
+    // 1920x1080 baseline stay as they were.
+    ...(payload.canvas ? { canvas: payload.canvas } : {}),
     zIndex: payload.zIndex,
     manifest: {
       name: (manifest as Record<string, unknown>).name ?? null,
@@ -84,6 +87,7 @@ export function summarizeRawPayload(
     durationMs: record.durationMs ?? null,
     backgroundMode: record.backgroundMode ?? null,
     layout: record.layout ?? null,
+    ...(record.canvas !== undefined ? { canvas: record.canvas } : {}),
     zIndex: record.zIndex ?? null,
     manifest: {
       name: manifest?.name ?? null,

@@ -285,6 +285,64 @@ describe("graphics-layer-service", () => {
       );
     });
 
+    describe("layer canvas", () => {
+      const render = async (data: PreparedLayerT) => {
+        const renderer = createMockRenderer();
+        await renderPreparedLayer({
+          renderer,
+          layers: new Map(),
+          categoryToLayer: new Map(),
+          outputFormat: { width: 1080, height: 1920, fps: 30 },
+          data,
+          onRendered: jest.fn(),
+        });
+        return renderer.renderLayer.mock.calls[0][0];
+      };
+
+      it("hands the renderer the unchanged payload when the layer has no canvas", async () => {
+        const data = createPreparedLayer({ layerId: "l1", zIndex: 7 });
+
+        // Exact keys: no `canvas`, not even an undefined one. This is the
+        // payload the renderer got before the field existed.
+        expect(await render(data)).toStrictEqual({
+          layerId: "l1",
+          html: data.bundle.html,
+          css: data.bundle.css,
+          values: data.values,
+          bindings: data.bindings,
+          layout: data.layout,
+          backgroundMode: data.backgroundMode,
+          width: 1080,
+          height: 1920,
+          fps: 30,
+          zIndex: 7,
+        });
+      });
+
+      it("passes the canvas of the layer on to the renderer", async () => {
+        const data = createPreparedLayer({
+          layerId: "l1",
+          zIndex: 7,
+          canvas: { width: 1080, height: 1920 },
+        });
+
+        expect(await render(data)).toStrictEqual({
+          layerId: "l1",
+          html: data.bundle.html,
+          css: data.bundle.css,
+          values: data.values,
+          bindings: data.bindings,
+          layout: data.layout,
+          backgroundMode: data.backgroundMode,
+          width: 1080,
+          height: 1920,
+          fps: 30,
+          zIndex: 7,
+          canvas: { width: 1080, height: 1920 },
+        });
+      });
+    });
+
     it("rolls back state when renderer.renderLayer throws", async () => {
       const renderer = createMockRenderer();
       renderer.renderLayer.mockRejectedValue(new Error("Render failed"));

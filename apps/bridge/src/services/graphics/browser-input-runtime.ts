@@ -4,6 +4,7 @@ import type {
   GraphicsBackgroundModeT,
   GraphicsCategoryT,
   GraphicsFormatT,
+  GraphicsLayerCanvasT,
   GraphicsLayoutT,
   GraphicsOutputConfigT,
 } from "./graphics-schemas.js";
@@ -37,6 +38,8 @@ export type BrowserInputLayerSnapshotT = {
   values: Record<string, unknown>;
   bindings: TemplateBindingsT;
   presetId?: string;
+  /** Layer box before the layout transform; left out for 1920x1080. */
+  canvas?: GraphicsLayerCanvasT;
 };
 
 export type BrowserInputStatusT = {
@@ -143,6 +146,7 @@ export class BrowserInputRuntime extends EventEmitter {
         animationClass: prepared.bindings.animationClass,
       },
       presetId: prepared.presetId,
+      ...(prepared.canvas ? { canvas: { ...prepared.canvas } } : {}),
     });
     this.lastError = null;
     this.bumpStateVersion();
@@ -288,6 +292,7 @@ export class BrowserInputRuntime extends EventEmitter {
           animationClass: layer.bindings.animationClass,
         },
         presetId: layer.presetId,
+        ...(layer.canvas ? { canvas: { ...layer.canvas } } : {}),
       })),
     };
   }

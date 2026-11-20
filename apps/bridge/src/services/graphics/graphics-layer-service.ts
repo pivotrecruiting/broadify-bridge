@@ -168,6 +168,7 @@ export async function renderPreparedLayer(params: RenderPreparedLayerParamsT): P
       height: params.outputFormat?.height ?? 1080,
       fps: params.outputFormat?.fps ?? 50,
       zIndex: params.data.zIndex,
+      ...(params.data.canvas ? { canvas: params.data.canvas } : {}),
     });
     params.onRendered([params.data.layerId]);
   } catch (error) {

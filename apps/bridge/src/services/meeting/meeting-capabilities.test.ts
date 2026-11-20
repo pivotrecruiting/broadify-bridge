@@ -12,19 +12,31 @@ describe("meeting-capabilities", () => {
   it("advertises the portrait program on macOS only", () => {
     expect(getMeetingCapabilities({ platform: "darwin" })).toEqual({
       program_portrait: true,
+      layer_canvas: true,
     });
     // Same helper code, but not verified on a Windows device yet.
     expect(getMeetingCapabilities({ platform: "win32" })).toEqual({
       program_portrait: false,
+      layer_canvas: true,
     });
     expect(getMeetingCapabilities({ platform: "linux" })).toEqual({
       program_portrait: false,
+      layer_canvas: true,
     });
+  });
+
+  it("advertises the per-layer canvas on every platform", () => {
+    // A feature of the graphics renderer, not of the portrait engine: it must
+    // not follow program_portrait.
+    for (const platform of ["darwin", "win32", "linux"] as const) {
+      expect(getMeetingCapabilities({ platform }).layer_canvas).toBe(true);
+    }
   });
 
   it("defaults to the platform of the running process", () => {
     expect(getMeetingCapabilities()).toEqual({
       program_portrait: process.platform === "darwin",
+      layer_canvas: true,
     });
   });
 

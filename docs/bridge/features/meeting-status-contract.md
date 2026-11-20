@@ -321,6 +321,10 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
 - `content_source.*`-Bruchteile beziehen sich im Hochformat auf die
   Hochformat-Buehne (Groesse der Grafik-Ebenen), im Querformat wie bisher auf
   `1920x1080`.
+- `get_status.capabilities.meeting.layer_canvas` (`true` auf allen Plattformen,
+  fehlt auf aelteren Bridges): `graphics_send` wertet `canvas { width, height }`
+  aus, die Groesse der Ebenen-Box vor der Layout-Transformation. Ohne `canvas`
+  bleibt die Box `1920x1080`. Details: `graphics-commands.md`, ADR-0007.
 
 #### `fallback_active` / `fallback_reason` / `model_hash_ok` auf macOS (B-11)
 

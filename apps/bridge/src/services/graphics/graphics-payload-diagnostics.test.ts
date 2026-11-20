@@ -79,6 +79,45 @@ describe("graphics-payload-diagnostics", () => {
     });
   });
 
+  describe("layer canvas", () => {
+    const payload = {
+      layerId: "l1",
+      category: "overlays" as const,
+      backgroundMode: "transparent" as const,
+      layout: { x: 0, y: 0, scale: 1 },
+      zIndex: 0,
+      bundle: {
+        manifest: {},
+        html: "<div></div>",
+        css: "",
+        schema: {},
+        defaults: {},
+        assets: [],
+      },
+      values: {},
+    };
+
+    it("leaves the summary of a layer without a canvas as it was", () => {
+      expect("canvas" in summarizeSendPayload(payload)).toBe(false);
+      expect("canvas" in (summarizeRawPayload(payload) ?? {})).toBe(false);
+    });
+
+    it("names the canvas of a layer that carries one", () => {
+      const canvas = { width: 1080, height: 1920 };
+
+      expect(summarizeSendPayload({ ...payload, canvas }).canvas).toEqual(canvas);
+      expect(summarizeRawPayload({ ...payload, canvas })?.canvas).toEqual(canvas);
+    });
+
+    it("shows a rejected canvas as it was sent", () => {
+      // The raw summary is what the log carries when the schema refuses the
+      // payload - the offending value has to be readable there.
+      expect(summarizeRawPayload({ ...payload, canvas: { width: 8 } })?.canvas).toEqual({
+        width: 8,
+      });
+    });
+  });
+
   describe("summarizeRawPayload", () => {
     it("returns null for non-object payload", () => {
       expect(summarizeRawPayload(null)).toBeNull();

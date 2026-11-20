@@ -549,6 +549,14 @@ export type MeetingCapabilitiesT = {
    * `meeting_program_portrait_unsupported`.
    */
   program_portrait: boolean;
+  /**
+   * `graphics_send` honours the optional `canvas { width, height }`: the size
+   * of the layer's box (layer host and `#graphic-root`) before the layout
+   * transform, in plane pixels. Without the flag the box is always 1920x1080,
+   * so send `canvas` only when it is set. A renderer feature: independent of
+   * `program_portrait` and true on every platform.
+   */
+  layer_canvas: boolean;
 };
 
 /**

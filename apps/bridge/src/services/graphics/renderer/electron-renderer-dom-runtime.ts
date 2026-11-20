@@ -1,7 +1,8 @@
 import { getStandardAnimationCss } from "./animation-css.js";
 import { getApplyLayoutRuntimeScript } from "./layout-runtime.js";
 
-// Design baseline for templates (format-agnostic rendering).
+// Design baseline for templates (format-agnostic rendering): the box of a
+// layer that carries no canvas of its own.
 const BASE_RENDER_WIDTH = 1920;
 const BASE_RENDER_HEIGHT = 1080;
 
@@ -288,8 +289,12 @@ ${applyLayoutRuntimeScript}
           host.style.top = "0";
           root.appendChild(host);
         }
-        host.style.width = BASE_WIDTH + "px";
-        host.style.height = BASE_HEIGHT + "px";
+        // The layer box - host and #graphic-root - has the size of the canvas
+        // sent with the layer, else the 1920x1080 baseline. Set on every
+        // create, so a re-send with another canvas (or none) resizes it.
+        const canvas = resolveLayerCanvas(payload.canvas, BASE_WIDTH, BASE_HEIGHT);
+        host.style.width = canvas.width + "px";
+        host.style.height = canvas.height + "px";
         host.style.transformOrigin = "top left";
         if (payload.zIndex !== undefined && payload.zIndex !== null) {
           host.style.zIndex = String(payload.zIndex);
@@ -308,8 +313,8 @@ ${applyLayoutRuntimeScript}
 
         const container = document.createElement("div");
         container.id = "graphic-root";
-        container.style.width = BASE_WIDTH + "px";
-        container.style.height = BASE_HEIGHT + "px";
+        container.style.width = canvas.width + "px";
+        container.style.height = canvas.height + "px";
         shadow.appendChild(container);
 
         const template = String(payload.html || "");
