@@ -34,7 +34,9 @@ int main(int argc, char **argv) {
   if (options.probe) {
     initializePlatform();
     PgmEngine engine(PgmEngineConfig{});
-    std::cout << "{\"type\":\"probe\",\"inputs\":" << engine.inputsListJson() << ",\"encoder\":" << probeEncoderJson() << "}" << std::endl;
+    const std::string encoderCandidates = probeEncoderCandidatesJson();
+    std::cout << "{\"type\":\"probe\",\"inputs\":" << engine.inputsListJson() << ",\"encoder\":" << probeEncoderJson()
+              << (encoderCandidates.empty() ? std::string() : ",\"encoder_candidates\":" + encoderCandidates) << "}" << std::endl;
     return 0;
   }
   if (!options.run) {

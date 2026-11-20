@@ -58,7 +58,8 @@ using broadify::helper::wideToUtf8;
 // another application holds fails within this window on the first read, so the
 // caller gets `device_in_use` as the answer instead of a preview that never
 // shows a picture. A device that is merely slow still starts: the wait ends
-// without a verdict and later errors arrive as `pgm_capture_error` events.
+// without a verdict and later errors arrive as `pgm_capture_error` events,
+// a first read that fails only after the wait included.
 constexpr auto kFirstSampleWait = std::chrono::milliseconds(750);
 // Device arrival/removal comes as a burst of interface notifications.
 constexpr auto kHotPlugDebounce = std::chrono::milliseconds(300);
@@ -410,6 +411,10 @@ class UvcSession final : public IMFSourceReaderCallback {
     {
       std::unique_lock<std::mutex> lock(stateMutex_);
       firstCv_.wait_for(lock, kFirstSampleWait, [this] { return firstSeen_; });
+      // Set under the lock OnReadSample decides under: a first result is
+      // either seen here (and answered by this call) or arrives after this
+      // point and is reported by the callback, never both and never neither.
+      firstWaitOver_ = true;
       firstResult = firstSeen_ ? firstResult_ : S_OK;
     }
     if (FAILED(firstResult)) {
@@ -472,12 +477,15 @@ class UvcSession final : public IMFSourceReaderCallback {
     const bool failed = FAILED(hrStatus) || (streamFlags & MF_SOURCE_READERF_ERROR) != 0 || ended;
     const HRESULT result = FAILED(hrStatus) ? hrStatus : (failed ? HRESULT_FROM_WIN32(ERROR_HANDLE_EOF) : S_OK);
     bool first = false;
+    bool answeredByOpen = false;
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
       if (!firstSeen_ && (failed || sample != nullptr)) {
         firstSeen_ = true;
         firstResult_ = result;
         first = true;
+        // open() takes the first result as its own answer only while it still waits for it.
+        answeredByOpen = !firstWaitOver_;
       }
     }
     if (first) {
@@ -485,8 +493,10 @@ class UvcSession final : public IMFSourceReaderCallback {
     }
     if (failed) {
       running_.store(false);
-      // The first result is reported by open() itself.
-      if (!first) {
+      // A first failure open() still waits for fails the open itself. One that
+      // arrives after open() stopped waiting (a slow device) is a capture
+      // error like any later one.
+      if (!answeredByOpen) {
         notifyCaptureError(result, ended ? "end_of_stream" : "read_sample_failed");
       }
       return S_OK;
@@ -749,6 +759,7 @@ class UvcSession final : public IMFSourceReaderCallback {
   bool flushCompleted_ = false;
   bool abandoned_ = false;
   bool firstSeen_ = false;
+  bool firstWaitOver_ = false;  // open() no longer waits for the first result
   HRESULT firstResult_ = S_OK;
 
   // Format fields: see refreshFormat.

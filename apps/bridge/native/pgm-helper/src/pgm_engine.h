@@ -4,6 +4,7 @@
 #include "audio/opus_encoder.h"
 #include "capture/frame_holder.h"
 #include "capture/video_source.h"
+#include "common/encoder_retry_backoff.h"
 #include "control/pgm_rpc.h"
 #include "live_stream/video_encoder.h"
 #include "recorder/mp4_recorder.h"
@@ -67,7 +68,8 @@ class PgmEngine final : public PgmEngineApi {
   std::string statusJsonLocked() const;
   void emitStatus();
   void startAudioLocked(const VideoInputInfo &video);
-  void stopAudioLocked();
+  /** Ends the audio path and hands the source back: the caller stops it after releasing mutex_ (see clearSource). */
+  std::unique_ptr<AudioSource> detachAudioLocked();
   std::string recordingJsonLocked() const;
   std::string recordingEncoderJsonLocked() const;
   /** Flushes the recording encoder into the recorder, stops the recorder, destroys the encoder. */
@@ -95,6 +97,8 @@ class PgmEngine final : public PgmEngineApi {
   VideoInputInfo input_;
   bool hasInput_ = false;
   bool encoderConfigured_ = false;
+  /** Keeps a failed setup of encoder_ from being repeated on every frame. */
+  EncoderRetryBackoff encoderRetry_;
   bool audioRunning_ = false;
   std::string lastErrorCode_;
   std::string lastErrorMessage_;

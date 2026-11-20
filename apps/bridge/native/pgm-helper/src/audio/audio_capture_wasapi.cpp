@@ -195,9 +195,9 @@ uint64_t packetTimeNs(UINT64 qpcPosition100ns, DWORD flags) {
 }
 
 // Everything the capture thread needs. Shared between the source object and
-// the thread: stop() only signals and lets go, because it can be called while
-// the caller holds a lock the in-flight sink call is waiting for (the engine
-// stops audio under its mutex) - joining there would deadlock.
+// the thread, which is never joined: stop() ends the sink, signals and lets
+// go; the thread stops the stream and releases everything itself, so a device
+// call that takes its time cannot hold up a source switch or the shutdown.
 struct CaptureState {
   std::string name;
   ComPtr<IAudioClient> client;
@@ -205,6 +205,10 @@ struct CaptureState {
   HANDLE dataEvent = nullptr;
   HANDLE stopEvent = nullptr;
   std::atomic<bool> stopping{false};
+  // Held for every sink call and by stop() while it clears the sink: once
+  // stop() has returned, no call is in flight and none starts, so the sink's
+  // owner may go away. In return stop() must not be called under a lock the
+  // sink takes (the engine stops audio outside its mutex).
   std::mutex sinkMutex;
   AudioSink sink;
 
@@ -268,13 +272,10 @@ HRESULT drainPackets(CaptureState &state, std::vector<float> &silence) {
       } else {
         chunk.samples = reinterpret_cast<const float *>(data);
       }
-      AudioSink sink;
-      {
-        std::lock_guard<std::mutex> lock(state.sinkMutex);
-        sink = state.sink;
-      }
-      if (sink) {
-        sink(chunk);
+      // The call runs under sinkMutex (see CaptureState), so stop() can wait for it.
+      std::lock_guard<std::mutex> lock(state.sinkMutex);
+      if (state.sink) {
+        state.sink(chunk);
       }
     }
     hr = state.capture->ReleaseBuffer(frames);
@@ -357,6 +358,7 @@ class WasapiAudioSource final : public AudioSource {
     }
     state->stopping.store(true);
     {
+      // Waits for a sink call in flight (see CaptureState::sinkMutex); after this block the sink is never called again.
       std::lock_guard<std::mutex> lock(state->sinkMutex);
       state->sink = nullptr;
     }
