@@ -1240,6 +1240,68 @@ describe("GraphicsManager with configured outputs", () => {
     expect(status.activePreset).toBeNull();
   });
 
+  describe("layer canvas", () => {
+    const CANVAS = { width: 1080, height: 1920 };
+
+    const createConfiguredManager = async () => {
+      const renderer = createRenderer();
+      const manager = createManagerWithRealTransition(renderer);
+      await manager.initialize();
+      await manager.configureOutputs(createValidConfig());
+      const renderLayer = renderer.renderLayer as jest.Mock;
+      return { manager, renderLayer };
+    };
+
+    it("renders a graphics_send without a canvas as before: no canvas reaches the renderer", async () => {
+      const { manager, renderLayer } = await createConfiguredManager();
+
+      await manager.sendLayer(createTestPatternPayload());
+
+      expect(renderLayer).toHaveBeenCalledTimes(1);
+      expect("canvas" in renderLayer.mock.calls[0][0]).toBe(false);
+    });
+
+    it("hands the canvas of a graphics_send to the renderer", async () => {
+      const { manager, renderLayer } = await createConfiguredManager();
+
+      await manager.sendLayer({ ...createTestPatternPayload(), canvas: CANVAS });
+
+      expect(renderLayer).toHaveBeenCalledWith(
+        expect.objectContaining({ layerId: "test-pattern", canvas: CANVAS }),
+      );
+    });
+
+    it("follows the latest graphics_send of a layer: another canvas, then none", async () => {
+      const { manager, renderLayer } = await createConfiguredManager();
+
+      await manager.sendLayer({ ...createTestPatternPayload(), canvas: CANVAS });
+      await manager.sendLayer({
+        ...createTestPatternPayload(),
+        canvas: { width: 720, height: 1280 },
+      });
+      await manager.sendLayer(createTestPatternPayload());
+
+      expect(renderLayer.mock.calls.map(([input]) => input.canvas)).toEqual([
+        CANVAS,
+        { width: 720, height: 1280 },
+        undefined,
+      ]);
+      expect("canvas" in renderLayer.mock.calls[2][0]).toBe(false);
+    });
+
+    it("rejects an invalid canvas like any other invalid field", async () => {
+      const { manager, renderLayer } = await createConfiguredManager();
+
+      await expect(
+        manager.sendLayer({
+          ...createTestPatternPayload(),
+          canvas: { width: 8, height: 1920 },
+        }),
+      ).rejects.toThrow();
+      expect(renderLayer).not.toHaveBeenCalled();
+    });
+  });
+
   describe("usage tracking", () => {
     it("reports shown with plane identity and preset ids", async () => {
       const usageRecorder = createUsageRecorder();
