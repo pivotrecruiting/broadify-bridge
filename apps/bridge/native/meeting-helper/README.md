@@ -53,7 +53,9 @@ helper renders a real 1080x1920 program:
   CMIO extension, Windows TCP fallback; the `X-Broadify-Frame-*` handshake
   headers advertise 1920x1080) and in the Windows shared-memory publisher. The
   system extension, the Windows service and the `vcam_shm_layout` limits are
-  untouched.
+  untouched. The raw-frame server's `frame_sent` event logs the delivered
+  record as `width`/`height` and adds the program size as
+  `source_width`/`source_height` when the frame was fitted.
 - Camera PiP inset: 28% of the long edge, capped at 45% of the canvas width;
   margin and border follow the short edge. Cornerbug size and the speaker
   layout travel stay width-relative.

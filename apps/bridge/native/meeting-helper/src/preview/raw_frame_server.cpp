@@ -221,9 +221,11 @@ void swizzleRgbaToBgraInPlace(uint8_t *pixels, uint32_t width, uint32_t height) 
   }
 }
 
-void writeRawFramePayload(const PreviewFrame &frame,
-                          RawFrameProtocolVersion protocolVersion,
-                          std::vector<uint8_t> &payload) {
+// Returns the geometry of the record that was written (what the client
+// receives), which differs from the program frame for a portrait canvas.
+FrameGeometry writeRawFramePayload(const PreviewFrame &frame,
+                                   RawFrameProtocolVersion protocolVersion,
+                                   std::vector<uint8_t> &payload) {
   const size_t headerSize = rawFrameHeaderSize(protocolVersion);
   // The virtual camera is a 16:9-only sink: a portrait program frame is
   // pillarboxed into 1920x1080 here, on the client's worker thread, so the
@@ -268,7 +270,7 @@ void writeRawFramePayload(const PreviewFrame &frame,
         dst[offset + 3u] = 255u;
       }
     }
-    return;
+    return output;
   }
 #if defined(__APPLE__)
   // SIMD-accelerated RGBA->BGRA swizzle; the scalar loop cost several
@@ -285,10 +287,11 @@ void writeRawFramePayload(const PreviewFrame &frame,
   destinationBuffer.rowBytes = static_cast<size_t>(frame.width) * 4u;
   const uint8_t kRgbaToBgra[4] = {2, 1, 0, 3};
   if (vImagePermuteChannels_ARGB8888(&sourceBuffer, &destinationBuffer, kRgbaToBgra, kvImageNoFlags) == kvImageNoError) {
-    return;
+    return output;
   }
 #endif
   swizzleRgbaToBgra(src, dst, frame.rgba.size() / 4u);
+  return output;
 }
 
 void writeRawFrameKeepAlive(uint64_t sequence,
@@ -428,16 +431,27 @@ void streamFrames(int client,
     lastSequence = frame.sequence;
     heartbeatSequence = frame.sequence;
     lastCaptureNs = frame.captureNs;
-    writeRawFramePayload(frame, protocolVersion, payload);
+    const FrameGeometry delivered =
+        writeRawFramePayload(frame, protocolVersion, payload);
     if (!sendAll(client, reinterpret_cast<const char *>(payload.data()), payload.size())) {
       return;
     }
     lastSentAt = std::chrono::steady_clock::now();
     ++sentFrames;
     if (sentFrames == 1u || sentFrames % 90u == 0u) {
+      // width/height describe the record the client received. A portrait
+      // program is delivered pillarboxed, so its own size is added as
+      // source_*; a landscape program is sent as is and logs the same line as
+      // before.
+      std::string sourceGeometry;
+      if (delivered.width != frame.width || delivered.height != frame.height) {
+        sourceGeometry = ",\"source_width\":" + std::to_string(frame.width) +
+                         ",\"source_height\":" + std::to_string(frame.height);
+      }
       std::cout << "{\"type\":\"meeting_vcam_raw\",\"event\":\"frame_sent\",\"seq\":" << frame.sequence
-                << ",\"width\":" << frame.width
-                << ",\"height\":" << frame.height
+                << ",\"width\":" << delivered.width
+                << ",\"height\":" << delivered.height
+                << sourceGeometry
                 << ",\"sent_frames\":" << sentFrames
                 << "}" << std::endl;
     }

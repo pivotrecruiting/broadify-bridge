@@ -6,7 +6,10 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <mutex>
+#include <streambuf>
 #include <string>
 #include <thread>
 #include <vector>
@@ -222,6 +225,74 @@ std::vector<uint8_t> buildLegacyV1RecordBytes() {
   return expected;
 }
 
+// Captures std::cout as complete lines while alive. The server logs its JSON
+// events from the accept thread and one worker thread per client, each line
+// in several insertions, so lines are assembled per writing thread.
+class ScopedCoutCapture {
+ public:
+  ScopedCoutCapture() : previous_(std::cout.rdbuf(&buffer_)) {}
+  ~ScopedCoutCapture() { std::cout.rdbuf(previous_); }
+  ScopedCoutCapture(const ScopedCoutCapture &) = delete;
+  ScopedCoutCapture &operator=(const ScopedCoutCapture &) = delete;
+
+  std::vector<std::string> lines() { return buffer_.lines(); }
+
+ private:
+  class LineBuffer : public std::streambuf {
+   public:
+    std::vector<std::string> lines() {
+      std::lock_guard<std::mutex> lock(mutex_);
+      return lines_;
+    }
+
+   protected:
+    int_type overflow(int_type ch) override {
+      if (!traits_type::eq_int_type(ch, traits_type::eof())) {
+        const char value = traits_type::to_char_type(ch);
+        append(&value, 1u);
+      }
+      return traits_type::not_eof(ch);
+    }
+
+    std::streamsize xsputn(const char *data, std::streamsize count) override {
+      append(data, static_cast<size_t>(count));
+      return count;
+    }
+
+   private:
+    void append(const char *data, size_t count) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      std::string &pending = pending_[std::this_thread::get_id()];
+      for (size_t i = 0; i < count; ++i) {
+        if (data[i] == '\n') {
+          lines_.push_back(pending);
+          pending.clear();
+        } else {
+          pending.push_back(data[i]);
+        }
+      }
+    }
+
+    std::mutex mutex_;
+    std::map<std::thread::id, std::string> pending_;
+    std::vector<std::string> lines_;
+  };
+
+  LineBuffer buffer_;
+  std::streambuf *previous_;
+};
+
+// The "frame_sent" events among captured server log lines.
+std::vector<std::string> frameSentEvents(const std::vector<std::string> &lines) {
+  std::vector<std::string> events;
+  for (const std::string &line : lines) {
+    if (line.find("\"event\":\"frame_sent\"") != std::string::npos) {
+      events.push_back(line);
+    }
+  }
+  return events;
+}
+
 void assertDisarmedHandshake(uint16_t port, MeetingState &state) {
   {
     std::lock_guard<std::mutex> lock(state.mutex);
@@ -245,7 +316,8 @@ void assertDisarmedHandshake(uint16_t port, MeetingState &state) {
 
 // A portrait program (engine 1080x1920) must reach the 16:9-only virtual
 // camera as 1920x1080: handshake headers, record header and payload size stay
-// landscape, the program sits pillarboxed between opaque black bars.
+// landscape, the program sits pillarboxed between opaque black bars. The
+// "frame_sent" event reports the delivered record, not the program size.
 void assertPortraitProgramIsPillarboxed() {
   const uint16_t port = reservePort();
   PreviewFrameStore previewFrames;
@@ -256,6 +328,7 @@ void assertPortraitProgramIsPillarboxed() {
   }
   std::atomic<bool> running{true};
   const RawFrameStreamGeometry programGeometry{1080, 1920, 30};
+  auto serverLog = std::make_unique<ScopedCoutCapture>();
   std::thread server([&] {
     runRawFrameServer(port, programGeometry, previewFrames, state, running);
   });
@@ -336,6 +409,22 @@ void assertPortraitProgramIsPillarboxed() {
     state.vcamRawRunning = false;
   }
   server.join();
+
+  const std::vector<std::string> sentEvents =
+      frameSentEvents(serverLog->lines());
+  serverLog.reset();
+  if (sentEvents.size() != 2u) {
+    fail("each portrait client must log one frame_sent event");
+  }
+  for (const std::string &event : sentEvents) {
+    if (event.find(",\"width\":1920,\"height\":1080,") == std::string::npos) {
+      fail("portrait frame_sent must log the delivered 1920x1080 record");
+    }
+    if (event.find(",\"source_width\":1080,\"source_height\":1920,") ==
+        std::string::npos) {
+      fail("portrait frame_sent must log the program size as source_*");
+    }
+  }
 }
 
 }  // namespace
@@ -358,6 +447,7 @@ int main() {
   std::atomic<bool> running{true};
   RawFrameStreamGeometry geometry{2, 2, 30};
 
+  auto serverLog = std::make_unique<ScopedCoutCapture>();
   std::thread server([&] {
     runRawFrameServer(port, geometry, previewFrames, state, running);
   });
@@ -464,6 +554,22 @@ int main() {
     state.vcamRawRunning = false;
   }
   server.join();
+
+  // A landscape program is delivered as is: the frame_sent line keeps its
+  // former shape (delivered size == program size, no source_* keys).
+  const std::vector<std::string> sentEvents =
+      frameSentEvents(serverLog->lines());
+  serverLog.reset();
+  if (sentEvents.size() < 3u) {
+    fail("each landscape client must log a frame_sent event");
+  }
+  for (const std::string &event : sentEvents) {
+    if (event !=
+        "{\"type\":\"meeting_vcam_raw\",\"event\":\"frame_sent\",\"seq\":1,"
+        "\"width\":2,\"height\":2,\"sent_frames\":1}") {
+      fail("landscape frame_sent line must stay unchanged");
+    }
+  }
 
   assertPortraitProgramIsPillarboxed();
 
