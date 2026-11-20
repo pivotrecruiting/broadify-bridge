@@ -1,6 +1,10 @@
 const { access } = require("node:fs/promises");
 const path = require("node:path");
 
+const {
+  getWindowsPgmHelperSigningPaths,
+} = require("./lib/windows-pgm-helper.cjs");
+
 const WINDOWS_NATIVE_RESOURCES = Object.freeze([
   "resources/native/display-helper/display-helper.exe",
   "resources/native/display-helper/SDL2.dll",
@@ -29,10 +33,17 @@ const WINDOWS_NATIVE_RESOURCES = Object.freeze([
   "resources/native/vcam-helper/broadify-vcam.dll",
 ]);
 
-function getWindowsNativeResourcePaths(appOutDir) {
-  return WINDOWS_NATIVE_RESOURCES.map((relativePath) =>
-    path.join(appOutDir, ...relativePath.split("/")),
-  );
+/**
+ * Files the afterSign hook signs: WINDOWS_NATIVE_RESOURCES, plus pgm-helper.exe
+ * when the build switch BROADIFY_PGM_WINDOWS=1 packaged it
+ * (scripts/lib/windows-pgm-helper.cjs). Without the switch this is exactly
+ * WINDOWS_NATIVE_RESOURCES.
+ */
+function getWindowsNativeResourcePaths(appOutDir, env = process.env) {
+  return [
+    ...WINDOWS_NATIVE_RESOURCES,
+    ...getWindowsPgmHelperSigningPaths(env),
+  ].map((relativePath) => path.join(appOutDir, ...relativePath.split("/")));
 }
 
 async function signWindowsNativeResources(context) {

@@ -224,6 +224,18 @@ elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]];
   fi
   EXECUTABLE_FILES+=("apps/bridge/native/display-helper/display-helper.exe")
   EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/meeting-helper.exe")
+  # PGM helper (live program preview on Windows, ADR-0009): required only when
+  # the build switch BROADIFY_PGM_WINDOWS=1 built it (dist:win ->
+  # build:pgm-helper) and packages it. The list comes from
+  # scripts/lib/windows-pgm-helper.cjs and is empty without the switch, so
+  # this then adds nothing.
+  pgm_helper_files="$(node "$ROOT_DIR/scripts/list-windows-pgm-helper-paths.cjs" --source)"
+  while IFS= read -r pgm_helper_file; do
+    if [[ -n "$pgm_helper_file" ]]; then
+      REQUIRED_FILES+=("$pgm_helper_file")
+      EXECUTABLE_FILES+=("$pgm_helper_file")
+    fi
+  done <<< "$pgm_helper_files"
 else
   REQUIRED_FILES+=("apps/bridge/native/meeting-helper/meeting-helper")
   EXECUTABLE_FILES+=("apps/bridge/native/meeting-helper/meeting-helper")
@@ -377,6 +389,11 @@ elif [[ "$UNAME_S" == MINGW* || "$UNAME_S" == MSYS* || "$UNAME_S" == CYGWIN* ]];
   check_architecture "apps/bridge/native/meeting-helper/openvino_intel_npu_plugin.dll"
   check_architecture "apps/bridge/native/meeting-helper/openvino_onnx_frontend.dll"
   check_architecture "apps/bridge/native/meeting-helper/tbb12.dll"
+  while IFS= read -r pgm_helper_file; do
+    if [[ -n "$pgm_helper_file" ]]; then
+      check_architecture "$pgm_helper_file"
+    fi
+  done <<< "$pgm_helper_files"
   check_modnet_manifest_hash
 else
   check_architecture "apps/bridge/native/meeting-helper/meeting-helper"

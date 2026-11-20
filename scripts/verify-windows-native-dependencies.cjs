@@ -21,7 +21,7 @@ const {
   parseDumpbinDependents,
 } = require("./lib/windows-native-dependency-policy.cjs");
 const {
-  WINDOWS_VC_RUNTIME_HELPER_DIRS,
+  getWindowsVcRuntimeHelperDirs,
 } = require("./lib/windows-vc-runtime.cjs");
 
 const PE_EXTENSIONS = new Set([".exe", ".dll"]);
@@ -79,7 +79,9 @@ async function listPeFilesByDirectory(directory) {
  */
 async function verifyNativeDependencies({
   resourcesDir,
-  helperDirs = WINDOWS_VC_RUNTIME_HELPER_DIRS,
+  // display-helper and meeting-helper; with the build switch
+  // BROADIFY_PGM_WINDOWS=1 also the packaged pgm-helper folder.
+  helperDirs = getWindowsVcRuntimeHelperDirs(),
   runDumpbin = createDumpbinRunner(process.env.DUMPBIN || "dumpbin"),
 }) {
   const problems = [];
