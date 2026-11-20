@@ -17,9 +17,9 @@
 //       (PROGRAM_STREAM_TEST_ENCODER). Runs on every platform without
 //       hardware: the frames must arrive as frame-size NV12 with the right
 //       pixels, no encoder call may happen while the PreviewFrameStore lock is
-//       held, and a failed encoder set-up must not be repeated with every frame
-//       but must not hold back another target, nor anything after a set-up
-//       that worked.
+//       held, a frame the encoder refuses is counted as dropped, and a failed
+//       encoder set-up must not be repeated with every frame but must not
+//       hold back another target, nor anything after a set-up that worked.
 #include "live/program_stream.h"
 
 #include "encoder_retry_backoff.h"  // the PGM helper's back-off the worker paces failed set-ups with
@@ -387,6 +387,8 @@ struct TestEncoderState {
   PreviewFrameStore *store = nullptr;
   bool failConfigure = false;
   uint32_t failWidth = 0;  // configure() also fails for a target of this width
+  int refuseEncodes = 0;   // encode() returns false for this many frames
+  int refusedEncodes = 0;
   int configureAttempts = 0;
   int failedAttempts = 0;
   std::vector<std::chrono::steady_clock::time_point> attemptTimes;
@@ -496,6 +498,11 @@ class TestEncoder final : public VideoEncoder {
     {
       TestEncoderState &state = encoderState();
       std::lock_guard<std::mutex> lock(state.mutex);
+      if (state.refuseEncodes > 0) {
+        --state.refuseEncodes;
+        ++state.refusedEncodes;
+        return false;  // the frame is the worker's to count as dropped
+      }
       index = state.frames++;
       if (forceKeyframe) {
         ++state.forcedKeyframes;
@@ -560,6 +567,12 @@ int failedAttempts() {
   TestEncoderState &state = encoderState();
   std::lock_guard<std::mutex> lock(state.mutex);
   return state.failedAttempts;
+}
+
+int refusedEncodes() {
+  TestEncoderState &state = encoderState();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  return state.refusedEncodes;
 }
 
 /** Milliseconds between two set-up attempts (0-based, in the order they ran). */
@@ -774,6 +787,33 @@ int main() {
     if (!waitFor([&] { return viewer->rtpPackets->load() >= 15; }, 10000)) {
       fail("the viewer received too little RTP for the 1920x1080 program");
     }
+
+#if defined(PROGRAM_STREAM_TEST_ENCODER)
+    // The encoder refuses frames (encode() returns false, as an encoder that failed or is closing does):
+    // each of them is counted as dropped, and the stream keeps its encoder.
+    {
+      const std::string before = stream.statusJson();
+      {
+        std::lock_guard<std::mutex> lock(encoderState().mutex);
+        encoderState().refuseEncodes = 5;
+      }
+      if (!waitFor([&] { return refusedEncodes() == 5; }, 5000)) {
+        fail("the encoder was not handed further frames");
+      }
+      // Two more frames through the encoder: by then the worker has counted the fifth refusal.
+      const uint64_t encodedAtRefusal = numberField(stream.statusJson(), "encoded_frames");
+      if (!waitFor([&] { return numberField(stream.statusJson(), "encoded_frames") >= encodedAtRefusal + 2; }, 5000)) {
+        fail("no frames encoded after the refused ones: " + stream.statusJson());
+      }
+      const std::string after = stream.statusJson();
+      if (numberField(after, "dropped_frames") != numberField(before, "dropped_frames") + 5) {
+        fail("5 refused frames must count as 5 dropped frames: " + before + " -> " + after);
+      }
+      if (!contains(after, encoderStatusFor(remoteLandscape)) || !contains(after, "\"last_error\":null")) {
+        fail("a refused frame must not change the encoder or report an error: " + after);
+      }
+    }
+#endif
 
     // The program turns portrait: the encoder follows the frame geometry (720x1280 for "remote").
     const EncodeTarget remotePortrait = selectEncodeTarget(1080, 1920, 30, 1, EncodeProfile::Remote);
