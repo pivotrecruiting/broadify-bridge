@@ -31,6 +31,10 @@ import {
 import { meetingContentSourceState } from "./meeting-content-source-state.js";
 import type { MeetingProgramFormatT } from "@broadify/protocol";
 import { resolveMeetingProgramFormat } from "./meeting-capabilities.js";
+import {
+  runMeetingRecordingProbe,
+  type MeetingRecordingProbeT,
+} from "./meeting-recording-probe.js";
 import type { MeetingStatusT } from "./meeting-status-types.js";
 import { decideStatusPublish } from "./status-publish-policy.js";
 import {
@@ -797,9 +801,48 @@ export class MeetingHelperManager {
   >();
   private shouldRestoreVirtualCamera = false;
   private keyerRestoreConfig: Record<string, unknown> | null = null;
+  // Hardware-encoder probe of the recorder (ADR-0010). Started at most once
+  // per bridge run; the outcome - a failure included - stays for that run.
+  private recordingProbeRun: Promise<MeetingRecordingProbeT | null> | null = null;
+  private recordingProbe: MeetingRecordingProbeT | null = null;
 
   getClient(): MeetingHelperClient | null {
     return this.client;
+  }
+
+  /**
+   * Hardware video encoders of this machine as the helper's probe mode
+   * reports them, or null when the probe failed or timed out. The first call
+   * runs the probe (its own short-lived helper process: no engine, no
+   * device), later calls get the same result. Independent of the engine
+   * lifecycle and never part of `start()`, which must stay free of awaits.
+   */
+  probeRecordingEncoders(): Promise<MeetingRecordingProbeT | null> {
+    this.recordingProbeRun ??= runMeetingRecordingProbe(
+      resolveMeetingHelperPath(),
+    ).then((outcome) => {
+      if (!outcome.ok) {
+        getLogger().warn(
+          `[Meeting] Recording encoder probe failed (${outcome.reason}); recording formats are not advertised.`,
+        );
+        return null;
+      }
+      this.recordingProbe = outcome.probe;
+      const codecs = outcome.probe.encoders.map((encoder) => encoder.codec);
+      getLogger().info(
+        `[Meeting] Recording encoder probe: backend=${outcome.probe.backend} hardware_codecs=${Array.from(new Set(codecs)).join(",") || "none"}`,
+      );
+      return outcome.probe;
+    });
+    return this.recordingProbeRun;
+  }
+
+  /**
+   * Result of `probeRecordingEncoders()` if it has already succeeded, without
+   * starting or waiting for the probe; null otherwise.
+   */
+  getRecordingProbe(): MeetingRecordingProbeT | null {
+    return this.recordingProbe;
   }
 
   /** Record a successful camera call for replay after a crash restart. */

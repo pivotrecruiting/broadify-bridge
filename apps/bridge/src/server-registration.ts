@@ -1,5 +1,6 @@
 import { getLiveProgramCapabilities } from "./services/pgm/pgm-command-handler.js";
 import { getMeetingCapabilities } from "./services/meeting/meeting-capabilities.js";
+import { meetingHelperManager } from "./services/meeting/meeting-helper-manager.js";
 import { pgmHelperManager } from "./services/pgm/pgm-helper-manager.js";
 import { isAllowedOrigin } from "./routes/origin-allowlist.js";
 
@@ -89,7 +90,9 @@ export async function registerServerRoutes(
         live_program: liveProgram,
         capabilities: {
           live_program: getLiveProgramCapabilities(),
-          meeting: getMeetingCapabilities(),
+          meeting: getMeetingCapabilities({
+            recordingProbe: meetingHelperManager.getRecordingProbe(),
+          }),
         },
       };
     },

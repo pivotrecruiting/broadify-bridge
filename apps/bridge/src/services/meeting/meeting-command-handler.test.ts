@@ -332,9 +332,10 @@ describe("meeting-command-handler", () => {
       ).rejects.toThrow("Invalid payload for meeting_engine_start");
     });
 
-    describe("program geometry", () => {
+    describe("program format", () => {
       const LANDSCAPE = { width: 1920, height: 1080, fps: 30 };
       const PORTRAIT = { width: 1080, height: 1920, fps: 30 };
+      const LANDSCAPE_25 = { ...LANDSCAPE, fps: 25 };
       const settlePrewarm = () =>
         new Promise((resolve) => setImmediate(resolve));
 
@@ -472,6 +473,94 @@ describe("meeting-command-handler", () => {
         expect(mockStart).toHaveBeenCalledWith(PORTRAIT);
       });
 
+      it.each([
+        ["a frame rate outside the list", { ...LANDSCAPE, fps: 60 }, "1920x1080@60"],
+        ["a canvas larger than the limit", { width: 3840, height: 2160, fps: 30 }, "3840x2160@30"],
+        ["a portrait canvas larger than the limit", { width: 2160, height: 3840, fps: 30 }, "2160x3840@30"],
+      ])("refuses %s as an unsupported program format", async (_name, payload, described) => {
+        await primeGraphicsState();
+        mockIsRunning.mockReturnValue(false);
+
+        const result = await handleMeetingCommand("meeting_engine_start", payload);
+
+        expect(result).toEqual({
+          success: false,
+          error: `The meeting program format ${described} is not supported by this bridge.`,
+          errorCode: "meeting_program_format_unsupported",
+        });
+        await expectNoStartSideEffects();
+      });
+
+      it("refuses an unsupported program format even while an engine runs", async () => {
+        // Not "restart required": a restart would not make the format work.
+        await primeGraphicsState();
+        mockGetProgramFormat.mockReturnValue(LANDSCAPE);
+
+        const result = await handleMeetingCommand("meeting_engine_start", {
+          ...LANDSCAPE,
+          fps: 50,
+        });
+
+        expect(result.errorCode).toBe("meeting_program_format_unsupported");
+        expect(mockClient.recordingStatus).not.toHaveBeenCalled();
+        await expectNoStartSideEffects();
+      });
+
+      it("reports the missing portrait capability before the format limits", async () => {
+        mockIsRunning.mockReturnValue(false);
+        mockGetMeetingCapabilities.mockReturnValue({ program_portrait: false });
+
+        const result = await handleMeetingCommand("meeting_engine_start", {
+          ...PORTRAIT,
+          fps: 60,
+        });
+
+        expect(result.errorCode).toBe("meeting_program_portrait_unsupported");
+      });
+
+      it("starts the engine at every advertised frame rate", async () => {
+        mockIsRunning.mockReturnValueOnce(false);
+        mockStart.mockResolvedValue({ state: "running", program_format: LANDSCAPE_25 });
+
+        const result = await handleMeetingCommand("meeting_engine_start", LANDSCAPE_25);
+        await settlePrewarm();
+
+        expect(result.success).toBe(true);
+        expect(mockStart).toHaveBeenCalledWith(LANDSCAPE_25);
+      });
+
+      it("requires a restart when the running engine has a different frame rate", async () => {
+        // Before ADR-0010 this start succeeded and kept the old frame rate.
+        await primeGraphicsState();
+        mockGetProgramFormat.mockReturnValue(LANDSCAPE);
+        mockGetStatus.mockReturnValue({ state: "running", program_format: LANDSCAPE });
+        mockClient.recordingStatus.mockResolvedValue({ recording: { active: false } });
+
+        const result = await handleMeetingCommand("meeting_engine_start", LANDSCAPE_25);
+
+        expect(result).toEqual({
+          success: false,
+          error:
+            "The meeting engine is running at 1920x1080@30; stop it before starting 1920x1080@25.",
+          errorCode: "meeting_engine_restart_required",
+          data: { state: "running", program_format: LANDSCAPE },
+        });
+        await expectNoStartSideEffects();
+      });
+
+      it("names the running recording when a frame rate change is refused", async () => {
+        await primeGraphicsState();
+        mockGetProgramFormat.mockReturnValue(LANDSCAPE_25);
+        mockGetStatus.mockReturnValue({ state: "running" });
+        mockClient.recordingStatus.mockResolvedValue({ recording: { active: true } });
+
+        const result = await handleMeetingCommand("meeting_engine_start", LANDSCAPE);
+
+        expect(result.errorCode).toBe("meeting_engine_restart_required");
+        expect(result.error).toContain("recording");
+        await expectNoStartSideEffects();
+      });
+
       it("requires a restart when the running engine has a different geometry", async () => {
         await primeGraphicsState();
         mockGetProgramFormat.mockReturnValue(LANDSCAPE);
@@ -518,8 +607,8 @@ describe("meeting-command-handler", () => {
         ["explicit landscape", LANDSCAPE, LANDSCAPE],
         ["defaults", {}, LANDSCAPE],
         ["portrait", PORTRAIT, PORTRAIT],
-        ["another frame rate", { ...LANDSCAPE, fps: 60 }, LANDSCAPE],
-      ])("stays idempotent for the same geometry (%s)", async (_name, payload, running) => {
+        ["25 fps", LANDSCAPE_25, LANDSCAPE_25],
+      ])("stays idempotent for the same format (%s)", async (_name, payload, running) => {
         mockGetProgramFormat.mockReturnValue(running);
         mockGetStatus.mockReturnValue({ state: "running", program_format: running });
 
@@ -593,11 +682,29 @@ describe("meeting-command-handler", () => {
           expect(await refusal).toEqual({
             success: false,
             error:
-              "The meeting engine is running at 1920x1080; stop it before starting 1080x1920.",
+              "The meeting engine is running at 1920x1080@30; stop it before starting 1080x1920@30.",
             errorCode: "meeting_engine_restart_required",
             data: { state: "running", program_format: LANDSCAPE },
           });
           // The regions, renderers and plane state belong to the other start.
+          await expectNoStartSideEffects();
+        });
+
+        it("refuses another frame rate and answers once that start runs", async () => {
+          await primeGraphicsState();
+          const pendingStart = pendingStartAt(LANDSCAPE);
+
+          const refusal = handleMeetingCommand("meeting_engine_start", LANDSCAPE_25);
+          await settlePrewarm();
+          pendingStart.finish({ state: "running", program_format: LANDSCAPE });
+
+          expect(await refusal).toEqual({
+            success: false,
+            error:
+              "The meeting engine is running at 1920x1080@30; stop it before starting 1920x1080@25.",
+            errorCode: "meeting_engine_restart_required",
+            data: { state: "running", program_format: LANDSCAPE },
+          });
           await expectNoStartSideEffects();
         });
 
@@ -620,8 +727,8 @@ describe("meeting-command-handler", () => {
           ["landscape", LANDSCAPE, LANDSCAPE],
           ["defaults", {}, LANDSCAPE],
           ["portrait", PORTRAIT, PORTRAIT],
-          ["another frame rate", { ...PORTRAIT, fps: 60 }, PORTRAIT],
-        ])("joins the same geometry exactly as before (%s)", async (_name, payload, pending) => {
+          ["25 fps", LANDSCAPE_25, LANDSCAPE_25],
+        ])("joins the same format exactly as before (%s)", async (_name, payload, pending) => {
           pendingStartAt(pending);
           // Not running for the start decision, running for the arm after it.
           mockIsRunning.mockReturnValueOnce(false).mockReturnValue(true);
@@ -735,7 +842,7 @@ describe("meeting-command-handler", () => {
             expect(result.success).toBe(false);
             expect(result.errorCode).toBe("meeting_engine_restart_required");
             expect(warn).toHaveBeenCalledWith(
-              expect.stringContaining("joined a start with another geometry"),
+              expect.stringContaining("joined a start with another format"),
             );
           } finally {
             warn.mockRestore();

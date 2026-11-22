@@ -464,6 +464,48 @@ export type MeetingCapabilitiesT = {
      * `program_portrait` and true on every platform.
      */
     layer_canvas: boolean;
+    /**
+     * What `meeting_engine_start` accepts (ADR-0010). `max_width`/`max_height`
+     * bound a landscape canvas; a portrait canvas is bounded by the same values
+     * with the edges swapped and additionally needs `program_portrait`. `fps`
+     * lists the accepted frame rates. A start outside is refused with
+     * `meeting_program_format_unsupported`. Absent on older bridges: only
+     * 1920x1080 (and 1080x1920 with `program_portrait`) at 30 fps is safe.
+     */
+    program_formats?: {
+        max_width: number;
+        max_height: number;
+        fps: number[];
+    };
+    /**
+     * What the meeting recorder can write on this machine (ADR-0010): the codecs
+     * the recorder implements for which the machine has a hardware encoder, each
+     * with its container and the largest program it records. An empty list means
+     * no hardware encoder was found. Absent on older bridges and when the
+     * encoder probe failed: the web app then offers no recording format choice.
+     */
+    recording?: {
+        codecs: Array<{
+            codec: MeetingRecordingCodecT;
+            container: MeetingRecordingContainerT;
+            max_height: number;
+            max_fps: number;
+        }>;
+        /** The bridge can upload a copy of a finished recording. */
+        upload_copy: boolean;
+    };
+};
+/** Archive codecs of the meeting recorder (ADR-0010). */
+export type MeetingRecordingCodecT = "h264" | "hevc" | "prores_422_lt" | "prores_422" | "prores_422_hq";
+/** File container of a meeting recording; follows from the codec. */
+export type MeetingRecordingContainerT = "mp4" | "mov";
+/**
+ * Recording format chosen for a meeting recording. Size and frame rate are
+ * not part of it: a recording always has the format of the running program
+ * (`MeetingProgramFormatT`).
+ */
+export type MeetingRecordingFormatT = {
+    codec: MeetingRecordingCodecT;
 };
 /**
  * Geometry of the running meeting engine, reported as `program_format` in the

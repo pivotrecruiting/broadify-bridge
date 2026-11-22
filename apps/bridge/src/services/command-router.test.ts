@@ -34,6 +34,23 @@ jest.mock("./mode/mode-activation-service.js", () => ({
   },
 }));
 
+// The helper's encoder probe is its own process; get_status must not spawn
+// one from a unit test.
+const mockRunMeetingRecordingProbe = jest.fn(async (_helperPath: string) => ({
+  ok: true,
+  probe: {
+    backend: "videotoolbox",
+    encoders: [
+      { codec: "h264", name: "Apple H.264 (HW)" },
+      { codec: "hevc", name: "Apple HEVC (HW)" },
+    ],
+  },
+}));
+jest.mock("./meeting/meeting-recording-probe.js", () => ({
+  runMeetingRecordingProbe: (helperPath: string) =>
+    mockRunMeetingRecordingProbe(helperPath),
+}));
+
 jest.mock("./device-cache.js", () => ({
   deviceCache: {
     getDevices: jest.fn().mockResolvedValue([]),
@@ -240,6 +257,15 @@ describe("command-router", () => {
           meeting: {
             program_portrait: process.platform === "darwin",
             layer_canvas: true,
+            program_formats: { max_width: 1920, max_height: 1080, fps: [25, 30] },
+            // From the encoder probe: the machine also has HEVC hardware, the
+            // recorder writes H.264 only.
+            recording: {
+              codecs: [
+                { codec: "h264", container: "mp4", max_height: 1080, max_fps: 30 },
+              ],
+              upload_copy: false,
+            },
           },
         }),
       });

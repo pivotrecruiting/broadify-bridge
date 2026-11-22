@@ -20,7 +20,16 @@ import {
   resolveMeetingHelperForwardedEnvArgs,
   resolveMeetingModelsDir,
 } from "./meeting-helper-manager.js";
+import {
+  runMeetingRecordingProbe,
+  type MeetingRecordingProbeOutcomeT,
+} from "./meeting-recording-probe.js";
 import type { MeetingStatusT } from "./meeting-status-types.js";
+
+// The encoder probe is its own helper process; the manager tests script it.
+jest.mock("./meeting-recording-probe.js", () => ({
+  runMeetingRecordingProbe: jest.fn(),
+}));
 
 // SessionEventLog sink and status diff spied (real implementations); the
 // on/off switch (isSessionLogEnabled) stays real.
@@ -58,6 +67,74 @@ describe("meeting-helper-manager", () => {
       logPath: "/tmp/bridge.log",
       logger: mockLogger,
       publishBridgeEvent: mockPublishBridgeEvent,
+    });
+  });
+
+  describe("recording encoder probe", () => {
+    const mockRunProbe = jest.mocked(runMeetingRecordingProbe);
+    const PROBE = {
+      backend: "videotoolbox",
+      encoders: [{ codec: "h264" as const, name: "Apple H.264 (HW)" }],
+    };
+
+    beforeEach(() => {
+      __setMeetingHelperPathForTesting("/path/to/meeting-helper");
+    });
+
+    it("runs the helper's probe mode once and hands every caller the same result", async () => {
+      let finish!: (outcome: MeetingRecordingProbeOutcomeT) => void;
+      mockRunProbe.mockReturnValue(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const manager = new MeetingHelperManager();
+
+      const first = manager.probeRecordingEncoders();
+      const second = manager.probeRecordingEncoders();
+      // Not known yet: the synchronous read neither waits nor starts a run.
+      expect(manager.getRecordingProbe()).toBeNull();
+      finish({ ok: true, probe: PROBE });
+
+      expect(await first).toEqual(PROBE);
+      expect(await second).toEqual(PROBE);
+      expect(await manager.probeRecordingEncoders()).toEqual(PROBE);
+      expect(manager.getRecordingProbe()).toEqual(PROBE);
+      expect(mockRunProbe).toHaveBeenCalledTimes(1);
+      expect(mockRunProbe).toHaveBeenCalledWith("/path/to/meeting-helper");
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        "[Meeting] Recording encoder probe: backend=videotoolbox hardware_codecs=h264",
+      );
+    });
+
+    it.each(["timeout", "spawn_failed", "invalid_output", "helper_missing"] as const)(
+      "keeps a failed probe (%s) for the bridge run and logs it once",
+      async (reason) => {
+        mockRunProbe.mockResolvedValue({ ok: false, reason });
+        const manager = new MeetingHelperManager();
+
+        expect(await manager.probeRecordingEncoders()).toBeNull();
+        expect(await manager.probeRecordingEncoders()).toBeNull();
+
+        expect(manager.getRecordingProbe()).toBeNull();
+        expect(mockRunProbe).toHaveBeenCalledTimes(1);
+        expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          `[Meeting] Recording encoder probe failed (${reason}); recording formats are not advertised.`,
+        );
+      },
+    );
+
+    it("is not part of an engine start", async () => {
+      const manager = new MeetingHelperManager();
+      (
+        manager as unknown as { startInternal: () => Promise<unknown> }
+      ).startInternal = jest.fn(async () => manager.getStatus());
+
+      await manager.start({ fps: 25 });
+
+      expect(mockRunProbe).not.toHaveBeenCalled();
+      expect(manager.getRecordingProbe()).toBeNull();
     });
   });
 
