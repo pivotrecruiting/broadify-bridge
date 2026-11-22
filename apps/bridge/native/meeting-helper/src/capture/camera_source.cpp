@@ -36,4 +36,19 @@ std::string camerasToJson(const std::vector<CameraInfo> &cameras) {
   return out.str();
 }
 
+std::string cameraCaptureFormatToJson(
+    const std::optional<CameraCaptureFormat> &format) {
+  if (!format) {
+    return "null";
+  }
+  std::ostringstream out;
+  out.precision(10);
+  out << "{\"width\":" << format->width
+      << ",\"height\":" << format->height
+      << ",\"fps\":" << format->fps
+      << ",\"requested_fps\":" << format->requestedFps
+      << ",\"match\":\"" << jsonEscape(format->match) << "\"}";
+  return out.str();
+}
+
 }  // namespace broadify::meeting

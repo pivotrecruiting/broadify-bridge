@@ -49,6 +49,26 @@ bool matchesPattern(const RecorderMailboxFrame &frame, uint8_t seed) {
 int main() {
   bool ok = true;
 
+  // Capacity per frame rate: about 66 ms of slack, never below the default.
+  ok &= expect(RecorderFrameMailbox::capacityForFps(25) == 2u &&
+                   RecorderFrameMailbox::capacityForFps(30) == 2u,
+               "25 and 30 fps keep two slots");
+  ok &= expect(RecorderFrameMailbox::capacityForFps(50) == 4u &&
+                   RecorderFrameMailbox::capacityForFps(60) == 4u,
+               "50 and 60 fps get four slots");
+  ok &= expect(RecorderFrameMailbox::capacityForFps(0) == 2u &&
+                   RecorderFrameMailbox::capacityForFps(15) == 2u,
+               "low rates stay at the default capacity");
+  {
+    RecorderFrameMailbox mailbox(RecorderFrameMailbox::capacityForFps(60));
+    for (uint8_t seed = 1; seed <= 5; ++seed) {
+      mailbox.offer(pattern(seed).data(), kWidth, kHeight, seed * 1000u);
+    }
+    ok &= expect(mailbox.capacity() == 4u && mailbox.pending() == 4u &&
+                     mailbox.counters().replaced == 1u,
+                 "a 60 fps mailbox holds four frames before it replaces one");
+  }
+
   // Latest wins with capacity 2: three offers replace the oldest pending
   // frame, the consumer sees the last two in order.
   {

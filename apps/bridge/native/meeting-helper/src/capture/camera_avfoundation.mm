@@ -21,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -359,16 +360,32 @@ void verifyAppliedCaptureFormat(AVCaptureDevice *device, int cameraIndex,
   }
 }
 
+// The state.get view of an open camera: the format the device reports back
+// as active, and how it was chosen - "none" when the device did not take the
+// selector's choice and runs whatever the session preset gave it.
+CameraCaptureFormat reportedCaptureFormat(const ActiveCaptureFormat &active,
+                                          const AppliedCaptureFormat &applied,
+                                          uint32_t requestedFps) {
+  CameraCaptureFormat reported;
+  reported.width = active.width;
+  reported.height = active.height;
+  reported.fps = active.fps;
+  reported.requestedFps = requestedFps;
+  reported.match = captureFormatMatchName(
+      applied.applied ? applied.selection.match : CaptureFormatMatch::None);
+  return reported;
+}
+
 // One line per camera open: what was requested, what the selector chose and
 // what the device reports back as active once the session runs. Parity with
 // the Windows camera_native_media_type_selected event.
-void emitCameraFormatSelectedEvent(int cameraIndex, AVCaptureDevice *device,
+void emitCameraFormatSelectedEvent(int cameraIndex,
+                                   const ActiveCaptureFormat &active,
                                    AVCaptureSession *session,
                                    const AppliedCaptureFormat &applied,
                                    uint32_t requestedWidth,
                                    uint32_t requestedHeight,
                                    uint32_t requestedFps) {
-  const ActiveCaptureFormat active = readActiveCaptureFormat(device);
   const bool chosen = applied.selection.match != CaptureFormatMatch::None;
   std::ostringstream event;
   event.precision(10);
@@ -526,11 +543,15 @@ class AvFoundationCameraSource final : public CameraSource {
         // format/rate stuck (applied_* fields); a reset is applied once more.
         verifyAppliedCaptureFormat(stream.device, stream.cameraIndex,
                                    stream.appliedFormat);
-        emitCameraFormatSelectedEvent(stream.cameraIndex, stream.device,
+        const ActiveCaptureFormat active = readActiveCaptureFormat(stream.device);
+        emitCameraFormatSelectedEvent(stream.cameraIndex, active,
                                       stream.session, stream.appliedFormat,
                                       stream.requestedWidth,
                                       stream.requestedHeight,
                                       stream.requestedFps);
+        std::lock_guard<std::mutex> lock(mutex_);
+        stream.reportedFormat = reportedCaptureFormat(
+            active, stream.appliedFormat, stream.requestedFps);
       }
       return true;
     }
@@ -604,6 +625,15 @@ class AvFoundationCameraSource final : public CameraSource {
   int activeCameraIndex() const override {
     std::lock_guard<std::mutex> lock(mutex_);
     return running_ ? programIndex_ : -1;
+  }
+
+  std::optional<CameraCaptureFormat> programCaptureFormat() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = streams_.find(programIndex_);
+    if (!running_ || it == streams_.end()) {
+      return std::nullopt;
+    }
+    return it->second->reportedFormat;
   }
 
   bool copyLatestFrame(VideoFrame &frame) override {
@@ -845,6 +875,8 @@ class AvFoundationCameraSource final : public CameraSource {
     AVCaptureDeviceInput *input = nil;
     // Capture format chosen at open; verified and reported after startRunning.
     AppliedCaptureFormat appliedFormat;
+    // Read back once the session runs (guarded by mutex_); nullopt until then.
+    std::optional<CameraCaptureFormat> reportedFormat;
     uint32_t requestedWidth = 0;
     uint32_t requestedHeight = 0;
     uint32_t requestedFps = 0;

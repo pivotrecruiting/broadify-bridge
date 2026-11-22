@@ -1,6 +1,7 @@
 #include "capture/camera_source.h"
 #include "capture/screen_capture_source.h"
 #include "common/options.h"
+#include "common/output_rate.h"
 #include "control/control_server.h"
 #include "keyer/matting_backend.h"
 #include "keyer/modnet_keyer.h"
@@ -759,8 +760,11 @@ int main(int argc, char **argv) {
   PreviewFrameStore previewFrames;
   VcamShmRingWin vcamShm;
   MeetingRecorder recorder;
+  // What PreviewFrameStore delivers: every program frame up to 30 fps, every
+  // second one above (the pipeline's PreviewPublishGate).
+  const uint32_t previewFps = options.fps / outputDivisor(options.fps);
   // WebRTC program stream for the web app's viewer; idle (no copies, no encoder) without viewers.
-  ProgramStream programStream(previewFrames, state, ProgramStreamConfig{options.width, options.height, options.fps});
+  ProgramStream programStream(previewFrames, state, ProgramStreamConfig{options.width, options.height, previewFps});
   programStream.start();
 
   std::promise<void> controlListening;
@@ -836,7 +840,7 @@ int main(int argc, char **argv) {
   std::thread preview(runMjpegServer, options.previewPort, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   // Program geometry; the raw-frame server advertises and delivers the 16:9
   // virtual-camera geometry derived from it (vcamOutputGeometry).
-  const RawFrameStreamGeometry vcamGeometry{options.width, options.height, options.fps};
+  const RawFrameStreamGeometry vcamGeometry{options.width, options.height, previewFps};
   std::thread vcamRaw(runRawFrameServer, options.vcamFramePort, vcamGeometry, std::ref(previewFrames), std::ref(state), std::ref(g_running));
   std::thread vcamShmLifecycle([&options, &state, &vcamShm
 #if defined(_WIN32)

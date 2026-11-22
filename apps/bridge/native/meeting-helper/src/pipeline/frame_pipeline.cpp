@@ -1,5 +1,6 @@
 #include "pipeline/frame_pipeline.h"
 
+#include "common/output_rate.h"
 #include "compose/compositor.h"
 #include "director/auto_director.h"
 #include "framebus_reader.h"
@@ -42,6 +43,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -283,24 +285,28 @@ FusedStabilizerState &fusedStabilizerState() {
 // motion-adaptive EMA smooths per-frame confidence flicker. macOS passes
 // applyEma=false so its tuned raw-matte look stays unchanged while still
 // gaining the dropout protection. Only called from the program-loop thread.
-void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
+//
+// The hold limits count keyer runs. holdScale (fusedKeyerHoldScale) keeps
+// them the same length in time when the keyer runs more than 30 times per
+// second.
+void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma, int holdScale) {
   AlphaMask &prevFusedMask = fusedStabilizerState().prevMask;
   double &prevFusedCoverage = fusedStabilizerState().prevCoverage;
   int &fusedCollapseHold = fusedStabilizerState().collapseHold;
   int &fusedOverCoverageHold = fusedStabilizerState().overCoverageHold;
 #if defined(_WIN32)
-  constexpr int kMaxFusedCollapseHold = 12;  // ~0.4s at 30fps
-  constexpr int kMaxFusedOverCoverageHold = 12;
+  const int maxFusedCollapseHold = 12 * holdScale;  // ~0.4s at 30fps
+  const int maxFusedOverCoverageHold = 12 * holdScale;
 #else
-  constexpr int kMaxFusedCollapseHold = 45;  // ~1.5s at 30fps
-  constexpr int kMaxFusedOverCoverageHold = 90;  // ~3s at 30fps
+  const int maxFusedCollapseHold = 45 * holdScale;  // ~1.5s at 30fps
+  const int maxFusedOverCoverageHold = 90 * holdScale;  // ~3s at 30fps
 #endif
   const double fusedCoverage = computeMaskCoverage(fusedMask);
   const bool fusedOverCoverage = fusedCoverage > kMaxForegroundCoverage;
 #if !defined(_WIN32)
   const uint64_t currentMaskTimestampNs = fusedMask.timestampNs;
   if (fusedOverCoverage && !prevFusedMask.alpha.empty() &&
-      fusedOverCoverageHold < kMaxFusedOverCoverageHold) {
+      fusedOverCoverageHold < maxFusedOverCoverageHold) {
     fusedMask = prevFusedMask;
     fusedMask.timestampNs = currentMaskTimestampNs;
     ++fusedOverCoverageHold;
@@ -330,11 +336,11 @@ void stabilizeFusedMask(AlphaMask &fusedMask, bool applyEma) {
   const bool fusedCollapsed =
       fusedCoverage < kMinForegroundCoverage ||
       (fusedOverCoverage &&
-       fusedOverCoverageHold < kMaxFusedOverCoverageHold) ||
+       fusedOverCoverageHold < maxFusedOverCoverageHold) ||
       (prevFusedCoverage > kHealthyCoverage &&
        fusedCoverage < prevFusedCoverage * kCollapseDropRatio);
   if (fusedCollapsed && !prevFusedMask.alpha.empty() &&
-      fusedCollapseHold < kMaxFusedCollapseHold) {
+      fusedCollapseHold < maxFusedCollapseHold) {
     fusedMask = prevFusedMask;
     ++fusedCollapseHold;
     return;
@@ -1925,6 +1931,7 @@ void runFramePipeline(const Options &options,
   const auto frameInterval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
       std::chrono::duration<double>(1.0 / static_cast<double>(targetFps)));
   auto nextFrameAt = std::chrono::steady_clock::now();
+  PreviewPublishGate previewPublishGate(frameInterval, outputDivisor(targetFps));
   uint64_t frameIndex = 0;
   std::vector<uint8_t> programFrame;
 #if defined(_WIN32)
@@ -2708,7 +2715,12 @@ void runFramePipeline(const Options &options,
           fusedMask = std::move(fused.mask);
           // Dropout guard only (no EMA): keeps the tuned macOS look, but a
           // model dropout no longer blanks the presenter for a frame (KEY-03).
-          stabilizeFusedMask(fusedMask, /*applyEma=*/false);
+          const std::optional<CameraCaptureFormat> cameraFormat =
+              camera.programCaptureFormat();
+          stabilizeFusedMask(
+              fusedMask, /*applyEma=*/false,
+              static_cast<int>(fusedKeyerHoldScale(
+                  targetFps, cameraFormat ? cameraFormat->fps : targetFps)));
           lastAppleFusedMask = fusedMask;
           lastAppleFusedCameraIndex = currentAppleCameraIndex;
           lastAppleFusedSourceWidth = latestCameraFrame.width;
@@ -3248,7 +3260,8 @@ void runFramePipeline(const Options &options,
                   fusedKeyer->apply(latestCameraFrame, keyerSettings);
               if (!fused.status.fallbackActive && !fused.mask.alpha.empty()) {
                 fusedMask = std::move(fused.mask);
-                stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled());
+                stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled(),
+                                   /*holdScale=*/1);
                 lastGoodMask = fusedMask;
                 const auto guidedStart = std::chrono::steady_clock::now();
                 if (!(d3d11GuidedRefineAvailable() &&
@@ -3359,7 +3372,8 @@ void runFramePipeline(const Options &options,
                 // refine BELOW then re-snaps the edge to the CURRENT frame, so the EMA
                 // never softens the visible boundary -> stable body AND crisp edge
                 // (mirrors the async worker's EMA -> live-snap order).
-                stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled());
+                stabilizeFusedMask(fusedMask, fusedSmootherEmaEnabled(),
+                                   /*holdScale=*/1);
                 // Retain the stabilized matte BEFORE the guided refine ties
                 // its edge to this specific frame; cadence-reused frames
                 // re-run the refine against their own (current) frame.
@@ -3657,7 +3671,13 @@ void runFramePipeline(const Options &options,
         lastStaticHeartbeatAt = programStart;
       }
 
-      shouldPublishPreview = previewConsumerActive && shouldRenderProgram && !programFrame.empty();
+      // Above 30 fps the preview consumers (virtual camera, WebRTC program
+      // stream, MJPEG) get every second program frame; the recorder tap above
+      // got this one regardless.
+      shouldPublishPreview =
+          !programFrame.empty() &&
+          previewPublishGate.shouldPublish(shouldRenderProgram,
+                                           previewConsumerActive, programStart);
       if (shouldPublishPreview) {
 #if defined(_WIN32)
         const auto stagePreviewStart = std::chrono::steady_clock::now();

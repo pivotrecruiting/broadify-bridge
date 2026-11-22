@@ -82,8 +82,9 @@ inline uint64_t recorderVideoDataRateBps(RecordingCodec codec, uint32_t width,
 // minutes at the expected video data rate, so a start on a nearly full disk
 // is refused with "recording_disk_space_low" instead of failing opaquely
 // minutes into the recording. Five minutes is long enough to notice the
-// warning and finish a take, and scales from under 1 GB (H.264 1080p30) to
-// about 8 GB (ProRes 422 HQ). Audio is left out: it stays below 1.2 Mbit/s.
+// warning and finish a take, and scales from under 1 GB (H.264 1080p30) over
+// about 8 GB (ProRes 422 HQ 1080p30) to about 16.5 GB (ProRes 422 HQ
+// 1080p60). Audio is left out: it stays below 1.2 Mbit/s.
 constexpr uint32_t kRecorderMinFreeDiskMinutes = 5;
 
 inline uint64_t recorderMinFreeDiskBytes(RecordingCodec codec, uint32_t width,

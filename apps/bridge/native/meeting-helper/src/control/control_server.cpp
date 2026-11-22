@@ -501,6 +501,9 @@ std::string handleRpc(const std::string &line,
     result << "{\"bridge_running\":true,"
            << "\"camera_running\":" << (state.cameraRunning ? "true" : "false") << ","
            << "\"camera_stalled\":" << (state.cameraStalled ? "true" : "false") << ","
+           // What the program camera delivers; below the program rate each
+           // of its frames is shown more than once (the web app says so).
+           << "\"camera_format\":" << cameraCaptureFormatToJson(camera.programCaptureFormat()) << ","
            << "\"preview_running\":true,"
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
            << "\"pip_camera_index\":" << (state.pipCameraIndex >= 0 ? std::to_string(state.pipCameraIndex) : "null") << ","

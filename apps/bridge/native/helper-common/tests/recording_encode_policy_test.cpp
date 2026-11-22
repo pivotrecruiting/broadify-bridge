@@ -103,12 +103,35 @@ int main() {
   ok &= expect(recorderVideoDataRateBps(RecordingCodec::ProRes422, 1920, 1080, 0) == 147'000'000ull,
                "ProRes fps 0 falls back to 30");
 
+  // 50 and 60 fps (meeting program on macOS, ADR-0010). The H.264 cap stays
+  // at 40 Mbit/s: 1080p50 is under it, 1080p60 is held to it (the policy
+  // value would be 43.5 Mbit/s), and HEVC follows as 60 % of either.
+  ok &= expect(recorderVideoDataRateBps(RecordingCodec::H264, 1920, 1080, 50) == 36'288'000ull,
+               "H.264 1080p50 is 36.288 Mbit/s, under the cap");
+  ok &= expect(recorderVideoDataRateBps(RecordingCodec::H264, 1920, 1080, 60) == 40'000'000ull,
+               "H.264 1080p60 is held to the 40 Mbit/s cap");
+  ok &= expect(recorderVideoDataRateBps(RecordingCodec::Hevc, 1920, 1080, 50) == 21'772'800ull,
+               "HEVC 1080p50 is 60 % of H.264");
+  ok &= expect(recorderVideoDataRateBps(RecordingCodec::Hevc, 1920, 1080, 60) == 24'000'000ull,
+               "HEVC 1080p60 is 60 % of the capped H.264 rate");
+  ok &= expect(recorderVideoDataRateBps(RecordingCodec::ProRes422Lt, 1920, 1080, 60) == 204'000'000ull,
+               "ProRes 422 LT 1080p60 scales linearly to 204 Mbit/s");
+  ok &= expect(recorderVideoDataRateBps(RecordingCodec::ProRes422, 1920, 1080, 50) == 245'000'000ull,
+               "ProRes 422 1080p50 scales linearly to 245 Mbit/s");
+  ok &= expect(recorderVideoDataRateBps(RecordingCodec::ProRes422Hq, 1920, 1080, 60) == 440'000'000ull,
+               "ProRes 422 HQ 1080p60 scales linearly to 440 Mbit/s");
+  ok &= expect(recorderKeyframeInterval(50) == 100, "keyframe interval is two seconds at 50 fps");
+
   // Free-disk floor: five minutes at the expected data rate.
   ok &= expect(kRecorderMinFreeDiskMinutes == 5, "free-disk floor is five minutes");
   ok &= expect(recorderMinFreeDiskBytes(RecordingCodec::H264, 1920, 1080, 30) == 816'480'000ull,
                "H.264 1080p30 needs about 0.8 GB");
   ok &= expect(recorderMinFreeDiskBytes(RecordingCodec::Hevc, 1920, 1080, 30) == 489'888'000ull,
                "HEVC 1080p30 needs about 0.5 GB");
+  ok &= expect(recorderMinFreeDiskBytes(RecordingCodec::ProRes422Hq, 1920, 1080, 60) == 16'500'000'000ull,
+               "ProRes 422 HQ 1080p60 needs 16.5 GB");
+  ok &= expect(recorderMinFreeDiskBytes(RecordingCodec::H264, 1920, 1080, 60) == 1'500'000'000ull,
+               "H.264 1080p60 needs 1.5 GB");
   ok &= expect(recorderMinFreeDiskBytes(RecordingCodec::ProRes422Lt, 1920, 1080, 30) == 3'825'000'000ull,
                "ProRes 422 LT 1080p30 needs about 3.8 GB");
   ok &= expect(recorderMinFreeDiskBytes(RecordingCodec::ProRes422, 1920, 1080, 30) == 5'512'500'000ull,

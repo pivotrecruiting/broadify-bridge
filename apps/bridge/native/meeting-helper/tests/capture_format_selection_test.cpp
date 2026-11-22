@@ -264,6 +264,120 @@ int main() {
                      .c_str());
   }
 
+  // 50/60 fps program, camera delivers the rate at the requested size: the
+  // full rate is taken (Cam Link: 60.00024 tolerant, 50 exact).
+  {
+    const CaptureFormatSelection at60 =
+        selectCaptureFormat(camLinkFormats(), {1920, 1080, 60.0});
+    ok &= expect(at60.candidateIndex == 2 && at60.rangeIndex == 3 &&
+                     near(at60.fps, 60.00024000096) &&
+                     at60.match == CaptureFormatMatch::Tolerant,
+                 ("60 fps request picks 1920x1080 @ 60.00024: " + describe(at60)).c_str());
+    const CaptureFormatSelection at50 =
+        selectCaptureFormat(camLinkFormats(), {1920, 1080, 50.0});
+    ok &= expect(at50.candidateIndex == 2 && at50.rangeIndex == 2 &&
+                     near(at50.fps, 50.0) && at50.match == CaptureFormatMatch::Exact,
+                 ("50 fps request picks 1920x1080 @ 50: " + describe(at50)).c_str());
+  }
+
+  // Resolution wins over rate: a webcam with 1080p30 and 720p60 stays at
+  // 1080p for a 60 fps program and runs at half the rate (each frame is shown
+  // twice) instead of dropping to 720p60.
+  {
+    const std::vector<CaptureFormatCandidate> formats{
+        candidate(1280, 720, "420v", {{1.0, 60.0}}),
+        candidate(1920, 1080, "420v", {{1.0, 30.0}}),
+    };
+    const CaptureFormatSelection selection =
+        selectCaptureFormat(formats, {1920, 1080, 60.0});
+    ok &= expect(selection.candidateIndex == 1 && selection.rangeIndex == 0 &&
+                     near(selection.fps, 30.0) &&
+                     selection.match == CaptureFormatMatch::HalfRate,
+                 ("60 fps request keeps 1080p at half rate: " + describe(selection)).c_str());
+  }
+
+  // 50 fps program on a 25/30-only 1080p camera: half rate is 25, not the
+  // nearer 30 (a clean 2:1 cadence).
+  {
+    const std::vector<CaptureFormatCandidate> formats{
+        candidate(1280, 720, "420v", {{25.0, 25.0}, {30.0, 30.0}, {50.0, 50.0}}),
+        candidate(1920, 1080, "420v", {{25.0, 25.0}, {30.0, 30.0}}),
+    };
+    const CaptureFormatSelection selection =
+        selectCaptureFormat(formats, {1920, 1080, 50.0});
+    ok &= expect(selection.candidateIndex == 1 && selection.rangeIndex == 0 &&
+                     near(selection.fps, 25.0) &&
+                     selection.match == CaptureFormatMatch::HalfRate,
+                 ("50 fps request keeps 1080p at 25: " + describe(selection)).c_str());
+  }
+
+  // Half rate honours the device's own rate within the tolerance (30.00003).
+  {
+    const std::vector<CaptureFormatCandidate> formats{
+        candidate(1920, 1080, "420v", {{30.00003000003, 30.00003000003}}),
+    };
+    const CaptureFormatSelection selection =
+        selectCaptureFormat(formats, {1920, 1080, 60.0});
+    ok &= expect(near(selection.fps, 30.00003000003) &&
+                     selection.match == CaptureFormatMatch::HalfRate,
+                 ("half rate takes the range's own 30.00003: " + describe(selection)).c_str());
+  }
+
+  // Half rate is taken at or above the requested size only, with the usual
+  // resolution score: 1080p30 beats 4K30 for a 1080p60 request.
+  {
+    const std::vector<CaptureFormatCandidate> formats{
+        candidate(3840, 2160, "420v", {{30.0, 30.0}}),
+        candidate(1920, 1080, "420v", {{30.0, 30.0}}),
+        candidate(1280, 720, "420v", {{60.0, 60.0}}),
+    };
+    const CaptureFormatSelection selection =
+        selectCaptureFormat(formats, {1920, 1080, 60.0});
+    ok &= expect(selection.candidateIndex == 1 &&
+                     selection.match == CaptureFormatMatch::HalfRate,
+                 ("half rate scores resolution: " + describe(selection)).c_str());
+  }
+
+  // No format at the requested size has the rate or half of it: the requested
+  // rate at a smaller size is taken, as before (720p60 over 1080p24).
+  {
+    const std::vector<CaptureFormatCandidate> formats{
+        candidate(1920, 1080, "420v", {{24.0, 24.0}}),
+        candidate(1280, 720, "420v", {{60.0, 60.0}}),
+    };
+    const CaptureFormatSelection selection =
+        selectCaptureFormat(formats, {1920, 1080, 60.0});
+    ok &= expect(selection.candidateIndex == 1 && near(selection.fps, 60.0) &&
+                     selection.match == CaptureFormatMatch::Exact,
+                 ("smaller size at the requested rate comes third: " + describe(selection)).c_str());
+  }
+
+  // Neither the rate nor half of it anywhere: nearest rate, as before.
+  {
+    const std::vector<CaptureFormatCandidate> formats{
+        candidate(1920, 1080, "420v", {{24.0, 24.0}, {48.0, 48.0}}),
+    };
+    const CaptureFormatSelection selection =
+        selectCaptureFormat(formats, {1920, 1080, 60.0});
+    ok &= expect(near(selection.fps, 48.0) &&
+                     selection.match == CaptureFormatMatch::Nearest,
+                 ("60 fps request without 60 or 30 gets nearest 48: " + describe(selection)).c_str());
+  }
+
+  // Up to 30 fps there is no half-rate tier: a 30 fps request on a 1080p15 +
+  // 720p30 camera takes 720p30 (unchanged), never 1080p15.
+  {
+    const std::vector<CaptureFormatCandidate> formats{
+        candidate(1920, 1080, "420v", {{15.0, 15.0}}),
+        candidate(1280, 720, "420v", {{30.0, 30.0}}),
+    };
+    const CaptureFormatSelection selection =
+        selectCaptureFormat(formats, {1920, 1080, 30.0});
+    ok &= expect(selection.candidateIndex == 1 &&
+                     selection.match == CaptureFormatMatch::Exact,
+                 ("no half-rate tier at 30 fps: " + describe(selection)).c_str());
+  }
+
   // Degenerate candidates (zero dimensions, no ranges) are skipped; no usable
   // candidate at all reports none with no index.
   {
@@ -297,6 +411,7 @@ int main() {
 
   ok &= expect(std::string(captureFormatMatchName(CaptureFormatMatch::Exact)) == "exact" &&
                    std::string(captureFormatMatchName(CaptureFormatMatch::Tolerant)) == "tolerant" &&
+                   std::string(captureFormatMatchName(CaptureFormatMatch::HalfRate)) == "half_rate" &&
                    std::string(captureFormatMatchName(CaptureFormatMatch::Nearest)) == "nearest" &&
                    std::string(captureFormatMatchName(CaptureFormatMatch::None)) == "none",
                "match names are the event tokens");

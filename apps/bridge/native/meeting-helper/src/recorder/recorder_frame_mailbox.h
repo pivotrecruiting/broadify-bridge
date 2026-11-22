@@ -21,7 +21,7 @@ struct RecorderMailboxFrame {
 };
 
 // Single-producer/single-consumer "latest wins" mailbox with a small fixed
-// capacity. A full mailbox replaces its OLDEST pending frame so the recorder
+// capacity (capacityForFps for a recording). A full mailbox replaces its OLDEST pending frame so the recorder
 // always catches up to the newest program picture instead of falling behind
 // (a slow encoder costs duplicates/drops, never a growing queue or a stalled
 // program loop).
@@ -33,6 +33,14 @@ struct RecorderMailboxFrame {
 class RecorderFrameMailbox {
  public:
   static constexpr std::size_t kDefaultCapacity = 2;
+
+  // Capacity for a recording at `fps`: about 66 ms of encoder slack (two
+  // frames at 25/30 fps, four at 50/60), so a hiccup of the encoder costs
+  // the same time at every frame rate before a frame is replaced.
+  static constexpr std::size_t capacityForFps(uint32_t fps) {
+    const std::size_t frames = (static_cast<std::size_t>(fps) + 14u) / 15u;
+    return frames > kDefaultCapacity ? frames : kDefaultCapacity;
+  }
 
   struct Counters {
     uint64_t offered = 0;   // offer() calls

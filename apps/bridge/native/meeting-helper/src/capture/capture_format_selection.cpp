@@ -1,5 +1,7 @@
 #include "capture/capture_format_selection.h"
 
+#include "common/output_rate.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -11,15 +13,19 @@ namespace {
 // Resolution score of the former inline rule in camera_avfoundation.mm:
 // absolute width/height distance, and a format below the target in either
 // dimension is pushed behind every format at-or-above it.
+bool belowTargetSize(const CaptureFormatCandidate &candidate,
+                     const CaptureFormatTarget &target) {
+  return candidate.width < target.width || candidate.height < target.height;
+}
+
 double resolutionScore(const CaptureFormatCandidate &candidate,
                        const CaptureFormatTarget &target) {
   const double widthDelta =
       std::fabs(static_cast<double>(candidate.width) - target.width);
   const double heightDelta =
       std::fabs(static_cast<double>(candidate.height) - target.height);
-  const bool belowTarget =
-      candidate.width < target.width || candidate.height < target.height;
-  return widthDelta + heightDelta + (belowTarget ? 1000000.0 : 0.0);
+  return widthDelta + heightDelta +
+         (belowTargetSize(candidate, target) ? 1000000.0 : 0.0);
 }
 
 bool usable(const CaptureFormatCandidate &candidate) {
@@ -79,25 +85,26 @@ RangeMatch nearestRange(const CaptureFormatCandidate &candidate,
   return best;
 }
 
-}  // namespace
+enum class SizeRule {
+  NotBelowTarget,  // only candidates at or above the target in both dimensions
+  Any,
+};
 
-CaptureFormatSelection selectCaptureFormat(
+// Best candidate with a range that contains `fps` (exactly or within the
+// tolerance), ranked by resolution score; exact wins equal scores. Match None
+// when no candidate qualifies.
+CaptureFormatSelection selectContaining(
     const std::vector<CaptureFormatCandidate> &candidates,
-    const CaptureFormatTarget &target) {
+    const CaptureFormatTarget &target, double fps, SizeRule sizeRule) {
   CaptureFormatSelection selection;
-  if (target.width == 0u || target.height == 0u || target.fps <= 0.0) {
-    return selection;
-  }
-
-  // Tier 1: candidates whose ranges contain the target (exactly or within
-  // the tolerance), ranked by resolution score; exact wins equal scores.
   double bestScore = std::numeric_limits<double>::max();
   for (std::size_t index = 0; index < candidates.size(); ++index) {
     const CaptureFormatCandidate &candidate = candidates[index];
-    if (!usable(candidate)) {
+    if (!usable(candidate) || (sizeRule == SizeRule::NotBelowTarget &&
+                               belowTargetSize(candidate, target))) {
       continue;
     }
-    const RangeMatch match = containingRange(candidate, target.fps);
+    const RangeMatch match = containingRange(candidate, fps);
     if (match.match == CaptureFormatMatch::None) {
       continue;
     }
@@ -114,15 +121,49 @@ CaptureFormatSelection selectCaptureFormat(
       selection.match = match.match;
     }
   }
+  return selection;
+}
+
+}  // namespace
+
+CaptureFormatSelection selectCaptureFormat(
+    const std::vector<CaptureFormatCandidate> &candidates,
+    const CaptureFormatTarget &target) {
+  if (target.width == 0u || target.height == 0u || target.fps <= 0.0) {
+    return {};
+  }
+
+  // Tier 1: the requested rate without giving up the requested size.
+  CaptureFormatSelection selection = selectContaining(
+      candidates, target, target.fps, SizeRule::NotBelowTarget);
   if (selection.match != CaptureFormatMatch::None) {
     return selection;
   }
 
-  // Tier 2: nothing is close to the target; take the closest supported rate
+  // Tier 2: above 30 fps, half the rate at the requested size beats the full
+  // rate at a smaller one.
+  if (outputDivisor(target.fps) > 1u) {
+    selection = selectContaining(candidates, target,
+                                 target.fps / outputDivisor(target.fps),
+                                 SizeRule::NotBelowTarget);
+    if (selection.match != CaptureFormatMatch::None) {
+      selection.match = CaptureFormatMatch::HalfRate;
+      return selection;
+    }
+  }
+
+  // Tier 3: the requested rate at a smaller size.
+  selection =
+      selectContaining(candidates, target, target.fps, SizeRule::Any);
+  if (selection.match != CaptureFormatMatch::None) {
+    return selection;
+  }
+
+  // Tier 4: nothing is close to the target; take the closest supported rate
   // across all candidates (higher rate on equal distance), then resolution.
   double bestDistance = std::numeric_limits<double>::infinity();
   double bestRate = 0.0;
-  bestScore = std::numeric_limits<double>::max();
+  double bestScore = std::numeric_limits<double>::max();
   for (std::size_t index = 0; index < candidates.size(); ++index) {
     const CaptureFormatCandidate &candidate = candidates[index];
     if (!usable(candidate)) {
@@ -158,6 +199,8 @@ const char *captureFormatMatchName(CaptureFormatMatch match) {
       return "exact";
     case CaptureFormatMatch::Tolerant:
       return "tolerant";
+    case CaptureFormatMatch::HalfRate:
+      return "half_rate";
     case CaptureFormatMatch::Nearest:
       return "nearest";
     case CaptureFormatMatch::None:
