@@ -75,8 +75,11 @@ bool appendHardwareEncoders(const GUID &outputSubtype, RecordingCodec codec,
 }  // namespace
 
 // H.264 and HEVC only: Windows has no licensed ProRes encoder, so ProRes is
-// never reported here. The probe is its own short-lived process, so COM and
-// Media Foundation are started and released around the enumeration.
+// never reported here. The two codecs are enumerated independently: a codec
+// whose enumeration fails contributes no entries, and the result is unknown
+// (ok == false) only when neither enumeration worked. The probe is its own
+// short-lived process, so COM and Media Foundation are started and released
+// around the enumeration.
 RecordingProbeResult probeRecordingEncoders() {
   RecordingProbeResult result;
   result.backend = "mediafoundation";
@@ -87,7 +90,7 @@ RecordingProbeResult probeRecordingEncoders() {
   if (SUCCEEDED(MFStartup(MF_VERSION))) {
     const bool h264 = appendHardwareEncoders(MFVideoFormat_H264, RecordingCodec::H264, result.encoders);
     const bool hevc = appendHardwareEncoders(MFVideoFormat_HEVC, RecordingCodec::Hevc, result.encoders);
-    result.ok = h264 && hevc;
+    result.ok = h264 || hevc;
     MFShutdown();
   }
   if (SUCCEEDED(com)) {

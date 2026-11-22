@@ -34,7 +34,9 @@ struct RecordingProbeResult {
   // "videotoolbox" | "mediafoundation" | "none" (no recorder backend).
   std::string backend = "none";
   // False when the platform enumeration itself failed: the encoder list is
-  // then unknown, which is not the same as "no hardware encoder".
+  // then unknown, which is not the same as "no hardware encoder". Where the
+  // platform enumerates per codec (Windows), one codec's failure only leaves
+  // that codec out; false means that no enumeration worked.
   bool ok = false;
   // One entry per enumerated hardware encoder, in the platform's order of
   // preference; a codec can appear more than once (two GPUs on Windows).

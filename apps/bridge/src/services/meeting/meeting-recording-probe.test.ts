@@ -1,4 +1,5 @@
 import {
+  isTransientMeetingRecordingProbeFailure,
   MEETING_RECORDING_PROBE_ARG,
   MEETING_RECORDING_PROBE_TIMEOUT_MS,
   parseMeetingRecordingProbeOutput,
@@ -12,7 +13,7 @@ const MAC_LINE =
   '{"codec":"hevc","name":"Apple HEVC (HW)"}]}';
 
 type ExecCallbackT = (
-  error: (Error & { killed?: boolean }) | null,
+  error: (Error & { killed?: boolean; code?: unknown }) | null,
   stdout: string,
 ) => void;
 
@@ -142,6 +143,29 @@ describe("meeting-recording-probe", () => {
       });
     });
 
+    it.each([
+      ["killed for it", { killed: true }],
+      ["not flagged as killed", {}],
+    ])(
+      "reports a helper that exceeds the output limit (%s) as invalid_output, not as timeout",
+      async (_name, flags) => {
+        const deps = depsWith((callback) =>
+          callback(
+            Object.assign(new Error("stdout maxBuffer length exceeded"), {
+              code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+              ...flags,
+            }),
+            "",
+          ),
+        );
+
+        expect(await runMeetingRecordingProbe("/path/to/helper", deps)).toEqual({
+          ok: false,
+          reason: "invalid_output",
+        });
+      },
+    );
+
     it("reports a helper that exits with an error as spawn_failed, whatever it printed", async () => {
       const deps = depsWith((callback) =>
         callback(new Error("exit code 2"), MAC_LINE),
@@ -170,6 +194,18 @@ describe("meeting-recording-probe", () => {
         ok: false,
         reason: "invalid_output",
       });
+    });
+  });
+
+  describe("isTransientMeetingRecordingProbeFailure", () => {
+    it.each([
+      ["timeout", true],
+      ["spawn_failed", true],
+      ["helper_missing", false],
+      ["invalid_output", false],
+      ["enumeration_failed", false],
+    ] as const)("%s -> %s", (reason, transient) => {
+      expect(isTransientMeetingRecordingProbeFailure(reason)).toBe(transient);
     });
   });
 });

@@ -104,6 +104,12 @@ export class CommandRouter {
             payload ?? {},
             "Invalid payload for get_status",
           );
+          // The recording capability needs the helper's encoder probe: waited
+          // for once per bridge run (bounded by its own timeout), cached
+          // afterwards. Awaited before any state is read, so the reply is not
+          // older than this wait.
+          const recordingProbe =
+            await meetingHelperManager.probeRecordingEncoders();
           const engineState = engineAdapter.getState();
           const runtimeConfigData = runtimeConfig.getConfig();
           const context = getBridgeContext();
@@ -139,12 +145,7 @@ export class CommandRouter {
                 live_program: getLiveProgramCapabilities(),
                 // Absent on older bridges; the web app then hides the
                 // program-format switch (portrait meeting program, ADR-0007).
-                // The recording part needs the helper's encoder probe: run
-                // once and bounded by its own timeout, cached afterwards.
-                meeting: getMeetingCapabilities({
-                  recordingProbe:
-                    await meetingHelperManager.probeRecordingEncoders(),
-                }),
+                meeting: getMeetingCapabilities({ recordingProbe }),
                 // The web app sends mode_activate only when this is present;
                 // older bridges restored Studio state at startup on their own.
                 mode_activation: true,

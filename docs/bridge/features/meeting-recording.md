@@ -305,12 +305,16 @@ line and exits without starting the engine or opening a device:
   reported on Windows.
 - `ok: false` means the enumeration itself failed (encoder list unknown); an
   empty `encoders` list with `ok: true` means the machine has no hardware
-  encoder.
+  encoder. Windows enumerates H.264 and HEVC independently: a codec whose
+  enumeration fails is left out, and `ok` is false only when both fail.
 
-`MeetingHelperManager.probeRecordingEncoders()` runs the probe once per bridge
-run (first `get_status`, 5 s timeout) and keeps the outcome. On failure the
-`recording` field is omitted and one warning with the reason is logged; the
-recorder itself is unaffected. Software encoders are never listed: a codec
+`MeetingHelperManager.probeRecordingEncoders()` runs the probe on the first
+`get_status` (5 s timeout) and keeps a result, or a definitive failure, for
+the bridge run. A transient failure (timeout, launch error) is retried by
+later `get_status` calls in the background, at most three runs in total; those
+calls do not wait and answer without `recording` until a run has succeeded.
+While there is no result the `recording` field is omitted and each failed run
+logs one warning with the reason; the recorder itself is unaffected. Software encoders are never listed: a codec
 without hardware support is not offered rather than encoded on the CPU.
 
 The recorder does not consume these capabilities yet: `meeting_recording_start`

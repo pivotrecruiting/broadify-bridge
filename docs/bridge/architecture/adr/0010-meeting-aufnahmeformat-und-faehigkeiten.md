@@ -42,18 +42,23 @@ Zwei Lücken im bisherigen Vertrag kamen dazu:
   gilt für das, was gemeldet wird. Der Recorder selbst schreibt H.264 weiter über `AVAssetWriter` (macOS) bzw. den
   Sink Writer mit `MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS` (Windows) und wählt seinen Encoder noch nicht ausdrücklich;
   das ausdrückliche Wählen und der Fehlercode statt Rückfall kommen mit den Codec-Schritten.
-- **Eine Probe im Helper, einmal je Bridge-Lauf.** `meeting-helper --probe-recording` gibt eine JSON-Zeile aus
+- **Eine Probe im Helper, ein Ergebnis je Bridge-Lauf.** `meeting-helper --probe-recording` gibt eine JSON-Zeile aus
   (`recording_probe`: `backend`, `ok`, `encoders[{ codec, name, vendor? }]`) und beendet sich, ohne Engine oder Gerät zu
   starten – nach dem Vorbild von `pgm-helper --probe`. macOS liest die VideoToolbox-Encoder-Liste und behält die
   hardwarebeschleunigten Encoder für H.264, HEVC und ProRes 422 LT/422/HQ. Windows zählt mit `MFTEnumEx`
   (`MFT_ENUM_FLAG_HARDWARE`) die Encoder-MFTs für H.264 und HEVC auf, in der Reihenfolge von
   `live_stream/mf_encoder_policy.h`; ProRes wird dort nie gemeldet. Der plattformneutrale Teil (Ergebnis, JSON) liegt
   in `recorder/recording_probe.{h,cpp}` und ist per ctest abgedeckt. `ok: false` heißt „Enumeration gescheitert", eine
-  leere Liste mit `ok: true` heißt „kein Hardware-Encoder".
+  leere Liste mit `ok: true` heißt „kein Hardware-Encoder". Windows zählt H.264 und HEVC unabhängig voneinander auf:
+  scheitert die Enumeration eines Codecs, fehlt nur dieser Codec; `ok: false` gibt es erst, wenn beide scheitern.
   `MeetingHelperManager.probeRecordingEncoders()` startet die Probe beim ersten `get_status` als eigenen Prozess mit 5 s
-  Timeout, prüft die Zeile mit zod und behält das Ergebnis für den Bridge-Lauf – auch ein Scheitern. Dann fehlt
-  `recording`, und die Bridge schreibt eine Warnung mit dem Grund. Die Probe ist nie Teil von `start()`: dieser Pfad
-  muss ohne `await` bleiben (ADR-0007).
+  Timeout und prüft die Zeile mit zod. Ein Ergebnis und ein endgültiges Scheitern (Helper fehlt, unlesbare oder zu
+  lange Ausgabe, Enumeration gescheitert) gelten für den ganzen Bridge-Lauf. Ein vorübergehendes Scheitern (Timeout,
+  Startfehler) wird wiederholt, insgesamt höchstens drei Läufe (`MEETING_RECORDING_PROBE_MAX_ATTEMPTS`): nur der erste
+  `get_status` wartet auf die Probe; spätere Aufrufe stoßen die Wiederholung im Hintergrund an, antworten sofort ohne
+  `recording`, und der Aufruf nach einer geglückten Wiederholung trägt das Feld. Solange kein Ergebnis vorliegt, fehlt
+  `recording`, und die Bridge schreibt je gescheitertem Lauf eine Warnung mit dem Grund. Die Probe kann `get_status`
+  nicht scheitern lassen. Sie ist nie Teil von `start()`: dieser Pfad muss ohne `await` bleiben (ADR-0007).
 - **`program_formats` meldet den geprüften Rahmen, nicht das technisch Mögliche:** 1920×1080 mit 25 und 30 fps, auf
   allen Plattformen (`MEETING_PROGRAM_FORMAT_LIMITS`). 1080p ist die Größe, für die virtuelle Kamera und Windows-Kamera
   gebaut sind; 25 und 30 fps liegen innerhalb der 30-fps-Grenze der Windows-Kamera, und alle Takte der Pipeline
@@ -76,9 +81,12 @@ Zwei Lücken im bisherigen Vertrag kamen dazu:
   kommen, über die der Recorder später encodiert, und der Helper hat diese Abhängigkeiten schon.
 - **Probe als RPC des laufenden Helpers**: verworfen. Die Fähigkeiten werden vor dem Engine-Start gebraucht (die
   Einstellungsseite zeigt sie ohne laufende Engine), und der Start-Pfad soll keine weitere Wartezeit bekommen.
-- **Probe bei jedem `get_status`** oder Wiederholung nach einem Scheitern: verworfen. Die Encoder ändern sich während
-  eines Bridge-Laufs praktisch nicht, und ein hängender Helper würde sonst jede Statusabfrage um das Timeout verzögern.
-  Preis: nach einem gescheiterten Lauf fehlt `recording` bis zum nächsten Bridge-Start.
+- **Probe bei jedem `get_status`** oder unbegrenzte Wiederholung nach einem Scheitern: verworfen. Die Encoder ändern
+  sich während eines Bridge-Laufs praktisch nicht, und ein hängender Helper würde sonst jede Statusabfrage um das
+  Timeout verzögern.
+- **Jedes Scheitern für den Bridge-Lauf behalten**: verworfen. Ein einzelner langsamer Kaltstart des Helpers (unter
+  Windows mit seinen DLLs und einem möglichen Virenscan nicht gemessen) hätte `recording` bis zum nächsten Bridge-Start
+  versteckt. Deshalb die begrenzte Wiederholung im Hintergrund, nur für vorübergehende Gründe.
 - **Software-Encoder als Rückfall melden**: verworfen, siehe Doktrin. ProRes in Software kostet mehrere CPU-Kerne, die
   der Keyer braucht.
 - **Alle Codecs der Probe sofort melden**: verworfen. Die Web-App würde Formate anbieten, die der Recorder noch nicht
@@ -101,7 +109,9 @@ Zwei Lücken im bisherigen Vertrag kamen dazu:
   wiederholt die Optionen des laufenden Starts und ist nicht betroffen; der Conference-Modus startet die Engine nicht
   selbst.
 - Der erste `get_status` eines Bridge-Laufs startet einen kurzlebigen Helper-Prozess (auf einem M1 Pro gemessen: rund
-  1,4 s kalt) und wartet höchstens 5 s darauf. Der lokale Status (`GET /video/status`) startet die Probe nie und zeigt
+  1,4 s kalt) und wartet höchstens 5 s darauf. Nach einem Timeout oder Startfehler starten spätere `get_status` bis zu
+  zwei weitere Läufe, ohne darauf zu warten; `recording` erscheint dann erst in der Statusabfrage nach dem geglückten
+  Lauf. Der lokale Status (`GET /video/status`) startet die Probe nie und zeigt
   `recording` erst danach.
 - `meeting_recording_start` wertet die neuen Felder noch nicht aus; die Aufnahme bleibt H.264 in `.mp4`. Mit jedem
   Codec, den der Recorder lernt, wächst `MEETING_RECORDER_SUPPORTED_CODECS`; mit jeder Messung am Gerät wachsen

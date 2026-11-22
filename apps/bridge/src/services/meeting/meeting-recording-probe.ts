@@ -13,6 +13,14 @@ export const MEETING_RECORDING_PROBE_ARG = "--probe-recording";
  */
 export const MEETING_RECORDING_PROBE_TIMEOUT_MS = 5000;
 const MEETING_RECORDING_PROBE_MAX_OUTPUT_BYTES = 64 * 1024;
+/**
+ * Probe runs per bridge run, the first one included. Only a transient failure
+ * leads to another run, so a helper that keeps hanging costs a bounded number
+ * of short-lived processes.
+ */
+export const MEETING_RECORDING_PROBE_MAX_ATTEMPTS = 3;
+/** `error.code` of an `execFile` child that printed more than `maxBuffer`. */
+const EXEC_MAX_BUFFER_ERROR_CODE = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
 
 const MEETING_RECORDING_CODECS = [
   "h264",
@@ -58,11 +66,41 @@ export type MeetingRecordingProbeFailureT =
   | "invalid_output"
   | "enumeration_failed";
 
+/**
+ * Failures that say nothing about the machine's encoders and can pass on
+ * their own: a helper that was slow to launch (cold start, virus scan) or
+ * could not be launched at that moment. Every other failure is the same on
+ * the next run.
+ */
+const TRANSIENT_MEETING_RECORDING_PROBE_FAILURES: ReadonlySet<MeetingRecordingProbeFailureT> =
+  new Set(["timeout", "spawn_failed"]);
+
+export function isTransientMeetingRecordingProbeFailure(
+  reason: MeetingRecordingProbeFailureT,
+): boolean {
+  return TRANSIENT_MEETING_RECORDING_PROBE_FAILURES.has(reason);
+}
+
 export type MeetingRecordingProbeOutcomeT =
   | { ok: true; probe: MeetingRecordingProbeT }
   | { ok: false; reason: MeetingRecordingProbeFailureT };
 
-type ProbeExecErrorT = Error & { killed?: boolean };
+type ProbeExecErrorT = Error & { killed?: boolean; code?: unknown };
+
+/**
+ * Reason for a helper run that `execFile` reports as failed. The output limit
+ * is checked first: the child is killed for it as well, and a helper that
+ * floods stdout is not one that was too slow.
+ */
+function classifyProbeExecError(
+  error: ProbeExecErrorT,
+): MeetingRecordingProbeFailureT {
+  if (error.code === EXEC_MAX_BUFFER_ERROR_CODE) {
+    return "invalid_output";
+  }
+  // execFile kills the child when the timeout elapses.
+  return error.killed ? "timeout" : "spawn_failed";
+}
 
 type MeetingRecordingProbeDepsT = {
   helperExists: (helperPath: string) => boolean;
@@ -147,11 +185,7 @@ export function runMeetingRecordingProbe(
         },
         (error, stdout) => {
           if (error) {
-            // execFile kills the child when the timeout elapses.
-            resolve({
-              ok: false,
-              reason: error.killed ? "timeout" : "spawn_failed",
-            });
+            resolve({ ok: false, reason: classifyProbeExecError(error) });
             return;
           }
           resolve(parseMeetingRecordingProbeOutput(stdout));

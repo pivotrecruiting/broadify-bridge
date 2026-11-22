@@ -32,7 +32,10 @@ import { meetingContentSourceState } from "./meeting-content-source-state.js";
 import type { MeetingProgramFormatT } from "@broadify/protocol";
 import { resolveMeetingProgramFormat } from "./meeting-capabilities.js";
 import {
+  isTransientMeetingRecordingProbeFailure,
+  MEETING_RECORDING_PROBE_MAX_ATTEMPTS,
   runMeetingRecordingProbe,
+  type MeetingRecordingProbeOutcomeT,
   type MeetingRecordingProbeT,
 } from "./meeting-recording-probe.js";
 import type { MeetingStatusT } from "./meeting-status-types.js";
@@ -801,9 +804,13 @@ export class MeetingHelperManager {
   >();
   private shouldRestoreVirtualCamera = false;
   private keyerRestoreConfig: Record<string, unknown> | null = null;
-  // Hardware-encoder probe of the recorder (ADR-0010). Started at most once
-  // per bridge run; the outcome - a failure included - stays for that run.
+  // Hardware-encoder probe of the recorder (ADR-0010). A result or a
+  // definitive failure stays for the bridge run (`recordingProbeSettled`); a
+  // transient failure is retried by later calls, for at most
+  // MEETING_RECORDING_PROBE_MAX_ATTEMPTS runs in total.
   private recordingProbeRun: Promise<MeetingRecordingProbeT | null> | null = null;
+  private recordingProbeAttempts = 0;
+  private recordingProbeSettled = false;
   private recordingProbe: MeetingRecordingProbeT | null = null;
 
   getClient(): MeetingHelperClient | null {
@@ -812,29 +819,58 @@ export class MeetingHelperManager {
 
   /**
    * Hardware video encoders of this machine as the helper's probe mode
-   * reports them, or null when the probe failed or timed out. The first call
-   * runs the probe (its own short-lived helper process: no engine, no
-   * device), later calls get the same result. Independent of the engine
-   * lifecycle and never part of `start()`, which must stay free of awaits.
+   * reports them, or null while they are unknown. The first call runs the
+   * probe (its own short-lived helper process: no engine, no device) and
+   * waits for it. A transient failure (timeout, launch error) is retried by
+   * later calls, in the background: those calls answer null at once instead
+   * of waiting again, and the call after a successful retry gets the result.
+   * Never rejects. Independent of the engine lifecycle and never part of
+   * `start()`, which must stay free of awaits.
    */
   probeRecordingEncoders(): Promise<MeetingRecordingProbeT | null> {
-    this.recordingProbeRun ??= runMeetingRecordingProbe(
-      resolveMeetingHelperPath(),
-    ).then((outcome) => {
-      if (!outcome.ok) {
-        getLogger().warn(
-          `[Meeting] Recording encoder probe failed (${outcome.reason}); recording formats are not advertised.`,
-        );
-        return null;
-      }
-      this.recordingProbe = outcome.probe;
-      const codecs = outcome.probe.encoders.map((encoder) => encoder.codec);
-      getLogger().info(
-        `[Meeting] Recording encoder probe: backend=${outcome.probe.backend} hardware_codecs=${Array.from(new Set(codecs)).join(",") || "none"}`,
+    if (this.recordingProbeSettled) {
+      return Promise.resolve(this.recordingProbe);
+    }
+    if (!this.recordingProbeRun) {
+      this.recordingProbeAttempts += 1;
+      this.recordingProbeRun = this.runRecordingProbeAttempt(
+        this.recordingProbeAttempts,
+      ).catch(() => null);
+    }
+    return this.recordingProbeAttempts === 1
+      ? this.recordingProbeRun
+      : Promise.resolve(null);
+  }
+
+  private async runRecordingProbeAttempt(
+    attempt: number,
+  ): Promise<MeetingRecordingProbeT | null> {
+    let outcome: MeetingRecordingProbeOutcomeT;
+    try {
+      outcome = await runMeetingRecordingProbe(resolveMeetingHelperPath());
+    } catch {
+      outcome = { ok: false, reason: "spawn_failed" };
+    }
+    this.recordingProbeRun = null;
+    if (!outcome.ok) {
+      const retry =
+        isTransientMeetingRecordingProbeFailure(outcome.reason) &&
+        attempt < MEETING_RECORDING_PROBE_MAX_ATTEMPTS;
+      this.recordingProbeSettled = !retry;
+      getLogger().warn(
+        retry
+          ? `[Meeting] Recording encoder probe failed (${outcome.reason}), attempt ${attempt}/${MEETING_RECORDING_PROBE_MAX_ATTEMPTS}; retrying on the next status request.`
+          : `[Meeting] Recording encoder probe failed (${outcome.reason}); recording formats are not advertised.`,
       );
-      return outcome.probe;
-    });
-    return this.recordingProbeRun;
+      return null;
+    }
+    this.recordingProbeSettled = true;
+    this.recordingProbe = outcome.probe;
+    const codecs = outcome.probe.encoders.map((encoder) => encoder.codec);
+    getLogger().info(
+      `[Meeting] Recording encoder probe: backend=${outcome.probe.backend} hardware_codecs=${Array.from(new Set(codecs)).join(",") || "none"}`,
+    );
+    return outcome.probe;
   }
 
   /**

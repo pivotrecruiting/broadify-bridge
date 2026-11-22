@@ -21,6 +21,7 @@ import {
   resolveMeetingModelsDir,
 } from "./meeting-helper-manager.js";
 import {
+  MEETING_RECORDING_PROBE_MAX_ATTEMPTS,
   runMeetingRecordingProbe,
   type MeetingRecordingProbeOutcomeT,
 } from "./meeting-recording-probe.js";
@@ -28,6 +29,7 @@ import type { MeetingStatusT } from "./meeting-status-types.js";
 
 // The encoder probe is its own helper process; the manager tests script it.
 jest.mock("./meeting-recording-probe.js", () => ({
+  ...jest.requireActual("./meeting-recording-probe.js"),
   runMeetingRecordingProbe: jest.fn(),
 }));
 
@@ -107,8 +109,8 @@ describe("meeting-helper-manager", () => {
       );
     });
 
-    it.each(["timeout", "spawn_failed", "invalid_output", "helper_missing"] as const)(
-      "keeps a failed probe (%s) for the bridge run and logs it once",
+    it.each(["invalid_output", "helper_missing", "enumeration_failed"] as const)(
+      "keeps a definitive failure (%s) for the bridge run and logs it once",
       async (reason) => {
         mockRunProbe.mockResolvedValue({ ok: false, reason });
         const manager = new MeetingHelperManager();
@@ -124,6 +126,104 @@ describe("meeting-helper-manager", () => {
         );
       },
     );
+
+    it.each(["timeout", "spawn_failed"] as const)(
+      "retries a transient failure (%s) in the background, without making later callers wait",
+      async (reason) => {
+        let finishRetry!: (outcome: MeetingRecordingProbeOutcomeT) => void;
+        mockRunProbe
+          .mockResolvedValueOnce({ ok: false, reason })
+          .mockReturnValueOnce(
+            new Promise((resolve) => {
+              finishRetry = resolve;
+            }),
+          );
+        const manager = new MeetingHelperManager();
+
+        // The first caller waits for the first run.
+        expect(await manager.probeRecordingEncoders()).toBeNull();
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          `[Meeting] Recording encoder probe failed (${reason}), attempt 1/${MEETING_RECORDING_PROBE_MAX_ATTEMPTS}; retrying on the next status request.`,
+        );
+
+        // Later callers start one retry and get their answer while it runs.
+        expect(await manager.probeRecordingEncoders()).toBeNull();
+        expect(await manager.probeRecordingEncoders()).toBeNull();
+        expect(mockRunProbe).toHaveBeenCalledTimes(2);
+
+        finishRetry({ ok: true, probe: PROBE });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(await manager.probeRecordingEncoders()).toEqual(PROBE);
+        expect(manager.getRecordingProbe()).toEqual(PROBE);
+        expect(mockRunProbe).toHaveBeenCalledTimes(2);
+        expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("gives up after the bounded number of runs when the failure stays transient", async () => {
+      mockRunProbe.mockResolvedValue({ ok: false, reason: "timeout" });
+      const manager = new MeetingHelperManager();
+
+      for (let call = 0; call < MEETING_RECORDING_PROBE_MAX_ATTEMPTS + 3; call += 1) {
+        expect(await manager.probeRecordingEncoders()).toBeNull();
+        // Lets a background retry finish before the next call.
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      expect(mockRunProbe).toHaveBeenCalledTimes(MEETING_RECORDING_PROBE_MAX_ATTEMPTS);
+      expect(mockLogger.warn).toHaveBeenCalledTimes(MEETING_RECORDING_PROBE_MAX_ATTEMPTS);
+      expect(mockLogger.warn).toHaveBeenLastCalledWith(
+        "[Meeting] Recording encoder probe failed (timeout); recording formats are not advertised.",
+      );
+      expect(manager.getRecordingProbe()).toBeNull();
+    });
+
+    it("stops retrying once a retry fails definitively", async () => {
+      mockRunProbe
+        .mockResolvedValueOnce({ ok: false, reason: "timeout" })
+        .mockResolvedValueOnce({ ok: false, reason: "invalid_output" });
+      const manager = new MeetingHelperManager();
+
+      for (let call = 0; call < 4; call += 1) {
+        expect(await manager.probeRecordingEncoders()).toBeNull();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      expect(mockRunProbe).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      [
+        "the helper path cannot be resolved",
+        () => {
+          mockRunProbe.mockImplementationOnce(() => {
+            throw new Error("no helper path");
+          });
+        },
+      ],
+      [
+        "the probe rejects",
+        () => {
+          mockRunProbe.mockRejectedValueOnce(new Error("EACCES"));
+        },
+      ],
+      [
+        "the logger throws",
+        () => {
+          mockRunProbe.mockResolvedValueOnce({ ok: false, reason: "helper_missing" });
+          mockLogger.warn.mockImplementationOnce(() => {
+            throw new Error("log sink closed");
+          });
+        },
+      ],
+    ])("resolves null instead of rejecting when %s", async (_name, arrange) => {
+      arrange();
+      const manager = new MeetingHelperManager();
+
+      await expect(manager.probeRecordingEncoders()).resolves.toBeNull();
+    });
 
     it("is not part of an engine start", async () => {
       const manager = new MeetingHelperManager();

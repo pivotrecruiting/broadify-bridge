@@ -379,12 +379,18 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   ProRes-Hardware hat.
 - Die Encoder-Liste kommt aus `meeting-helper --probe-recording`
   (`services/meeting/meeting-recording-probe.ts`): die Bridge startet den
-  Helper dafuer einmal je Bridge-Lauf als eigenen, kurzlebigen Prozess (keine
-  Engine, kein Geraet), beim ersten `get_status`, mit 5 s Timeout. Scheitert
-  die Probe (Helper fehlt, Timeout, unlesbare Ausgabe, Enumeration
-  fehlgeschlagen), fehlt `recording` fuer diesen Bridge-Lauf, und die Bridge
-  schreibt eine Warnung mit dem Grund ins Log. `program_formats` haengt nicht
-  an der Probe und wird immer gemeldet.
+  Helper dafuer als eigenen, kurzlebigen Prozess (keine Engine, kein Geraet),
+  beim ersten `get_status`, mit 5 s Timeout. Ein Ergebnis gilt fuer den
+  Bridge-Lauf. Scheitert die Probe endgueltig (Helper fehlt, unlesbare
+  Ausgabe, Enumeration fehlgeschlagen), fehlt `recording` fuer diesen
+  Bridge-Lauf. Scheitert sie voruebergehend (Timeout, Startfehler), fehlt
+  `recording` zunaechst; spaetere `get_status` stossen im Hintergrund eine
+  Wiederholung an (hoechstens drei Laeufe insgesamt), ohne darauf zu warten,
+  und das Feld erscheint in der Statusabfrage nach dem geglueckten Lauf. Die
+  Web-App darf ein fehlendes `recording` deshalb nicht fuer den ganzen
+  Bridge-Lauf als endgueltig behandeln. Jeder gescheiterte Lauf schreibt eine
+  Warnung mit dem Grund ins Log. `program_formats` haengt nicht an der Probe
+  und wird immer gemeldet.
 - Der lokale Status (`GET /video/status`) startet die Probe nie selbst; er
   traegt `recording` erst, nachdem ein `get_status` sie ausgefuehrt hat.
 - `meeting_recording_start` ist von diesen Feldern noch nicht abhaengig: die
