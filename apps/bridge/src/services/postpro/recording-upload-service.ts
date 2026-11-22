@@ -37,9 +37,19 @@ export function isRecordingUploadAvailable(): boolean {
   }
 }
 
+/**
+ * Uploads run for a long time and do not need the relay. While it is
+ * disconnected nothing is published (the relay client would log a warning
+ * per event); after the reconnect the web app's configure command returns
+ * the current snapshot.
+ */
 function publishStatus(upload: MeetingRecordingUploadStatusT): void {
+  const context = getBridgeContext();
+  if (context.isRelayConnected?.() === false) {
+    return;
+  }
   const data: MeetingRecordingUploadStatusEventT = { at: Date.now(), upload };
-  getBridgeContext().publishBridgeEvent?.({ event: RECORDING_UPLOAD_STATUS_EVENT, data });
+  context.publishBridgeEvent?.({ event: RECORDING_UPLOAD_STATUS_EVENT, data });
 }
 
 /**

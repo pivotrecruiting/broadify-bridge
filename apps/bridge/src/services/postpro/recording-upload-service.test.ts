@@ -94,6 +94,18 @@ describe("recording upload service", () => {
     expect(publishBridgeEvent).toHaveBeenCalledTimes(1);
   });
 
+  it("publishes nothing while the relay is disconnected; the configure result still carries the snapshot", async () => {
+    let connected = false;
+    setContext({ bridgeId: BRIDGE_ID, platformApiUrl: "https://app.example", platformApiUrlGuarded: true, isRelayConnected: () => connected });
+    await initializeRecordingUpload();
+    expect(await configureRecordingUpload(true)).toMatchObject({ enabled: true, available: true });
+    expect(publishBridgeEvent).not.toHaveBeenCalled();
+
+    connected = true;
+    expect(await configureRecordingUpload(false)).toMatchObject({ enabled: false });
+    expect(publishBridgeEvent).toHaveBeenCalledTimes(1);
+  });
+
   it("with the hint off a finished recording sends nothing to the platform", async () => {
     setContext({ bridgeId: BRIDGE_ID, platformApiUrl: "http://localhost:3021", platformApiUrlGuarded: false });
     const filePath = path.join(userDataDir, "Broadify-Meeting-1.mp4");

@@ -10,6 +10,8 @@ import { computeBackoffDelayMs } from "../shared/backoff.js";
 import {
   classifyRecordingUploadError,
   describeTransientUploadError,
+  isAnsweredFailure,
+  isRecordingRowClosed,
   type RecordingUploadPlatformT,
   type RecordingUploadTokenGrantT,
 } from "./recording-upload-platform.js";
@@ -39,7 +41,11 @@ const STARTUP_DRAIN_DELAY_MS = 5_000;
 const RETRY_BASE_MS = 30_000;
 const RETRY_MAX_MS = 30 * 60_000;
 const RETRY_JITTER_RATIO = 0.2;
-/** Consecutive failed attempts without byte progress before a task fails for good. */
+/**
+ * Consecutive attempts without byte progress that the platform or the storage
+ * answered with an error, before a task fails for good. Attempts that got no
+ * answer at all (offline) do not count: the age limit alone bounds them.
+ */
 const MAX_TASK_ATTEMPTS = 40;
 /** A task that could not be uploaded within this time after its enqueue fails with `upload_expired`. */
 const MAX_TASK_AGE_MS = 7 * 24 * 60 * 60_000;
@@ -49,6 +55,19 @@ const MAX_REPORTED_TASKS = 20;
 const PROGRESS_PUBLISH_INTERVAL_MS = 2_000;
 /** Recoveries (offset conflict, token refusal, lost upload URL) in a row without a byte of progress. */
 const MAX_RECOVERIES_WITHOUT_PROGRESS = 3;
+/** Times one task may start its upload again from byte 0 after the server already held bytes. */
+const MAX_UPLOAD_RESTARTS = 3;
+/**
+ * The upload token is replaced this long before it expires (at most half its
+ * lifetime early). Not earlier: whether the storage accepts a re-issued token
+ * on an existing upload is not known, and a refusal costs a restart from byte 0.
+ */
+const TOKEN_REFRESH_MARGIN_MS = 10 * 60_000;
+/** Before the last chunk the platform is asked once more whether it still wants the recording, unless it just said so. */
+const FINAL_CHUNK_CONFIRM_AGE_MS = 60_000;
+/** Limits of the platform's begin route; a recording beyond them is not offered at all. */
+const MAX_RECORDING_BYTES = 50 * 1024 * 1024 * 1024;
+const MAX_FILE_NAME_LENGTH = 200;
 const MAX_DURATION_MS = 24 * 60 * 60_000;
 const HASH_READ_BYTES = 1024 * 1024;
 /** Longest single timer; a later due time is simply re-armed (setTimeout overflows above 2^31 ms). */
@@ -89,6 +108,39 @@ class TerminalTaskError extends Error {
   }
 }
 
+/**
+ * The recording cannot be reached right now (volume not mounted, share down,
+ * permission or I/O error). Unlike a file that is gone from a folder that is
+ * there, this can heal: the task waits and tries again.
+ */
+class RecordingFileUnavailableError extends Error {
+  constructor() {
+    super("file_unavailable");
+    this.name = "RecordingFileUnavailableError";
+  }
+}
+
+/** An upload token with the time its begin was sent (its age is measured from there). */
+type IssuedGrantT = { grant: RecordingUploadTokenGrantT; issuedAtMs: number };
+
+/** The basename the platform is told, cut to its limit with the extension kept. */
+function platformFileName(filePath: string): string {
+  const base = path.basename(filePath);
+  if (base.length <= MAX_FILE_NAME_LENGTH) {
+    return base;
+  }
+  const extension = path.extname(base);
+  let stem = "";
+  // By code point, so a surrogate pair is never split.
+  for (const character of base.slice(0, base.length - extension.length)) {
+    if (stem.length + character.length + extension.length > MAX_FILE_NAME_LENGTH) {
+      break;
+    }
+    stem += character;
+  }
+  return `${stem}${extension}`;
+}
+
 const isTerminal = (record: RecordingUploadRecordT): boolean =>
   (RECORDING_UPLOAD_TERMINAL_STATES as readonly string[]).includes(record.state);
 
@@ -103,8 +155,8 @@ const isAbortError = (error: unknown): boolean =>
  * file, streamed -> resumable tus upload in chunks streamed from disk ->
  * complete. Every step is safe to repeat, so a bridge restart or a network
  * loss resumes where the server is; failures are retried with backoff until
- * a bounded number of attempts or an age limit, then the task ends as
- * `failed`. The local file is only ever read.
+ * a bounded number of answered attempts or an age limit, then the task ends
+ * as `failed`. The local file is only ever read.
  */
 export class RecordingUploader {
   private readonly now: () => number;
@@ -308,7 +360,9 @@ export class RecordingUploader {
       upload_url: null,
       bytes_uploaded: 0,
       restarted: false,
+      upload_restarts: 0,
       attempts: 0,
+      answered_attempts: 0,
       next_attempt_at: 0,
       error_code: null,
       updated_at_ms: now,
@@ -421,8 +475,8 @@ export class RecordingUploader {
       await this.complete(task);
       return;
     }
-    const grant = await this.begin(task);
-    if (!grant) {
+    const issued = await this.begin(task);
+    if (!issued) {
       return;
     }
     if (!task.sha256) {
@@ -430,7 +484,7 @@ export class RecordingUploader {
       task.sha256 = await this.hashFile(task.file_path);
     }
     await this.setState(task, "uploading");
-    const uploaded = await this.upload(task, grant);
+    const uploaded = await this.upload(task, issued);
     if (!uploaded) {
       return;
     }
@@ -442,13 +496,17 @@ export class RecordingUploader {
    * Asks the platform for (a fresh token of) the upload. Returns null when
    * the platform already holds the complete recording: the task is done.
    */
-  private async begin(task: RecordingUploadRecordT): Promise<RecordingUploadTokenGrantT | null> {
+  private async begin(task: RecordingUploadRecordT): Promise<IssuedGrantT | null> {
     if (!isUploadableRecordingCodec(task.codec)) {
       throw new TerminalTaskError("codec_not_uploadable");
     }
+    if (task.size_bytes > MAX_RECORDING_BYTES) {
+      throw new TerminalTaskError("recording_too_large");
+    }
+    const issuedAtMs = this.now();
     const grant = await this.deps.platform.begin({
       client_recording_id: task.id,
-      file_name: path.basename(task.file_path),
+      file_name: platformFileName(task.file_path),
       size_bytes: task.size_bytes,
       codec: task.codec,
       container: task.container,
@@ -464,24 +522,34 @@ export class RecordingUploader {
       await this.finishTask(task, "done", null);
       return null;
     }
-    return grant;
+    return { grant, issuedAtMs };
   }
 
   /**
-   * Moves the bytes. Resumes at the server's offset, refreshes the token
-   * before it can expire and after the server refused it, and starts a new
-   * upload from byte 0 when the server no longer knows the upload URL.
+   * Moves the bytes. Resumes at the server's offset, replaces the token
+   * shortly before it expires and after the server refused it, and starts a
+   * new upload from byte 0 when the server no longer knows the upload URL or
+   * no longer accepts a token on it (a bounded number of times).
    *
    * @returns false when the platform reported the recording as complete meanwhile.
    */
-  private async upload(task: RecordingUploadRecordT, firstGrant: RecordingUploadTokenGrantT): Promise<boolean> {
+  private async upload(task: RecordingUploadRecordT, first: IssuedGrantT): Promise<boolean> {
     const { tus } = this.deps;
     const signal = this.abortController.signal;
-    let grant = firstGrant;
-    let tokenIssuedAt = this.now();
+    let { grant, issuedAtMs } = first;
+    let confirmedAtMs = issuedAtMs;
     const endpoint = parseTusEndpoint(grant.tus_endpoint, tus.urlTransport);
 
     const createUpload = async (): Promise<number> => {
+      if (task.bytes_uploaded > 0) {
+        if (task.upload_restarts >= MAX_UPLOAD_RESTARTS) {
+          throw new TerminalTaskError("upload_restarts_exhausted");
+        }
+        task.upload_restarts += 1;
+        this.deps.logger.warn(
+          `[RecordingUpload] ${path.basename(task.file_path)}: the storage no longer continues the upload; starting again from byte 0 (${task.upload_restarts}/${MAX_UPLOAD_RESTARTS})`,
+        );
+      }
       task.upload_url = await tus.create({
         endpoint: grant.tus_endpoint,
         token: grant.token,
@@ -514,9 +582,13 @@ export class RecordingUploader {
       if (!next) {
         return false;
       }
-      grant = next;
-      tokenIssuedAt = this.now();
+      ({ grant, issuedAtMs } = next);
+      confirmedAtMs = issuedAtMs;
       return true;
+    };
+    const tokenExpiresSoon = (): boolean => {
+      const lifetimeMs = grant.token_ttl_s * 1000;
+      return this.now() - issuedAtMs > lifetimeMs - Math.min(TOKEN_REFRESH_MARGIN_MS, lifetimeMs / 2);
     };
 
     let offset = await resumeOffset();
@@ -524,17 +596,28 @@ export class RecordingUploader {
     while (offset < task.size_bytes) {
       // Shutdown between two chunks: stop here, the next start resumes at this offset.
       signal.throwIfAborted();
-      if (this.now() - tokenIssuedAt > (grant.token_ttl_s * 1000) / 2 && !(await refreshGrant())) {
+      if (tokenExpiresSoon() && !(await refreshGrant())) {
         return false;
       }
       const chunkStart = offset;
+      const length = Math.min(grant.chunk_size_bytes, task.size_bytes - chunkStart);
+      if (chunkStart + length === task.size_bytes && this.now() - confirmedAtMs > FINAL_CHUNK_CONFIRM_AGE_MS) {
+        // The storage creates the object with the last chunk. A recording the
+        // user deleted meanwhile must not reach that point: begin refuses it
+        // (the task ends as cancelled). Its token is not needed; the one in
+        // use is kept so the storage sees no change of token on this upload.
+        if (!(await this.begin(task))) {
+          return false;
+        }
+        confirmedAtMs = this.now();
+      }
       try {
         offset = await tus.patchChunk({
           uploadUrl: task.upload_url ?? "",
           token: grant.token,
           filePath: task.file_path,
           offset: chunkStart,
-          length: Math.min(grant.chunk_size_bytes, task.size_bytes - chunkStart),
+          length,
           signal,
           onBytesSent: (sent) => {
             this.liveProgress = { id: task.id, bytes: chunkStart + sent };
@@ -563,6 +646,7 @@ export class RecordingUploader {
       recoveries = 0;
       task.bytes_uploaded = offset;
       task.attempts = 0;
+      task.answered_attempts = 0;
       task.error_code = null;
       await this.touch(task);
       this.publishProgress();
@@ -573,11 +657,21 @@ export class RecordingUploader {
 
   private async complete(task: RecordingUploadRecordT): Promise<void> {
     await this.assertFileUnchanged(task);
-    await this.deps.platform.complete({
-      recording_id: task.recording_id ?? "",
-      size_bytes: task.size_bytes,
-      sha256: task.sha256 ?? "",
-    });
+    const request = { recording_id: task.recording_id ?? "", size_bytes: task.size_bytes, sha256: task.sha256 ?? "" };
+    try {
+      await this.deps.platform.complete(request);
+    } catch (error) {
+      if (!isRecordingRowClosed(error)) {
+        throw error;
+      }
+      // The platform closed the row while the bridge was away (stalled
+      // upload); the bytes are in storage. Begin reopens the row, then the
+      // registration is tried once more. A second refusal ends the task.
+      if (!(await this.begin(task))) {
+        return;
+      }
+      await this.deps.platform.complete(request);
+    }
     task.bytes_uploaded = task.size_bytes;
     await this.finishTask(task, "done", null);
   }
@@ -594,6 +688,9 @@ export class RecordingUploader {
         await this.deps.settingsStore.save(this.settings);
       }
       await this.finishTask(task, "cancelled", reaction.errorCode);
+      if (reaction.abortRow) {
+        await this.abortOnPlatform(task, reaction.errorCode);
+      }
       return;
     }
     if (reaction.kind === "fail" || (reaction.kind === "restart" && task.restarted)) {
@@ -605,17 +702,22 @@ export class RecordingUploader {
       task.upload_url = null;
       task.bytes_uploaded = 0;
       task.attempts = 0;
+      task.answered_attempts = 0;
       task.error_code = reaction.errorCode;
       task.next_attempt_at = this.now();
       await this.setState(task, "queued");
       return;
     }
     task.attempts += 1;
-    if (task.attempts >= this.maxTaskAttempts) {
-      await this.failTask(task, "upload_retries_exhausted");
-      return;
+    if (isAnsweredFailure(error)) {
+      task.answered_attempts += 1;
+      if (task.answered_attempts >= this.maxTaskAttempts) {
+        await this.failTask(task, "upload_retries_exhausted");
+        return;
+      }
     }
-    task.error_code = describeTransientUploadError(error);
+    task.error_code =
+      error instanceof RecordingFileUnavailableError ? "file_unavailable" : describeTransientUploadError(error);
     task.next_attempt_at =
       this.now() +
       computeBackoffDelayMs({
@@ -631,9 +733,14 @@ export class RecordingUploader {
     await this.setState(task, task.state === "hashing" ? "queued" : task.state);
   }
 
-  /** Ends a task as `failed` and tells the platform, best effort, so its row does not wait for the stall timeout. */
+  /** Ends a task as `failed` and tells the platform. */
   private async failTask(task: RecordingUploadRecordT, errorCode: string): Promise<void> {
     await this.finishTask(task, "failed", errorCode);
+    await this.abortOnPlatform(task, errorCode);
+  }
+
+  /** Closes the platform's row of an upload that will not finish, best effort, so it does not wait for the stall timeout. */
+  private async abortOnPlatform(task: RecordingUploadRecordT, errorCode: string): Promise<void> {
     if (!task.recording_id) {
       return;
     }
@@ -665,10 +772,24 @@ export class RecordingUploader {
 
   // --- helpers ---------------------------------------------------------------
 
-  /** The file must still be the one that was enqueued: same size, same modification time. */
+  /**
+   * The file must still be the one that was enqueued: same size, same
+   * modification time. It is missing for good only when its folder is there
+   * and it is not; anything else (the volume or share is not there, a
+   * permission or I/O error) may heal and is retried until the age limit.
+   */
   private async assertFileUnchanged(task: RecordingUploadRecordT): Promise<void> {
-    const stat = await fs.stat(task.file_path).catch(() => null);
-    if (!stat?.isFile()) {
+    let stat;
+    try {
+      stat = await fs.stat(task.file_path);
+    } catch (error) {
+      const folder = await fs.stat(path.dirname(task.file_path)).catch(() => null);
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && folder?.isDirectory()) {
+        throw new TerminalTaskError("file_missing");
+      }
+      throw new RecordingFileUnavailableError();
+    }
+    if (!stat.isFile()) {
       throw new TerminalTaskError("file_missing");
     }
     if (stat.size !== task.size_bytes || stat.mtimeMs !== task.mtime_ms) {

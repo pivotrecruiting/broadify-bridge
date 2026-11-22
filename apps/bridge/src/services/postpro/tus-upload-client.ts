@@ -219,7 +219,7 @@ export class TusUploadClient {
   /**
    * Sends one chunk of the file, streamed from disk.
    *
-   * @returns The server's offset after the chunk.
+   * @returns The server's offset after the chunk, always inside `(offset, offset + length]`.
    */
   async patchChunk(options: TusPatchOptionsT): Promise<number> {
     const url = this.transport.parseUrl(options.uploadUrl);
@@ -238,7 +238,12 @@ export class TusUploadClient {
     if (response.status !== 204) {
       throw new TusHttpError("PATCH", response.status, response.body);
     }
-    return readOffsetHeader(response, "PATCH");
+    const next = readOffsetHeader(response, "PATCH");
+    // An offset that did not advance, or that lies beyond the chunk, is no progress the caller could build on.
+    if (next <= options.offset || next > options.offset + options.length) {
+      throw new TusHttpError("PATCH", response.status, "unexpected Upload-Offset");
+    }
+    return next;
   }
 
   private send(

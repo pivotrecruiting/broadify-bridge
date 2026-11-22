@@ -5,6 +5,8 @@ import {
   classifyRecordingUploadError,
   createRecordingUploadPlatform,
   describeTransientUploadError,
+  isAnsweredFailure,
+  isRecordingRowClosed,
   type RecordingUploadBeginRequestT,
 } from "./recording-upload-platform.js";
 import { TusHttpError } from "./tus-upload-client.js";
@@ -13,9 +15,10 @@ const platformError = (status: number, code: string | null) => new PlatformReque
 
 describe("classifyRecordingUploadError", () => {
   it.each([
-    [403, "bridge_not_linked", { kind: "cancel", errorCode: "bridge_not_linked", disableUpload: true }],
-    [403, "upload_not_enabled", { kind: "cancel", errorCode: "upload_not_enabled", disableUpload: true }],
-    [410, "recording_deleted", { kind: "cancel", errorCode: "recording_deleted", disableUpload: false }],
+    [403, "bridge_not_linked", { kind: "cancel", errorCode: "bridge_not_linked", disableUpload: true, abortRow: true }],
+    [403, "upload_not_enabled", { kind: "cancel", errorCode: "upload_not_enabled", disableUpload: true, abortRow: true }],
+    [410, "recording_deleted", { kind: "cancel", errorCode: "recording_deleted", disableUpload: false, abortRow: false }],
+    [409, "recording_not_uploading", { kind: "fail", errorCode: "recording_not_uploading" }],
     [403, "limit_minutes", { kind: "fail", errorCode: "limit_minutes" }],
     [413, "recording_too_large", { kind: "fail", errorCode: "recording_too_large" }],
     [404, "recording_not_found", { kind: "fail", errorCode: "recording_not_found" }],
@@ -45,9 +48,41 @@ describe("classifyRecordingUploadError", () => {
     expect(classifyRecordingUploadError("nope")).toEqual({ kind: "retry" });
   });
 
+  it.each([400, 413, 415])("an upload the storage refuses to create with HTTP %i fails without a retry", (status) => {
+    expect(classifyRecordingUploadError(new TusHttpError("POST", status, "Payload too large"))).toEqual({
+      kind: "fail",
+      errorCode: `storage_http_${status}`,
+    });
+  });
+
+  it("retries a create the storage refused for its token, and the same statuses on other requests", () => {
+    expect(classifyRecordingUploadError(new TusHttpError("POST", 400, "Invalid Compact JWS"))).toEqual({ kind: "retry" });
+    expect(classifyRecordingUploadError(new TusHttpError("POST", 403, ""))).toEqual({ kind: "retry" });
+    expect(classifyRecordingUploadError(new TusHttpError("POST", 503, ""))).toEqual({ kind: "retry" });
+    expect(classifyRecordingUploadError(new TusHttpError("PATCH", 413, ""))).toEqual({ kind: "retry" });
+  });
+
   it("is not fooled by a code that names an object property", () => {
     expect(classifyRecordingUploadError(platformError(500, "toString"))).toEqual({ kind: "retry" });
     expect(classifyRecordingUploadError(platformError(500, "__proto__"))).toEqual({ kind: "retry" });
+  });
+});
+
+describe("isAnsweredFailure", () => {
+  it("tells an answer of the platform or storage from no answer at all", () => {
+    expect(isAnsweredFailure(platformError(503, null))).toBe(true);
+    expect(isAnsweredFailure(new TusHttpError("PATCH", 500, ""))).toBe(true);
+    expect(isAnsweredFailure(new ZodError([]))).toBe(true);
+    expect(isAnsweredFailure(new Error("getaddrinfo ENOTFOUND app.example"))).toBe(false);
+    expect(isAnsweredFailure(new TypeError("fetch failed"))).toBe(false);
+  });
+});
+
+describe("isRecordingRowClosed", () => {
+  it("recognises only the platform's recording_not_uploading", () => {
+    expect(isRecordingRowClosed(platformError(409, "recording_not_uploading"))).toBe(true);
+    expect(isRecordingRowClosed(platformError(409, "size_mismatch"))).toBe(false);
+    expect(isRecordingRowClosed(new Error("recording_not_uploading"))).toBe(false);
   });
 });
 

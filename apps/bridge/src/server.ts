@@ -181,6 +181,7 @@ export async function createServer(config: BridgeConfigT) {
     publishBridgeEvent: relayClient
       ? (payload) => relayClient?.sendBridgeEvent(payload)
       : undefined,
+    isRelayConnected: relayClient ? () => relayClient?.isConnected() === true : undefined,
   });
 
   // Recording upload (ADR-0011): after the relay publisher is in the context

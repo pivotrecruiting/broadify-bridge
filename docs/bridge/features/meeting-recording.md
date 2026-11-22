@@ -884,8 +884,9 @@ One task at a time, from a persisted queue
 `uploading` -> `completing` (the file must still have the size and
 modification time it was enqueued with) -> `done`.
 
-- **Streaming:** the file is read from disk in slices of at most 64 KiB; the
-  hash and the upload never hold more than one slice in memory.
+- **Streaming:** the file is never loaded as a whole. The upload reads it in
+  slices of at most 64 KiB, the hash in blocks of 1 MiB; neither holds more
+  than one of them in memory.
 - **Resumable (tus 1.0, own minimal client `tus-upload-client.ts`):** the
   upload is created with `POST`, sent with `PATCH` in chunks of the size the
   platform names (6 MiB, which Supabase requires for every chunk but the
@@ -893,16 +894,40 @@ modification time it was enqueued with) -> `done`.
   reports for `HEAD`. A bridge restart does the same: begin again (fresh
   token), `HEAD`, continue.
 - **Token lifetime:** the signed upload token is valid for a limited time (2
-  hours). It is re-issued through `begin` once it is older than half its
-  lifetime and when the storage refuses it. If the storage no longer knows the
-  upload URL, the same file is uploaded again from byte 0. The token is kept
-  in memory only.
+  hours, counted from the `begin` that issued it, so hashing time counts). It
+  stays in use until 10 minutes before its end or until the storage refuses
+  it, and is then re-issued through `begin`. If the storage no longer knows
+  the upload URL, or accepts no token on it any more, the same file is
+  uploaded again from byte 0, at most three times per task
+  (`upload_restarts_exhausted` after that). The token is kept in memory only.
+- **Last chunk:** the storage creates the object with the last chunk. Before
+  sending it the bridge asks the platform once more (`begin`, unless it did
+  so within the last minute); a recording the user deleted meanwhile ends as
+  `cancelled` and its object is not created. A deletion during the last chunk
+  itself is not caught by the bridge.
 - **Retries:** failures are retried with backoff (30 s doubling up to 30 min,
-  20 % jitter). A task ends as `failed` after 40 consecutive attempts without
-  a byte of progress (`upload_retries_exhausted`), 7 days after it was
-  enqueued (`upload_expired`), when the file changed or disappeared
-  (`file_changed`, `file_missing`), or on a permanent answer of the platform.
-  A failed task with a platform row tells the platform (`abort`, best effort).
+  20 % jitter). A task ends as `failed`
+  - after 40 consecutive attempts without a byte of progress that the
+    platform or the storage answered with an error
+    (`upload_retries_exhausted`). Attempts that got no answer at all (no
+    network, DNS, timeout) do not count toward the 40;
+  - 7 days after it was enqueued (`upload_expired`), which is the only bound
+    for a bridge that stays offline;
+  - when the file changed (`file_changed`) or is gone from a folder that
+    still exists (`file_missing`). A file that cannot be reached right now
+    (volume not mounted, share down, permission or I/O error) is not given
+    up: the task waits with `file_unavailable` and tries again, up to the 7
+    days;
+  - on a permanent answer of the platform, or when the storage refuses to
+    create the upload with 400, 413 or 415 (`storage_http_<status>`, for
+    example a project file size limit below the recording's size);
+  - when it is larger than the platform takes (50 GiB,
+    `recording_too_large`, decided without a request).
+  A task that ends as `failed`, or as `cancelled` while the platform still
+  has an open row for it, tells the platform (`abort`, best effort).
+- **Queue file:** writes run one after the other. An existing queue file
+  that cannot be read or parsed is discarded with a warning
+  (`Discarding the persisted upload queue (...)`), never silently.
 - **Terminal states** stay visible for 7 days (at most 20), then the record
   is dropped. There is no manual retry from the web app in this stage; the
   file is still on disk.
@@ -911,18 +936,31 @@ Reaction to the platform's error codes (`recording-upload-platform.ts`):
 
 | Code | Reaction |
 | --- | --- |
-| `upload_not_enabled`, `bridge_not_linked` | task `cancelled`; the local hint is switched off |
+| `upload_not_enabled`, `bridge_not_linked` | task `cancelled`; the local hint is switched off; `abort` for a known row |
 | `recording_deleted` | task `cancelled` |
+| `recording_not_uploading` (at complete) | the platform closed the row (stalled upload): `begin` reopens it and `complete` is repeated once without re-sending bytes; a second refusal is `failed` |
 | `limit_minutes`, `recording_too_large`, `recording_not_found`, any other 400 (`invalid_request`) | task `failed`, no retry |
 | `size_mismatch`, `object_missing` (at complete) | upload once more from byte 0, then `failed` |
 | 401, 5xx, network errors, anything unknown | retry with backoff |
 
 While a task waits for its next attempt, `error_code` names the last failure
 by kind only: `network_error`, `platform_http_<status>`,
-`storage_http_<status>`, `platform_response_invalid`.
+`storage_http_<status>`, `platform_response_invalid`, `file_unavailable`.
+
+The file name sent to the platform is the basename, cut to 200 characters
+with the extension kept.
 
 Switching the upload off stops new enqueues. Tasks already in the queue keep
-running; the platform can refuse them at their next begin.
+running on the bridge, but the platform is the authority at every `begin` (a
+new attempt, a token refresh, an upload restart, the question before the last
+chunk). If it answers `upload_not_enabled`, the running task ends as
+`cancelled` and the bridge closes the platform's row with `abort`. Whether a
+running upload may finish after the switch-off is therefore the platform's
+decision; the bridge needs no change for either answer.
+
+Status events are published only while the relay is connected. An upload
+that runs without the relay stays silent; after the reconnect the web app's
+configure command returns the current snapshot.
 
 ### Bandwidth: `BRIDGE_RECORDING_UPLOAD_MAX_KBPS`
 
@@ -948,7 +986,16 @@ response body or the sha256. The status event carries the same restriction.
   this package; the client is tested against a local tus server (interrupt,
   resume, token expiry, offset conflict, lost upload URL). The storage's
   behaviour for a re-issued token on an existing upload and the lifetime of an
-  upload URL are assumptions; both fall back to a new upload from byte 0.
+  upload URL are assumptions. If either turns out against the bridge, an
+  upload shorter than the token's lifetime (2 hours) is unaffected, and a
+  longer one restarts from byte 0 up to three times and then ends as
+  `failed upload_restarts_exhausted`: recordings that need more than 2 hours
+  to upload would then not arrive. This must be checked against the real
+  storage in the first device test.
+- Whether the release candidate's web app address is reachable for the
+  bridge's unauthenticated, bridge-signed requests (a deployment protection
+  in front of it would answer 401 to every `begin`, which is retried and ends
+  as `upload_retries_exhausted`).
 - Windows: the code has no platform-specific path (it uses `node:fs` and
   `node:https` only), but it has not run on a Windows device.
 - Hashing and uploading a multi-gigabyte file run inside the bridge process.

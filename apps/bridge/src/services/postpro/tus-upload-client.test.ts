@@ -42,6 +42,8 @@ class FakeTusServer {
   /** Destroy the connection of the next PATCH after this many body bytes (kept, as a tus server does). */
   dropNextPatchAfterBytes: number | null = null;
   locationOverride: string | null = null;
+  /** Answer the next PATCH with this offset instead of the real one (and keep no byte of it). */
+  nextPatchOffsetAnswer: number | null = null;
   private server: Server | null = null;
   origin = "";
 
@@ -106,6 +108,13 @@ class FakeTusServer {
     if (Number(request.headers["upload-offset"]) !== upload.data.length) {
       request.resume();
       reply(409);
+      return;
+    }
+    if (this.nextPatchOffsetAnswer !== null) {
+      const offset = this.nextPatchOffsetAnswer;
+      this.nextPatchOffsetAnswer = null;
+      request.resume();
+      request.on("end", () => reply(204, { "upload-offset": String(offset) }));
       return;
     }
     const dropAfter = this.dropNextPatchAfterBytes;
@@ -256,6 +265,21 @@ describe("TusUploadClient", () => {
       .catch((caught: unknown) => caught);
     expect(isTusOffsetConflict(error)).toBe(true);
     expect(await client.getOffset({ uploadUrl, token: "token-1" })).toBe(0);
+  });
+
+  it.each([
+    ["did not move", 0],
+    ["lies beyond the chunk", 5000],
+  ])("does not take a 204 as progress when the offset %s", async (_name, answered) => {
+    const client = new TusUploadClient({ transport: LOCAL_TRANSPORT });
+    const uploadUrl = await client.create(createOptions());
+    server.nextPatchOffsetAnswer = answered;
+    const error = await client
+      .patchChunk({ uploadUrl, token: "token-1", filePath, offset: 0, length: 1024 })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(TusHttpError);
+    expect(error).toMatchObject({ method: "PATCH", status: 204 });
+    expect(isTusOffsetConflict(error) || isTusTokenRefusal(error) || isTusUploadGone(error)).toBe(false);
   });
 
   it("reports an expired token as a refusal and continues the same upload with a new one", async () => {
@@ -448,7 +472,9 @@ describe("TusUploadClient", () => {
         upload_url: null,
         bytes_uploaded: 0,
         restarted: false,
+        upload_restarts: 0,
         attempts: 0,
+        answered_attempts: 0,
         next_attempt_at: 0,
         error_code: null,
         updated_at_ms: 2_000,

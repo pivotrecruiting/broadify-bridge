@@ -806,7 +806,10 @@ nur aus ihrer eigenen Konfiguration. Idempotent, Policy `fast` (12 s Relay /
 - Die Web-App sendet den Befehl bei jedem Bridge-Connect und bei jeder
   Aenderung der Einstellung oder des Entitlements, **auch mit `false`**. Die
   Bridge speichert den Wert (`<userData>/recording-upload/settings.json`).
-- `false` stoppt neues Einreihen; bereits eingereihte Uploads laufen weiter.
+- `false` stoppt neues Einreihen; bereits eingereihte Uploads laufen auf der
+  Bridge weiter. Ob sie fertig werden, entscheidet die Plattform bei ihrem
+  naechsten Upload-Beginn (`upload_not_enabled` beendet die Aufgabe als
+  `cancelled`).
 - Ergebnis: `{ "upload": MeetingRecordingUploadStatusT }`. Auf einer Bridge
   ohne Upload-Faehigkeit: `{ enabled: false, available: false, tasks: [],
   last_skipped: null }`.
@@ -831,7 +834,7 @@ nur aus ihrer eigenen Konfiguration. Idempotent, Policy `fast` (12 s Relay /
           "state": "uploading", // "queued" | "hashing" | "uploading" | "completing" | "done" | "failed" | "cancelled"
           "size_bytes": 1288490188,
           "bytes_uploaded": 402653184,
-          "attempts": 0, // Fehlversuche in Folge ohne Byte-Fortschritt
+          "attempts": 0, // Fehlversuche in Folge ohne Byte-Fortschritt (auch solche ohne Netz; nur beantwortete zaehlen gegen das Limit)
           "next_attempt_at": null, // number|null, Unix ms des naechsten Versuchs, solange die Aufgabe wartet
           "error_code": null, // string|null; bei wartenden Aufgaben der letzte Fehler, bei failed/cancelled der Grund
           "updated_at": 1712345678000
@@ -855,8 +858,15 @@ nur aus ihrer eigenen Konfiguration. Idempotent, Policy `fast` (12 s Relay /
 - `last_skipped` gilt fuer den laufenden Bridge-Prozess (nicht gespeichert)
   und wird nur gesetzt, wenn der Upload eingeschaltet ist.
 - Kein Feld traegt einen lokalen Pfad, eine URL oder ein Token.
-- Es gibt keinen Resync-Snapshot: nach einem Reconnect liefert der
-  Konfigurationsbefehl den aktuellen Stand.
+- Gesendet wird nur bei verbundenem Relay. Es gibt keinen Resync-Snapshot:
+  nach einem Reconnect liefert der Konfigurationsbefehl den aktuellen Stand.
+- `error_code` beendeter Aufgaben, die die Bridge selbst vergibt:
+  `upload_retries_exhausted`, `upload_restarts_exhausted`, `upload_expired`,
+  `file_missing`, `file_changed`, `recording_too_large`,
+  `codec_not_uploadable`,
+  `storage_http_<status>`, `invalid_request`; sonst der Code der Plattform.
+  Bei wartenden Aufgaben: `network_error`, `platform_http_<status>`,
+  `storage_http_<status>`, `platform_response_invalid`, `file_unavailable`.
 
 Kompatibilitaet: alte Bridge + neue Web-App: Faehigkeit fehlt, Befehl wird nie
 gesendet. Neue Bridge + alte Web-App: der Hinweis kommt nie an, nichts wird

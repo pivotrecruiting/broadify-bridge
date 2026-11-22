@@ -43,8 +43,20 @@ export const RecordingUploadRecordSchema = z
     bytes_uploaded: z.number().int().nonnegative(),
     /** The upload was restarted from byte 0 once after the platform rejected the object. */
     restarted: z.boolean(),
+    /**
+     * Uploads started again from byte 0 although the server already held bytes
+     * (lost upload URL, token no longer accepted on it). Bounded, so a storage
+     * that keeps discarding the upload ends the task instead of looping.
+     */
+    upload_restarts: z.number().int().nonnegative(),
     /** Consecutive failed attempts without byte progress. */
     attempts: z.number().int().nonnegative(),
+    /**
+     * Of `attempts`, those the platform or the storage answered. Only these
+     * count toward the attempt limit; time without any answer (offline) is
+     * bounded by the task's age alone.
+     */
+    answered_attempts: z.number().int().nonnegative(),
     next_attempt_at: z.number().int().nonnegative(),
     error_code: z.string().nullable(),
     updated_at_ms: z.number().int().nonnegative(),

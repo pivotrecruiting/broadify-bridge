@@ -31,6 +31,8 @@ export type BridgeContextT = {
   pairingCode?: string;
   pairingExpiresAt?: number;
   publishBridgeEvent?: (payload: BridgeEventPayloadT) => void;
+  /** Whether a published event can reach the relay right now; set together with `publishBridgeEvent`. */
+  isRelayConnected?: () => boolean;
 };
 
 let bridgeContext: BridgeContextT | null = null;

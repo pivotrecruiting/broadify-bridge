@@ -32,6 +32,20 @@ verlieren; die lokale Datei bleibt unangetastet.
      prüfen beim Verbindungsaufbau zusätzlich jede aufgelöste Adresse (`guardedLookup`);
    - die Betreiber-Übersteuerung `POSTPRO_API_URL` / `--postpro-api-url` (Entwicklung; darf http und Loopback sein).
      Sie hat Vorrang.
+
+   Grenzen dieser Zusage (bewusst in Kauf genommen, siehe Folgen):
+   - Der release-verwaltete Schlüssel gewinnt nur dann gegen `userData/.env`, wenn das gepackte `.env` ihn setzt
+     (`applyReleaseManagedEnvOverrides`). Setzt ein Paket ihn nicht, gilt der Wert aus `userData/.env` oder aus der
+     Umgebung des Prozesses; er muss auch dann die URL-Prüfung bestehen.
+   - `POSTPRO_API_URL` gehört nicht zu den release-verwalteten Schlüsseln. Steht er in `userData/.env` oder in der
+     Umgebung, wirkt er auch in einem gepackten Release, hat Vorrang vor der Release-Adresse und wird nicht geprüft.
+     Wer mit den Rechten des Nutzers diese Datei schreiben kann, lenkt damit `begin`/`complete` und über deren
+     Antwort die Wahl des Speicher-Endpunkts auf einen eigenen Server (nur öffentliches https mit dem festen Pfad).
+   - Eine ungepackte Entwicklungs-Bridge liest denselben Schlüssel `PRODUCTION_STUDIO_CONTROL_WEBAPP_URL`. Trägt
+     ihr `.env` die Adresse der Produktion und fehlt `POSTPRO_API_URL`, gehen ihre `begin`-Anfragen (Dateiname,
+     Größe, Dauer) an die Produktion, sobald der Hinweis eingeschaltet ist. In der Entwicklung deshalb
+     `POSTPRO_API_URL` setzen.
+
    Der Befehl `meeting_recording_upload_configure` hat ein striktes Schema mit dem einzigen Schlüssel `enabled`; er
    kann weder URL noch Pfad noch Token tragen. Auch die tus-Adresse, die die Plattform bei `begin` nennt, wird geprüft:
    URL-Prüfung wie oben, Pfad genau `/storage/v1/upload/resumable/sign`; die Upload-URL (`Location`) muss denselben
@@ -53,13 +67,22 @@ verlieren; die lokale Datei bleibt unangetastet.
 6. **Eigener, minimaler tus-Client, fortsetzbar, mit Token-Erneuerung** (`tus-upload-client.ts`, auf `node:https`, keine
    neue Abhängigkeit). Er spricht genau die gegen Supabase Storage geprüfte Teilmenge von tus 1.0: `POST` (anlegen),
    `HEAD` (Offset), `PATCH` (Daten in Stücken der vom Server genannten Größe, vom Datenträger gestreamt). Das
-   signierte Upload-Token steht nur im Header `x-signature`, wird nie gespeichert und nie geloggt. Es wird über
-   `begin` erneuert, sobald es älter als die halbe Laufzeit ist oder der Speicher es ablehnt; kennt der Speicher die
-   Upload-URL nicht mehr, beginnt der Upload derselben Datei neu bei Byte 0.
+   signierte Upload-Token steht nur im Header `x-signature`, wird nie gespeichert und nie geloggt. Es bleibt in
+   Gebrauch, bis es fast abgelaufen ist (Erneuerung über `begin` 10 Minuten vor Ablauf, gerechnet ab dem `begin`,
+   das es ausgestellt hat) oder der Speicher es ablehnt. Nicht früher: ob der Speicher ein neu ausgestelltes Token
+   auf einem bestehenden Upload annimmt, ist nicht geprüft. Kennt der Speicher die Upload-URL nicht mehr oder nimmt
+   er auf ihr kein Token mehr an, beginnt der Upload derselben Datei neu bei Byte 0, je Aufgabe höchstens dreimal;
+   danach endet sie mit `upload_restarts_exhausted`. Vor dem letzten Teilstück, mit dem der Speicher das Objekt
+   anlegt, fragt die Bridge die Plattform noch einmal per `begin`: eine inzwischen gelöschte Aufnahme
+   (`recording_deleted`) wird so nicht mehr fertig hochgeladen.
 7. **Dauerhafte Warteschlange, eine Aufgabe zur Zeit, begrenzte Wiederholungen.** `<userData>/recording-upload/queue.json`
    (`services/shared/json-queue-store.ts`, dieselbe Ablage wie die Warteschlange der Conversation Intelligence).
    Wiederholung mit Backoff (30 s bis 30 min); eine Aufgabe endet als `failed` nach 40 Fehlversuchen in Folge ohne
-   Byte-Fortschritt, 7 Tage nach dem Einreihen (`upload_expired`) oder bei einem endgültigen Fehlercode der Plattform.
+   Byte-Fortschritt, die Plattform oder Speicher mit einem Fehler beantwortet haben, 7 Tage nach dem Einreihen
+   (`upload_expired`) oder bei einem endgültigen Fehlercode der Plattform oder des Speichers. Versuche ohne jede
+   Antwort (kein Netz) und eine gerade nicht erreichbare Datei (Datenträger nicht eingehängt, Freigabe weg,
+   Zugriffsfehler) zählen nicht gegen die 40; sie sind allein durch die 7 Tage begrenzt. Schreibvorgänge der
+   Warteschlange laufen nacheinander; eine vorhandene, aber unlesbare Datei wird mit einer Warnung verworfen.
    Integrität: sha256 der ganzen Datei, gestreamt berechnet, bei `complete` gemeldet; der Worker prüft ihn vor der
    Verarbeitung gegen das heruntergeladene Objekt.
 
@@ -85,13 +108,23 @@ verlieren; die lokale Datei bleibt unangetastet.
 - Zu einer laufenden Aufnahme liegt ein Eintrag (lokaler Pfad, Codec, Format, Startzeit) in `queue.json`, auch bei
   ausgeschaltetem Upload: so gilt die Einwilligung zum Zeitpunkt des Stopps, und ein Absturz verliert die Aufnahme
   nicht. Beim Stopp wird der Eintrag eingereiht oder entfernt.
-- Ausschalten stoppt neues Einreihen. Bereits eingereihte Aufgaben laufen weiter; der Server kann sie beim nächsten
-  `begin` ablehnen.
+- Ausschalten stoppt neues Einreihen. Bereits eingereihte Aufgaben laufen auf der Bridge weiter; ob sie fertig
+  werden, entscheidet der Server bei ihrem nächsten `begin` (neuer Versuch, Token-Erneuerung, Neustart des Uploads,
+  Rückfrage vor dem letzten Teilstück). Lehnt er mit `upload_not_enabled` ab, endet die Aufgabe als `cancelled`, und
+  die Bridge schließt die Zeile der Plattform per `abort`, damit sie im Eingang nicht bis zum Zeitlimit als
+  „lädt hoch“ steht. Soll ein laufender Upload nach dem Ausschalten zu Ende laufen, muss der Server bestehende
+  Zeilen von der Prüfung der Einwilligung ausnehmen; die Bridge braucht dafür keine Änderung.
+- Löscht der Nutzer eine Aufnahme im Eingang, während sie noch hochlädt, erfährt die Bridge das erst beim nächsten
+  `begin`, spätestens vor dem letzten Teilstück. Wird während des letzten Teilstücks gelöscht, legt der Speicher das
+  Objekt trotzdem an; das Aufräumen dieses Falls ist Sache der Plattform.
 - Der Upload beginnt nach dem Stopp und teilt sich die Leitung mit einem laufenden Call. Einzige Stellschraube ist die
   Umgebungsvariable `BRIDGE_RECORDING_UPLOAD_MAX_KBPS` (kbit/s, ohne Wert unbegrenzt); eine Pause während eines Calls
   und eine Einstellung in der Oberfläche gibt es nicht.
 - Im Log stehen Dateinamen nur als Basename, dazu Größe, Zustand und Fehlercode; nie Pfad, URL, Token oder
   Antworttext des Speichers.
+- Die Übersteuerung `POSTPRO_API_URL` wirkt auch in gepackten Releases (Grenzen unter Entscheidung 2). Das Risiko
+  wird in dieser Stufe getragen, weil ein Prozess mit den Rechten des Nutzers die Aufnahmen ohnehin lesen kann.
+  Eine Härtung (Übersteuerung in gepackten Releases ignorieren oder ebenfalls prüfen) ist offen.
 - Eine Bridge, die 7 Tage lang nicht hochladen konnte, gibt die Aufgabe auf. Die Datei liegt weiter lokal; einen
   manuellen Neuversuch aus der Web-App gibt es in dieser Stufe nicht.
 - `scripts/session-log-opt-in-contract.test.cjs` hält beide Seiten fest: die vier Zusicherungen aus ADR-0008

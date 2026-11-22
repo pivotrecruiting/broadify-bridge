@@ -187,7 +187,9 @@ describe("RecordingUploader", () => {
       upload_url: null,
       bytes_uploaded: 0,
       restarted: false,
+      upload_restarts: 0,
       attempts: 0,
+      answered_attempts: 0,
       next_attempt_at: 0,
       error_code: null,
       updated_at_ms: clock,
@@ -484,24 +486,157 @@ describe("RecordingUploader", () => {
       expect(records[0].state).toBe("done");
     });
 
-    it("refreshes the token through begin once half its lifetime has passed", async () => {
-      records = [await queuedRecord()];
-      const uploader = createUploader();
-      await uploader.initialize();
-      const advance = tus.patchChunk;
+    /** Runs the queue with the clock moving on by `stepMs` during every chunk. */
+    const drainWithSlowChunks = async (uploader: RecordingUploader, stepMs: number) => {
+      const patch = tus.patchChunk;
       tus.patchChunk = async (options) => {
-        clock += 61 * 60_000;
-        return advance(options);
+        clock += stepMs;
+        return patch(options);
       };
       try {
         await uploader.drain();
       } finally {
-        tus.patchChunk = advance;
+        tus.patchChunk = patch;
       }
-      expect(begins.map((begin) => begin.bytes_uploaded)).toEqual([0, 1000, 2000]);
+    };
+
+    it("keeps one token for an upload that is well inside the token's lifetime", async () => {
+      const { filePath } = await writeRecording("long.mp4", 5500);
+      const stat = await fs.stat(filePath);
+      records = [await queuedRecord({ file_path: filePath, size_bytes: stat.size, mtime_ms: stat.mtimeMs })];
+      const uploader = createUploader();
+      await uploader.initialize();
+      // Six chunks, 20 minutes each: 100 minutes of a 120 minute token.
+      await drainWithSlowChunks(uploader, 20 * 60_000);
+      expect(storage.patches.map((patch) => patch.token)).toEqual(Array(6).fill("token-1"));
+      expect(storage.creates).toBe(1);
+      expect(records[0]).toMatchObject({ state: "done", upload_restarts: 0 });
+    });
+
+    it("replaces the token shortly before it expires and continues the same upload", async () => {
+      records = [await queuedRecord()];
+      const uploader = createUploader();
+      await uploader.initialize();
+      // 2 hour token, replaced 10 minutes before its end: after the first chunk, not before.
+      await drainWithSlowChunks(uploader, 111 * 60_000);
       expect(storage.patches.map((patch) => patch.token)).toEqual(["token-1", "token-2", "token-3"]);
+      expect(begins.map((begin) => begin.bytes_uploaded)).toEqual([0, 1000, 2000]);
       expect(storage.creates).toBe(1);
       expect(records[0].state).toBe("done");
+    });
+
+    it("measures the token's age from its begin, so the time spent hashing counts", async () => {
+      records = [await queuedRecord()];
+      const realBegin = platform.begin;
+      let first = true;
+      platform.begin = async (request) => {
+        const answer = await realBegin(request);
+        if (first) {
+          // Stands for a long hash pass between begin and the first chunk.
+          first = false;
+          clock += 115 * 60_000;
+        }
+        return answer;
+      };
+      const uploader = createUploader();
+      await uploader.initialize();
+      try {
+        await uploader.drain();
+      } finally {
+        platform.begin = realBegin;
+      }
+      expect(storage.patches[0].token).toBe("token-2");
+      expect(records[0].state).toBe("done");
+    });
+
+    it("a storage that refuses every re-issued token on the upload ends the task after a bounded number of restarts", async () => {
+      records = [await queuedRecord()];
+      const uploader = createUploader();
+      await uploader.initialize();
+      const head = tus.getOffset;
+      const patch = tus.patchChunk;
+      // The storage accepts a token only on an upload created with it.
+      let createdWith = "";
+      const create = tus.create;
+      tus.create = async (options) => {
+        createdWith = options.token;
+        return create(options);
+      };
+      tus.getOffset = async (options) => {
+        if (options.token !== createdWith) {
+          throw new TusHttpError("HEAD", 403, "signature");
+        }
+        return head(options);
+      };
+      tus.patchChunk = async (options) => {
+        if (options.token !== createdWith) {
+          throw new TusHttpError("PATCH", 403, "signature");
+        }
+        // Every chunk takes longer than the token lives: it is replaced before the next one.
+        clock += 111 * 60_000;
+        return patch(options);
+      };
+      try {
+        await uploader.drain();
+      } finally {
+        tus.create = create;
+        tus.getOffset = head;
+        tus.patchChunk = patch;
+      }
+      // One upload plus three restarts from byte 0, then a clear end instead of a loop.
+      expect(storage.creates).toBe(4);
+      expect(records[0]).toMatchObject({ state: "failed", error_code: "upload_restarts_exhausted", upload_restarts: 3 });
+      expect(aborts).toEqual([{ recording_id: RECORDING_ID, error_code: "upload_restarts_exhausted" }]);
+      await uploader.drain();
+      expect(storage.creates).toBe(4);
+    });
+
+    it("asks the platform once more before the last chunk and stops when the recording was deleted meanwhile", async () => {
+      records = [await queuedRecord()];
+      beginAnswers = [grant(), platformError(410, "recording_deleted")];
+      const uploader = createUploader();
+      await uploader.initialize();
+      await drainWithSlowChunks(uploader, 5 * 60_000);
+      // The last chunk, with which the storage would create the object, is never sent.
+      expect(storage.patches.map((patch) => patch.offset)).toEqual([0, 1000]);
+      expect(begins.map((begin) => begin.bytes_uploaded)).toEqual([0, 2000]);
+      expect(completes).toEqual([]);
+      expect(records[0]).toMatchObject({ state: "cancelled", error_code: "recording_deleted" });
+      expect(aborts).toEqual([]);
+    });
+
+    it("the question before the last chunk does not change the token in use", async () => {
+      records = [await queuedRecord()];
+      const uploader = createUploader();
+      await uploader.initialize();
+      await drainWithSlowChunks(uploader, 5 * 60_000);
+      expect(begins).toHaveLength(2);
+      expect(storage.patches.map((patch) => patch.token)).toEqual(["token-1", "token-1", "token-1"]);
+      expect(records[0].state).toBe("done");
+    });
+
+    it("complete on a row the platform closed meanwhile: begin reopens it and complete is repeated", async () => {
+      records = [await queuedRecord({ state: "completing", sha256: "c".repeat(64), recording_id: RECORDING_ID, bytes_uploaded: 2500 })];
+      completeAnswers = [platformError(409, "recording_not_uploading")];
+      const uploader = createUploader();
+      await uploader.initialize();
+      await uploader.drain();
+      expect(begins).toHaveLength(1);
+      expect(completes).toHaveLength(2);
+      // No byte is sent again.
+      expect(storage.creates).toBe(0);
+      expect(storage.patches).toEqual([]);
+      expect(records[0]).toMatchObject({ state: "done", attempts: 0 });
+    });
+
+    it("a row that stays closed after the reopen ends the task", async () => {
+      records = [await queuedRecord({ state: "completing", sha256: "c".repeat(64), recording_id: RECORDING_ID, bytes_uploaded: 2500 })];
+      completeAnswers = [platformError(409, "recording_not_uploading"), platformError(409, "recording_not_uploading")];
+      const uploader = createUploader();
+      await uploader.initialize();
+      await uploader.drain();
+      expect(completes).toHaveLength(2);
+      expect(records[0]).toMatchObject({ state: "failed", error_code: "recording_not_uploading" });
     });
 
     it("re-issues the token after the storage refused it and starts over when the upload is gone too", async () => {
@@ -540,7 +675,7 @@ describe("RecordingUploader", () => {
       await uploader.initialize();
       await uploader.drain();
 
-      expect(records[0]).toMatchObject({ state: "uploading", attempts: 1, bytes_uploaded: 1000, error_code: "network_error", upload_url: UPLOAD_URL });
+      expect(records[0]).toMatchObject({ state: "uploading", attempts: 1, answered_attempts: 0, bytes_uploaded: 1000, error_code: "network_error", upload_url: UPLOAD_URL });
       const waitMs = records[0].next_attempt_at - clock;
       expect(waitMs).toBeGreaterThanOrEqual(24_000);
       expect(waitMs).toBeLessThanOrEqual(36_000);
@@ -566,11 +701,91 @@ describe("RecordingUploader", () => {
         clock += 2 * 60 * 60_000;
       }
       expect(begins).toHaveLength(3);
-      expect(records[0]).toMatchObject({ state: "failed", error_code: "upload_retries_exhausted", attempts: 3 });
+      expect(records[0]).toMatchObject({ state: "failed", error_code: "upload_retries_exhausted", attempts: 3, answered_attempts: 3 });
       // No platform row is known yet, so there is nothing to abort.
       expect(aborts).toEqual([]);
       await uploader.drain();
       expect(begins).toHaveLength(3);
+    });
+
+    it("being offline does not use up the attempts: only the seven days end the task", async () => {
+      records = [await queuedRecord()];
+      const uploader = createUploader({ maxTaskAttempts: 3 });
+      await uploader.initialize();
+      const offline = new TypeError("fetch failed");
+      beginAnswers = Array.from({ length: 60 }, () => offline);
+      for (let attempt = 1; attempt <= 60; attempt += 1) {
+        await uploader.drain();
+        clock += 60 * 60_000;
+      }
+      // Two and a half days without network: still waiting, with the longest backoff.
+      expect(begins).toHaveLength(60);
+      expect(records[0]).toMatchObject({ state: "queued", attempts: 60, answered_attempts: 0, error_code: "network_error" });
+      expect(records[0].next_attempt_at - clock).toBeLessThanOrEqual(0);
+
+      // Back online: the upload runs.
+      await uploader.drain();
+      expect(records[0]).toMatchObject({ state: "done", attempts: 0 });
+    });
+
+    it("answered failures still count while offline attempts lie in between", async () => {
+      records = [await queuedRecord()];
+      const uploader = createUploader({ maxTaskAttempts: 2 });
+      await uploader.initialize();
+      beginAnswers = [platformError(503, null), new Error("ECONNRESET"), new Error("ECONNRESET"), platformError(401, null)];
+      for (let attempt = 1; attempt <= 4; attempt += 1) {
+        await uploader.drain();
+        clock += 2 * 60 * 60_000;
+      }
+      expect(records[0]).toMatchObject({ state: "failed", error_code: "upload_retries_exhausted", attempts: 4, answered_attempts: 2 });
+    });
+
+    it("an upload the storage refuses to create fails at once with the storage's status", async () => {
+      records = [await queuedRecord()];
+      const create = tus.create;
+      tus.create = async () => {
+        throw new TusHttpError("POST", 413, "Maximum size exceeded");
+      };
+      const uploader = createUploader();
+      await uploader.initialize();
+      try {
+        await uploader.drain();
+      } finally {
+        tus.create = create;
+      }
+      expect(records[0]).toMatchObject({ state: "failed", error_code: "storage_http_413", attempts: 0 });
+      expect(aborts).toEqual([{ recording_id: RECORDING_ID, error_code: "storage_http_413" }]);
+    });
+
+    it("does not offer a recording above the platform's size limit", async () => {
+      records = [await queuedRecord({ size_bytes: 50 * 1024 * 1024 * 1024 + 1 })];
+      const uploader = createUploader();
+      await uploader.initialize();
+      // Stands for a file of that size on disk.
+      const stat = jest.spyOn(fs, "stat").mockResolvedValue({ isFile: () => true, size: records[0].size_bytes, mtimeMs: records[0].mtime_ms } as never);
+      try {
+        await uploader.drain();
+      } finally {
+        stat.mockRestore();
+      }
+      expect(begins).toEqual([]);
+      expect(records[0]).toMatchObject({ state: "failed", error_code: "recording_too_large" });
+    });
+
+    it("tells the platform a file name of at most 200 characters, extension kept", async () => {
+      // Longer than the platform takes, shorter than the 255 bytes a file system allows.
+      const name = `${"a".repeat(180)}${"\u{1F3AC}".repeat(15)}.mp4`;
+      expect(name.length).toBe(214);
+      const { filePath } = await writeRecording(name);
+      const stat = await fs.stat(filePath);
+      records = [await queuedRecord({ file_path: filePath, size_bytes: stat.size, mtime_ms: stat.mtimeMs })];
+      const uploader = createUploader();
+      await uploader.initialize();
+      await uploader.drain();
+      // 180 letters + 8 emoji (16 units) + ".mp4" = 200; no half emoji.
+      expect(begins[0].file_name).toBe(`${"a".repeat(180)}${"\u{1F3AC}".repeat(8)}.mp4`);
+      expect(begins[0].file_name).toHaveLength(200);
+      expect(records[0].state).toBe("done");
     });
 
     it("tells the platform when an upload it knows fails for good", async () => {
@@ -584,13 +799,72 @@ describe("RecordingUploader", () => {
       expect(begins).toEqual([]);
     });
 
-    it("fails when the file is gone", async () => {
+    it("fails when the file is gone from a folder that is there", async () => {
       records = [await queuedRecord()];
       await fs.rm(records[0].file_path);
       const uploader = createUploader();
       await uploader.initialize();
       await uploader.drain();
       expect(records[0]).toMatchObject({ state: "failed", error_code: "file_missing" });
+    });
+
+    it("waits when the folder of the file is not there (volume not mounted) and uploads once it is back", async () => {
+      const volume = path.join(dir, "external-disk");
+      await fs.mkdir(volume);
+      const original = await queuedRecord({ state: "uploading", sha256: null, recording_id: RECORDING_ID });
+      const filePath = path.join(volume, "Broadify-Meeting-1.mp4");
+      await fs.rename(original.file_path, filePath);
+      const stat = await fs.stat(filePath);
+      records = [{ ...original, file_path: filePath, mtime_ms: stat.mtimeMs }];
+      const parked = path.join(dir, "unmounted");
+      await fs.rename(volume, parked);
+
+      const uploader = createUploader({ maxTaskAttempts: 2 });
+      await uploader.initialize();
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        await uploader.drain();
+        clock += 60 * 60_000;
+      }
+      expect(records[0]).toMatchObject({ state: "uploading", attempts: 5, answered_attempts: 0, error_code: "file_unavailable" });
+      expect(aborts).toEqual([]);
+      expect(begins).toEqual([]);
+
+      await fs.rename(parked, volume);
+      await uploader.drain();
+      expect(records[0]).toMatchObject({ state: "done", attempts: 0 });
+    });
+
+    it.each(["EACCES", "EIO", "ENOTDIR"])("waits on %s instead of giving the recording up", async (code) => {
+      records = [await queuedRecord()];
+      const uploader = createUploader();
+      await uploader.initialize();
+      const realStat = fs.stat;
+      const stat = jest.spyOn(fs, "stat").mockImplementation(async (target, ...rest) => {
+        if (target === records[0].file_path) {
+          throw Object.assign(new Error(`${code}: ${String(target)}`), { code });
+        }
+        return realStat(target as string, ...(rest as []));
+      });
+      try {
+        await uploader.drain();
+      } finally {
+        stat.mockRestore();
+      }
+      expect(records[0]).toMatchObject({ state: "queued", attempts: 1, error_code: "file_unavailable" });
+      // The log line names the file by basename and the code only.
+      expect(String(logger.warn.mock.calls.at(-1)?.[0])).not.toContain(dir);
+    });
+
+    it("a file that stays unavailable ends with the seven days", async () => {
+      records = [await queuedRecord()];
+      await fs.rm(dir, { recursive: true, force: true });
+      const uploader = createUploader();
+      await uploader.initialize();
+      await uploader.drain();
+      expect(records[0]).toMatchObject({ state: "queued", error_code: "file_unavailable" });
+      clock += 7 * DAY_MS + 1;
+      await uploader.drain();
+      expect(records[0]).toMatchObject({ state: "failed", error_code: "upload_expired" });
     });
 
     it("fails a task that could not be uploaded within seven days", async () => {
@@ -612,7 +886,18 @@ describe("RecordingUploader", () => {
       expect(records[0]).toMatchObject({ state: "cancelled", error_code: code });
       expect(settings.enabled).toBe(false);
       expect(published.at(-1)).toMatchObject({ enabled: false });
+      // The platform never opened a row for this task.
       expect(aborts).toEqual([]);
+    });
+
+    it("an upload the platform refuses midway is cancelled and its row is closed", async () => {
+      records = [await queuedRecord({ state: "uploading", sha256: "b".repeat(64), recording_id: RECORDING_ID, upload_url: UPLOAD_URL, bytes_uploaded: 1000 })];
+      beginAnswers = [platformError(403, "upload_not_enabled")];
+      const uploader = createUploader();
+      await uploader.initialize();
+      await uploader.drain();
+      expect(records[0]).toMatchObject({ state: "cancelled", error_code: "upload_not_enabled" });
+      expect(aborts).toEqual([{ recording_id: RECORDING_ID, error_code: "upload_not_enabled" }]);
     });
 
     it("recording_deleted: cancels the task and leaves the hint on", async () => {
@@ -623,6 +908,16 @@ describe("RecordingUploader", () => {
       await uploader.drain();
       expect(records[0]).toMatchObject({ state: "cancelled", error_code: "recording_deleted" });
       expect(settings.enabled).toBe(true);
+    });
+
+    it("recording_deleted on a known row: nothing is left to close", async () => {
+      records = [await queuedRecord({ state: "uploading", sha256: "b".repeat(64), recording_id: RECORDING_ID, upload_url: UPLOAD_URL, bytes_uploaded: 1000 })];
+      beginAnswers = [platformError(410, "recording_deleted")];
+      const uploader = createUploader();
+      await uploader.initialize();
+      await uploader.drain();
+      expect(records[0]).toMatchObject({ state: "cancelled", error_code: "recording_deleted" });
+      expect(aborts).toEqual([]);
     });
 
     it.each([
