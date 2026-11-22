@@ -333,7 +333,7 @@ for (const [label, plistPath] of [
   });
 }
 
-test("recorder finalize timeout stays below the recording.stop RPC timeout and its relay SLA", () => {
+test("recording stop and start chains stay inside the bridge-local SLA and the relay timeout", () => {
   // stop() blocks in finishWriting (macOS) / Finalize (Windows) for at most
   // kRecorderFinalizeTimeoutMs, then reports finalize_timeout. The bridge
   // aborts the recording.stop RPC after MEETING_HELPER_RPC_TIMEOUTS_MS - if
@@ -386,6 +386,48 @@ test("recorder finalize timeout stays below the recording.stop RPC timeout and i
     assert.ok(
       stopTimeoutMs < localSlaMs,
       `recording.stop ${stopTimeoutMs} ms must be below the bridge-local SLA ${localSlaMs} ms of ${command}`,
+    );
+    assert.ok(
+      localSlaMs < relayTimeoutMs,
+      `bridge-local SLA ${localSlaMs} ms of ${command} must be below its relay timeout ${relayTimeoutMs} ms`,
+    );
+  }
+
+  // A start has a chain of its own inside the bridge-local SLA
+  // (meeting_recording_start, and meeting_recording_toggle without an active
+  // recording): with a codec the gate first waits for an encoder probe
+  // attempt, the toggle reads the recording status, then recording.start
+  // runs. If the sum outgrew the SLA, a start that is still on its way would
+  // be reported as failed.
+  const probe = read("apps/bridge/src/services/meeting/meeting-recording-probe.ts");
+  const probeMatch = probe.match(
+    /export const MEETING_RECORDING_PROBE_TIMEOUT_MS = ([0-9_]+);/,
+  );
+  assert.ok(probeMatch, "MEETING_RECORDING_PROBE_TIMEOUT_MS must be defined");
+  const probeTimeoutMs = Number(probeMatch[1].replace(/_/g, ""));
+  const startMatch = timeouts.match(/"recording\.start": ([0-9_]+),/);
+  assert.ok(startMatch, "recording.start RPC timeout must be defined");
+  const startTimeoutMs = Number(startMatch[1].replace(/_/g, ""));
+  const defaultRpcMatch = timeouts.match(
+    /export const MEETING_HELPER_DEFAULT_RPC_TIMEOUT_MS = ([0-9_]+);/,
+  );
+  assert.ok(defaultRpcMatch, "the default helper RPC timeout must be defined");
+  assert.ok(
+    !/"recording\.status":/.test(timeouts),
+    "recording.status must run on the default RPC timeout this test adds up",
+  );
+  const statusTimeoutMs = Number(defaultRpcMatch[1].replace(/_/g, ""));
+  const startChainMs = probeTimeoutMs + statusTimeoutMs + startTimeoutMs;
+  for (const command of ["meeting_recording_start", "meeting_recording_toggle"]) {
+    const slaMatch = relayPolicy.match(
+      new RegExp(`sideEffect\\("${command}", "[a-z_]+", ([0-9_]+), ([0-9_]+),`),
+    );
+    assert.ok(slaMatch, `${command} relay policy must be defined`);
+    const relayTimeoutMs = Number(slaMatch[1].replace(/_/g, ""));
+    const localSlaMs = Number(slaMatch[2].replace(/_/g, ""));
+    assert.ok(
+      startChainMs < localSlaMs,
+      `probe ${probeTimeoutMs} ms + recording.status ${statusTimeoutMs} ms + recording.start ${startTimeoutMs} ms must be below the bridge-local SLA ${localSlaMs} ms of ${command}`,
     );
     assert.ok(
       localSlaMs < relayTimeoutMs,
