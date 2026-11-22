@@ -619,9 +619,89 @@ export type MeetingCapabilitiesT = {
       max_height: number;
       max_fps: number;
     }>;
-    /** The bridge can upload a copy of a finished recording. */
+    /**
+     * The bridge can upload a separate copy of a finished recording (reserved
+     * for the upload copy of a ProRes master; false today). Not the switch of
+     * the recording upload itself: that is `recording_upload`.
+     */
     upload_copy: boolean;
   };
+  /**
+   * The bridge can upload finished H.264/HEVC recordings to the platform
+   * (ADR-0011): the uploader exists, a platform address is configured and the
+   * bridge has its relay signing identity. Only then send
+   * `meeting_recording_upload_configure`. Absent on older bridges: unsupported.
+   */
+  recording_upload?: boolean;
+};
+
+/** State of one recording upload task on the bridge (ADR-0011). */
+export type MeetingRecordingUploadTaskStateT =
+  | "queued"
+  | "hashing"
+  | "uploading"
+  | "completing"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+/** Why the most recent finished recording was not enqueued for upload. */
+export type MeetingRecordingUploadSkipReasonT =
+  | "prores_master_local"
+  | "recording_failed"
+  | "file_missing"
+  | "file_incomplete";
+
+/** One recording upload task as the bridge reports it; never carries a path, URL or token. */
+export type MeetingRecordingUploadTaskT = {
+  /** Bridge-generated id of the task (the platform's `client_recording_id`). */
+  id: string;
+  /** Platform id of the recording, known after the first accepted begin. */
+  recording_id: string | null;
+  /** Basename of the local file. */
+  file_name: string;
+  state: MeetingRecordingUploadTaskStateT;
+  size_bytes: number;
+  bytes_uploaded: number;
+  /** Consecutive failed attempts without byte progress. */
+  attempts: number;
+  /** Epoch ms of the next retry while the task waits; null otherwise. */
+  next_attempt_at: number | null;
+  error_code: string | null;
+  updated_at: number;
+};
+
+/**
+ * Recording upload snapshot (ADR-0011): result of
+ * `meeting_recording_upload_configure` and data of the `bridge_event`
+ * `recording_upload_status`.
+ */
+export type MeetingRecordingUploadStatusT = {
+  /** The opt-in hint the web app pushed last (false until it pushed true). */
+  enabled: boolean;
+  /** Same condition as `capabilities.meeting.recording_upload`. */
+  available: boolean;
+  /** Newest first, at most 20. */
+  tasks: MeetingRecordingUploadTaskT[];
+  last_skipped: {
+    file_name: string;
+    at: number;
+    reason: MeetingRecordingUploadSkipReasonT;
+  } | null;
+};
+
+/** `command_result.data` of `meeting_recording_upload_configure` (payload: strict `{ enabled: boolean }`). */
+export type MeetingRecordingUploadConfigureResultT = {
+  upload: MeetingRecordingUploadStatusT;
+};
+
+/**
+ * Data of the `bridge_event` `recording_upload_status`: sent on every state
+ * change of a task and at most every 2 s while bytes are moving.
+ */
+export type MeetingRecordingUploadStatusEventT = {
+  at: number;
+  upload: MeetingRecordingUploadStatusT;
 };
 
 /** Archive codecs of the meeting recorder (ADR-0010). */
