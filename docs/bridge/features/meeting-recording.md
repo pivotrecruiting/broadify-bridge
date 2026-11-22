@@ -36,6 +36,7 @@ Allowlisted in `relay-command-allowlist.ts`, policies in
 | `meeting_recording_stop` | side effect | none | `{ recording: {...} }` |
 | `meeting_recording_toggle` | side effect | `{ mic_device_id?, codec? }` | `{ recording: {...} }` |
 | `meeting_recording_status` | read only | none | `{ recording: {...} }` |
+| `meeting_recording_upload_configure` | side effect | `{ enabled }` (strict) | `{ upload: {...} }` |
 
 `codec` is a `MeetingRecordingCodecT` and optional everywhere; without it the
 recording is `h264`. The start schema is strict, so the web app sends `codec`
@@ -802,6 +803,157 @@ So no behaviour was changed. What this does not cover: the latency of the
 picture itself (camera, keyer, compositor) is not compensated in the audio;
 measuring lip sync needs a clap in front of camera and microphone.
 
+
+## Upload to the platform (ADR-0011)
+
+A finished H.264 or HEVC recording is uploaded to the platform's Post
+Production storage in the background, after the stop. Code:
+`apps/bridge/src/services/postpro/`. Decision and security model:
+[ADR-0011](../architecture/adr/0011-aufnahme-upload-zur-plattform.md). Relay
+contract (capability, command, event):
+[meeting-status-contract.md](./meeting-status-contract.md), section
+Aufnahme-Upload.
+
+### When a recording is uploaded
+
+All of these must hold, otherwise the recording stays where it is and nothing
+is sent:
+
+- The bridge can upload (`capabilities.meeting.recording_upload`): it has a
+  platform address and a bridge id (relay set up).
+- The web app pushed `meeting_recording_upload_configure { enabled: true }`
+  (the user's switch "Upload recordings automatically"; off by default, stored
+  in `<userData>/recording-upload/settings.json`). The value at the moment of
+  the stop counts.
+- The platform accepts the upload at `begin` (organisation has the Post
+  Production mode, the user consented, monthly limits). It is the authority;
+  the pushed value is only a hint that keeps bridges without consent silent.
+- The recording finished cleanly: `recording.last_error` is empty, the file
+  exists under its final name with a size above zero and has no `.part`
+  sibling.
+- The codec is `h264` or `hevc`. **A ProRes master is never uploaded**: it
+  stays local and the web app is told why (`last_skipped.reason:
+  "prores_master_local"`). An upload copy of a ProRes recording is a later
+  step; `capabilities.meeting.recording.upload_copy` stays `false` until then.
+
+Every kind of stop is covered, because the trigger is the recorder state in
+the published meeting status and not a command
+(`recording-upload-trigger.ts`, called from
+`MeetingHelperManager.publishStatus`): web button, Stream Deck key, engine
+stop, bridge shutdown. A record of the running recording is written at its
+start, so a bridge crash or a shutdown before the stop was seen is settled at
+the next start by the same rule: a crash leaves the `.part` file and nothing
+is uploaded (`file_incomplete`); a recording finalized on quit is uploaded.
+A status that cannot say what the recorder is doing (helper not answering,
+`recording.status` timed out while a stop finalizes) is ignored instead of
+being read as a stop.
+
+| `last_skipped.reason` | Meaning |
+| --- | --- |
+| `prores_master_local` | ProRes master, stays local |
+| `recording_failed` | the recorder reported an error (`last_error`) |
+| `file_incomplete` | a `.part` file is left (crash, finalize failure) |
+| `file_missing` | no file under the final name, or it is empty |
+
+### What is sent, and where
+
+- To the platform (web app, bridge-signed like the session-log routes,
+  `x-postpro-bridge-assertion`): the file's basename, size, codec, container,
+  program size and frame rate, duration, start time, and at the end the
+  sha256. Routes `POST /api/postpro/bridge/recordings/{begin,complete,abort}`.
+- To the platform's storage (Supabase Storage, resumable upload): the file's
+  bytes, to the path and with the short-lived signed token that `begin`
+  returned. The bridge never chooses the path.
+- The platform address comes from the bridge's configuration only: the
+  release-managed `PRODUCTION_STUDIO_CONTROL_WEBAPP_URL` of the channel (must
+  be a public https URL on port 443), or the operator override
+  `POSTPRO_API_URL` / `--postpro-api-url` for development. No relay command
+  can set it. The storage endpoint returned by `begin` must be the signed
+  resumable endpoint (`/storage/v1/upload/resumable/sign`) on a public https
+  host, and every upload URL must stay on its origin.
+
+**The local file is only read.** It is never modified, moved or deleted, and
+nothing is written next to it.
+
+### How it is uploaded
+
+One task at a time, from a persisted queue
+(`<userData>/recording-upload/queue.json`):
+
+`queued` -> begin -> `hashing` (sha256 of the whole file, streamed) ->
+`uploading` -> `completing` (the file must still have the size and
+modification time it was enqueued with) -> `done`.
+
+- **Streaming:** the file is read from disk in slices of at most 64 KiB; the
+  hash and the upload never hold more than one slice in memory.
+- **Resumable (tus 1.0, own minimal client `tus-upload-client.ts`):** the
+  upload is created with `POST`, sent with `PATCH` in chunks of the size the
+  platform names (6 MiB, which Supabase requires for every chunk but the
+  last), and after any interruption continued at the offset the server
+  reports for `HEAD`. A bridge restart does the same: begin again (fresh
+  token), `HEAD`, continue.
+- **Token lifetime:** the signed upload token is valid for a limited time (2
+  hours). It is re-issued through `begin` once it is older than half its
+  lifetime and when the storage refuses it. If the storage no longer knows the
+  upload URL, the same file is uploaded again from byte 0. The token is kept
+  in memory only.
+- **Retries:** failures are retried with backoff (30 s doubling up to 30 min,
+  20 % jitter). A task ends as `failed` after 40 consecutive attempts without
+  a byte of progress (`upload_retries_exhausted`), 7 days after it was
+  enqueued (`upload_expired`), when the file changed or disappeared
+  (`file_changed`, `file_missing`), or on a permanent answer of the platform.
+  A failed task with a platform row tells the platform (`abort`, best effort).
+- **Terminal states** stay visible for 7 days (at most 20), then the record
+  is dropped. There is no manual retry from the web app in this stage; the
+  file is still on disk.
+
+Reaction to the platform's error codes (`recording-upload-platform.ts`):
+
+| Code | Reaction |
+| --- | --- |
+| `upload_not_enabled`, `bridge_not_linked` | task `cancelled`; the local hint is switched off |
+| `recording_deleted` | task `cancelled` |
+| `limit_minutes`, `recording_too_large`, `recording_not_found`, any other 400 (`invalid_request`) | task `failed`, no retry |
+| `size_mismatch`, `object_missing` (at complete) | upload once more from byte 0, then `failed` |
+| 401, 5xx, network errors, anything unknown | retry with backoff |
+
+While a task waits for its next attempt, `error_code` names the last failure
+by kind only: `network_error`, `platform_http_<status>`,
+`storage_http_<status>`, `platform_response_invalid`.
+
+Switching the upload off stops new enqueues. Tasks already in the queue keep
+running; the platform can refuse them at their next begin.
+
+### Bandwidth: `BRIDGE_RECORDING_UPLOAD_MAX_KBPS`
+
+The upload starts right after the stop and shares the line with a call that
+may still be running. It is not paused during a call. The only control is the
+environment variable `BRIDGE_RECORDING_UPLOAD_MAX_KBPS` (`userData/.env` or
+the shell, read at bridge start): a positive integer in kbit/s caps the upload
+rate (for example `8000` for 8 Mbit/s); unset, empty or not a positive
+integer means unlimited. The cap paces the bytes of each chunk in slices of
+at most 64 KiB. There is no setting in the web app.
+
+### What is logged
+
+Under the prefix `[RecordingUpload]`, at `info` (queued, uploaded, not
+uploaded with its reason, switch on/off) and `warn` (failed attempt, terminal
+failure): the file's **basename**, its size, the state and an error code.
+Never the full path, the platform or storage URL, the upload token, a
+response body or the sha256. The status event carries the same restriction.
+
+### Not verified yet
+
+- No upload against the real platform or storage was run from the bridge in
+  this package; the client is tested against a local tus server (interrupt,
+  resume, token expiry, offset conflict, lost upload URL). The storage's
+  behaviour for a re-issued token on an existing upload and the lifetime of an
+  upload URL are assumptions; both fall back to a new upload from byte 0.
+- Windows: the code has no platform-specific path (it uses `node:fs` and
+  `node:https` only), but it has not run on a Windows device.
+- Hashing and uploading a multi-gigabyte file run inside the bridge process.
+  Their effect on a call that starts right after a long recording has not
+  been measured.
 
 ## WebApp
 

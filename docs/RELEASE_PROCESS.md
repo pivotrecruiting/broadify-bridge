@@ -121,6 +121,7 @@ Web-App-Routing:
 - der Workflow-Schritt „Resolve release channel and relay config" setzt zusätzlich `RESOLVED_WEBAPP_URL` (Konstante im Workflow, kein Secret): `rc` → `https://studio-control-git-dev-broadify.vercel.app`, `latest` → `https://app.broadify.de`
 - der Schritt „Prepare Bridge config for packaging" schreibt den Wert als `PRODUCTION_STUDIO_CONTROL_WEBAPP_URL` in `apps/bridge/dist/.env` (gepackt unter `resources/bridge/dist/.env`); `test-release.yml` schreibt immer die Dev-Web-App
 - `PRODUCTION_STUDIO_CONTROL_WEBAPP_URL` ist wie die Relay-Werte releaseverwaltet (`src/electron/services/env-loader.ts`) und gewinnt über `userData/.env`; Vertrag gepinnt in `scripts/release-webapp-url-contract.test.cjs` (`npm run test:release-contracts`)
+- derselbe Schlüssel ist die Plattform-Adresse des Aufnahme-Uploads der Bridge (ADR-0011, `resolvePlatformApiUrl()` in `apps/bridge/src/config.ts`): ein RC-Build lädt Aufnahmen zur Dev-Web-App, ein Live-Build zu `app.broadify.de`. Der Wert muss eine öffentliche https-URL auf Port 443 sein, sonst ist der Upload auf dieser Bridge nicht verfügbar. Hochgeladen wird erst nach Opt-in des Nutzers; `POSTPRO_API_URL` (Session-Event-Log, ADR-0008) bleibt davon getrennt und wird von keinem Release gesetzt
 
 ## DeckLink Helper Hosting (ohne SDK) - Einmalig vorbereiten
 
