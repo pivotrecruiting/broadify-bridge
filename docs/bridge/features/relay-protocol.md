@@ -177,6 +177,12 @@ der Pfad dort am Gerät geprüft ist. Fehlercodes und `program_format`:
 aus (Größe der Ebenen-Box, siehe `docs/bridge/features/graphics-commands.md`).
 `true` auf allen Plattformen und unabhängig von `program_portrait`; ohne das
 Flag ist die Box immer 1920×1080.
+`program_formats` (optional) – größte Leinwand und zulässige Bildraten für
+`meeting_engine_start`; außerhalb davon antwortet die Bridge mit
+`meeting_program_format_unsupported`. `recording` (optional) – Codecs, die der
+Meeting-Recorder auf diesem Rechner mit Hardware-Encoder schreiben kann; fehlt,
+wenn die Encoder-Probe des Helpers scheitert. Beide Felder:
+`docs/bridge/features/meeting-status-contract.md`, Entscheidung: ADR-0010.
 
 #### mode_activate
 Die Web-App meldet den gewählten Modus; die Bridge stellt Studio-Verbindungen

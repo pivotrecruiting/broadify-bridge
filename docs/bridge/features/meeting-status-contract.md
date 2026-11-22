@@ -302,19 +302,30 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
   vorerst `false`; fehlt auf aelteren Bridges).
 - `meeting_engine_start` mit Hochformat ohne diese Capability:
   `errorCode: "meeting_program_portrait_unsupported"`.
-- `meeting_engine_start` bei laufender Engine: gleiche Breite/Hoehe bleibt
-  idempotent (Erfolg, Manager-Status); abweichende Breite/Hoehe liefert
-  `errorCode: "meeting_engine_restart_required"` mit dem Manager-Status in
-  `data`. Die Bridge startet nie selbst neu; die Web-App sendet
-  `meeting_engine_stop` und danach `meeting_engine_start`. Laeuft eine Aufnahme,
-  nennt `error` das - der Stop wuerde sie beenden.
-- `meeting_engine_start` waehrend ein Start mit anderer Breite/Hoehe noch laeuft
-  (zweiter Client, Crash-Restart): die Antwort wartet auf diesen Start. Laeuft
-  die Engine danach, kommt `meeting_engine_restart_required` mit deren
-  Manager-Status; scheitert er, kommt sein Fehler ohne `errorCode`.
+- `meeting_engine_start` ausserhalb von
+  `get_status.capabilities.meeting.program_formats` (zu grosse Leinwand oder
+  eine Bildrate, die nicht in `fps` steht):
+  `errorCode: "meeting_program_format_unsupported"`, ohne `data`. Die Pruefung
+  kommt nach der Hochformat-Pruefung und gilt auch bei laufender Engine - ein
+  Neustart wuerde das Format nicht moeglich machen. Siehe
+  [Programmformate und Aufnahme-Faehigkeiten](#programmformate-und-aufnahme-faehigkeiten-adr-0010).
+- `meeting_engine_start` bei laufender Engine: gleiche Breite, Hoehe **und
+  Bildrate** bleibt idempotent (Erfolg, Manager-Status); weicht eines der drei
+  ab, kommt `errorCode: "meeting_engine_restart_required"` mit dem
+  Manager-Status in `data`. Die Bridge startet nie selbst neu; die Web-App
+  sendet `meeting_engine_stop` und danach `meeting_engine_start`. Laeuft eine
+  Aufnahme, nennt `error` das - der Stop wuerde sie beenden. Die Bildrate
+  gehoert seit ADR-0010 zum Vergleich; davor war ein Start mit anderer
+  Bildrate erfolgreich und liess die alte Bildrate stehen.
+- `meeting_engine_start` waehrend ein Start mit anderem Format (Breite, Hoehe
+  oder Bildrate) noch laeuft (zweiter Client, Crash-Restart): die Antwort
+  wartet auf diesen Start. Laeuft die Engine danach, kommt
+  `meeting_engine_restart_required` mit deren Manager-Status; scheitert er,
+  kommt sein Fehler ohne `errorCode`.
 - Eine Ablehnung (`meeting_program_portrait_unsupported`,
-  `meeting_engine_restart_required`) aendert nichts: Engine, Aufnahme,
-  Grafik-FrameBus, Renderer und Grafik-Ebenen bleiben, wie sie sind.
+  `meeting_program_format_unsupported`, `meeting_engine_restart_required`)
+  aendert nichts: Engine, Aufnahme, Grafik-FrameBus, Renderer und
+  Grafik-Ebenen bleiben, wie sie sind.
 - `meeting_graphics_configure_outputs` folgt der Engine-Geometrie, wenn die
   Ausrichtung der Anfrage von der laufenden Engine abweicht; `data.width` /
   `data.height` nennen die tatsaechlich konfigurierte Groesse.
@@ -325,6 +336,59 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
   fehlt auf aelteren Bridges): `graphics_send` wertet `canvas { width, height }`
   aus, die Groesse der Ebenen-Box vor der Layout-Transformation. Ohne `canvas`
   bleibt die Box `1920x1080`. Details: `graphics-commands.md`, ADR-0007.
+
+#### Programmformate und Aufnahme-Faehigkeiten (ADR-0010)
+
+`get_status.capabilities.meeting` traegt zwei weitere, optionale Felder
+(`MeetingCapabilitiesT` in `packages/protocol`). Aeltere Bridges liefern sie
+nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
+
+```jsonc
+{
+  "program_portrait": true,
+  "layer_canvas": true,
+  "program_formats": { // object, optional, seit ADR-0010
+    "max_width": 1920, // number, groesste Breite einer Querformat-Leinwand
+    "max_height": 1080, // number, groesste Hoehe einer Querformat-Leinwand
+    "fps": [25, 30] // number[], zulaessige Bildraten
+  },
+  "recording": { // object, optional, seit ADR-0010; fehlt, wenn die Encoder-Probe scheitert
+    "codecs": [ // leer: kein Hardware-Encoder gefunden
+      { "codec": "h264", "container": "mp4", "max_height": 1080, "max_fps": 30 }
+    ],
+    "upload_copy": false // boolean, Bridge kann eine Kopie der Aufnahme hochladen
+  }
+}
+```
+
+- `program_formats` begrenzt `meeting_engine_start`. `max_width`/`max_height`
+  gelten fuer eine Querformat-Leinwand; eine Hochformat-Leinwand wird mit
+  vertauschten Kanten gemessen (lange Kante gegen `max_width`, kurze gegen
+  `max_height`) und braucht zusaetzlich `program_portrait`. Kleinere
+  Leinwaende bleiben erlaubt. Heute auf allen Plattformen `1920x1080` mit 25
+  und 30 fps (`MEETING_PROGRAM_FORMAT_LIMITS` in
+  `services/meeting/meeting-capabilities.ts`); 4K und 50/60 fps werden erst
+  nach einer Messung am Geraet gemeldet.
+- `recording.codecs` nennt die Codecs, die der Recorder schreiben kann **und**
+  fuer die dieser Rechner einen Hardware-Encoder hat, je mit Container und der
+  groessten Programmgroesse/Bildrate (`max_height` wie bei `program_formats`
+  auf das Querformat bezogen). `codec` ist `MeetingRecordingCodecT`: `h264`,
+  `hevc`, `prores_422_lt`, `prores_422`, `prores_422_hq`. Der Recorder schreibt
+  heute nur H.264 in `mp4` (`MEETING_RECORDER_SUPPORTED_CODECS`), deshalb steht
+  nur dieser Eintrag in der Liste, auch wenn der Rechner HEVC- oder
+  ProRes-Hardware hat.
+- Die Encoder-Liste kommt aus `meeting-helper --probe-recording`
+  (`services/meeting/meeting-recording-probe.ts`): die Bridge startet den
+  Helper dafuer einmal je Bridge-Lauf als eigenen, kurzlebigen Prozess (keine
+  Engine, kein Geraet), beim ersten `get_status`, mit 5 s Timeout. Scheitert
+  die Probe (Helper fehlt, Timeout, unlesbare Ausgabe, Enumeration
+  fehlgeschlagen), fehlt `recording` fuer diesen Bridge-Lauf, und die Bridge
+  schreibt eine Warnung mit dem Grund ins Log. `program_formats` haengt nicht
+  an der Probe und wird immer gemeldet.
+- Der lokale Status (`GET /video/status`) startet die Probe nie selbst; er
+  traegt `recording` erst, nachdem ein `get_status` sie ausgefuehrt hat.
+- `meeting_recording_start` ist von diesen Feldern noch nicht abhaengig: die
+  Aufnahme laeuft wie bisher (H.264, `mp4`).
 
 #### `fallback_active` / `fallback_reason` / `model_hash_ok` auf macOS (B-11)
 

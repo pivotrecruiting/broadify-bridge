@@ -1,6 +1,7 @@
 # ADR-0007: Meeting-Programm im Hochformat (9:16)
 
-- Status: akzeptiert
+- Status: akzeptiert; in Teilen abgelöst durch ADR-0010 (Neustart-Entscheidung: die Bildrate wird jetzt mitverglichen;
+  alles Übrige gilt unverändert)
 - Datum: 2026-11-19
 
 ## Kontext
