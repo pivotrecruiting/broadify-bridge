@@ -30,7 +30,10 @@ import {
 } from "./meeting-event-publisher.js";
 import { meetingContentSourceState } from "./meeting-content-source-state.js";
 import type { MeetingProgramFormatT } from "@broadify/protocol";
-import { resolveMeetingProgramFormat } from "./meeting-capabilities.js";
+import {
+  resolveMeetingProgramFormat,
+  type MeetingRecordingProbeStateT,
+} from "./meeting-capabilities.js";
 import {
   isTransientMeetingRecordingProbeFailure,
   MEETING_RECORDING_PROBE_MAX_ATTEMPTS,
@@ -831,15 +834,32 @@ export class MeetingHelperManager {
     if (this.recordingProbeSettled) {
       return Promise.resolve(this.recordingProbe);
     }
+    const run = this.ensureRecordingProbeAttempt();
+    return this.recordingProbeAttempts === 1 ? run : Promise.resolve(null);
+  }
+
+  /**
+   * Like `probeRecordingEncoders()`, but always waits for the attempt in
+   * flight (starting one if none runs), also for a retry: for a caller that
+   * must decide on the encoders now, like the recording codec gate. Bounded
+   * by the probe's own timeout; null when the attempt fails. Never rejects.
+   */
+  awaitRecordingProbe(): Promise<MeetingRecordingProbeT | null> {
+    if (this.recordingProbeSettled) {
+      return Promise.resolve(this.recordingProbe);
+    }
+    return this.ensureRecordingProbeAttempt();
+  }
+
+  /** The probe attempt in flight; starts the next one if none is running. */
+  private ensureRecordingProbeAttempt(): Promise<MeetingRecordingProbeT | null> {
     if (!this.recordingProbeRun) {
       this.recordingProbeAttempts += 1;
       this.recordingProbeRun = this.runRecordingProbeAttempt(
         this.recordingProbeAttempts,
       ).catch(() => null);
     }
-    return this.recordingProbeAttempts === 1
-      ? this.recordingProbeRun
-      : Promise.resolve(null);
+    return this.recordingProbeRun;
   }
 
   private async runRecordingProbeAttempt(
@@ -879,6 +899,20 @@ export class MeetingHelperManager {
    */
   getRecordingProbe(): MeetingRecordingProbeT | null {
     return this.recordingProbe;
+  }
+
+  /**
+   * Where the encoder probe stands (`capabilities.meeting.recording_probe`):
+   * `done` with a result, `failed` when it settled without one for this
+   * bridge run, `pending` otherwise - not started, running, or a transient
+   * failure with attempts left that the next `probeRecordingEncoders()` call
+   * retries.
+   */
+  getRecordingProbeState(): MeetingRecordingProbeStateT {
+    if (!this.recordingProbeSettled) {
+      return "pending";
+    }
+    return this.recordingProbe ? "done" : "failed";
   }
 
   /** Record a successful camera call for replay after a crash restart. */

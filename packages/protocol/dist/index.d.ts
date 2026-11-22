@@ -468,7 +468,10 @@ export type MeetingCapabilitiesT = {
      * What `meeting_engine_start` accepts (ADR-0010). `max_width`/`max_height`
      * bound a landscape canvas; a portrait canvas is bounded by the same values
      * with the edges swapped and additionally needs `program_portrait`. `fps`
-     * lists the accepted frame rates. A start outside is refused with
+     * lists the accepted frame rates, per platform: 25 and 30 everywhere, 50
+     * and 60 on macOS as well. Above 30 fps the virtual camera and the program
+     * previews get every second program frame (60 -> 30, 50 -> 25); the
+     * recording gets every frame. A start outside is refused with
      * `meeting_program_format_unsupported`. Absent on older bridges: only
      * 1920x1080 (and 1080x1920 with `program_portrait`) at 30 fps is safe.
      */
@@ -478,14 +481,28 @@ export type MeetingCapabilitiesT = {
         fps: number[];
     };
     /**
+     * State of the hardware-encoder probe behind `recording` (ADR-0010):
+     * `pending` - no result yet (not started, running, or a transient failure
+     * that a later `get_status` retries), ask again; `done` - `recording` is
+     * present; `failed` - there is no result for this bridge run and
+     * `recording` stays absent until the bridge is restarted. Absent on older
+     * bridges, which also do not check a requested codec against the program
+     * format.
+     */
+    recording_probe?: "pending" | "done" | "failed";
+    /**
      * What the meeting recorder can write on this machine (ADR-0010): the codecs
      * the recorder implements for which the machine has a hardware encoder, each
-     * with its container and the largest program it records. An empty list means
-     * no hardware encoder was found. Absent on older bridges and when the
-     * encoder probe failed: the web app then offers no recording format choice.
-     * A `codec` sent to `meeting_recording_pick_path`, `meeting_recording_start`
-     * or `meeting_recording_toggle` that is not listed here is refused with
-     * `meeting_recording_codec_unsupported`.
+     * with its container and the largest program it records (`max_height` for
+     * the shorter edge, `max_fps`; both can be lower than `program_formats`
+     * for a single codec). An empty list means no hardware encoder was found.
+     * Present exactly when `recording_probe` is `done`. A `codec` sent to
+     * `meeting_recording_pick_path`, `meeting_recording_start` or
+     * `meeting_recording_toggle` that is not listed here, or does not cover the
+     * running program, is refused with `meeting_recording_codec_unsupported`
+     * and `data { codec, reason }` (`encoder_unavailable`,
+     * `program_format_exceeded`, `encoders_unknown`); the recording never
+     * falls back to another codec.
      */
     recording?: {
         codecs: Array<{

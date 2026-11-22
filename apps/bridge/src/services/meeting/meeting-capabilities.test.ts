@@ -6,8 +6,10 @@ import {
   MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE,
   MEETING_RECORDER_SUPPORTED_CODECS,
   MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
+  MEETING_RECORDER_CODEC_MAX_FPS,
+  checkRequestedRecordingCodec,
   getMeetingCapabilities,
-  isAdvertisedRecordingCodec,
+  getMeetingProgramFormatLimits,
   isPortraitGeometry,
   isSameProgramFormat,
   isSupportedProgramFormat,
@@ -16,6 +18,7 @@ import {
 import type { MeetingRecordingProbeT } from "./meeting-recording-probe.js";
 
 const PROGRAM_FORMATS = { max_width: 1920, max_height: 1080, fps: [25, 30] };
+const MAC_PROGRAM_FORMATS = { ...PROGRAM_FORMATS, fps: [25, 30, 50, 60] };
 
 /** What an Apple Silicon Mac with ProRes hardware reports. */
 const MAC_PROBE: MeetingRecordingProbeT = {
@@ -34,36 +37,92 @@ describe("meeting-capabilities", () => {
     expect(getMeetingCapabilities({ platform: "darwin" })).toEqual({
       program_portrait: true,
       layer_canvas: true,
-      program_formats: PROGRAM_FORMATS,
+      program_formats: MAC_PROGRAM_FORMATS,
+      recording_probe: "pending",
     });
     // Same helper code, but not verified on a Windows device yet.
     expect(getMeetingCapabilities({ platform: "win32" })).toEqual({
       program_portrait: false,
       layer_canvas: true,
       program_formats: PROGRAM_FORMATS,
+      recording_probe: "pending",
     });
-    expect(getMeetingCapabilities({ platform: "linux" })).toEqual({
+    expect(getMeetingCapabilities({ platform: "linux" })).toMatchObject({
       program_portrait: false,
       layer_canvas: true,
       program_formats: PROGRAM_FORMATS,
     });
   });
 
-  it("advertises 1080p at 25 and 30 fps as the program formats, no 4K and no 50/60", () => {
-    expect(MEETING_PROGRAM_FORMAT_LIMITS).toEqual(PROGRAM_FORMATS);
+  it("advertises 1080p everywhere: at 25/30 fps, on macOS at 50/60 fps as well, no 4K", () => {
+    expect(MEETING_PROGRAM_FORMAT_LIMITS).toEqual({ darwin: MAC_PROGRAM_FORMATS });
+    expect(getMeetingProgramFormatLimits("darwin")).toEqual(MAC_PROGRAM_FORMATS);
+    expect(getMeetingProgramFormatLimits("win32")).toEqual(PROGRAM_FORMATS);
+    expect(getMeetingProgramFormatLimits("linux")).toEqual(PROGRAM_FORMATS);
+    expect(getMeetingProgramFormatLimits()).toEqual(
+      getMeetingProgramFormatLimits(process.platform),
+    );
   });
 
   it("hands out a copy of the frame rate list", () => {
-    getMeetingCapabilities().program_formats?.fps.push(60);
-    expect(MEETING_PROGRAM_FORMAT_LIMITS.fps).toEqual([25, 30]);
+    for (const platform of ["darwin", "win32"] as const) {
+      const before = getMeetingProgramFormatLimits(platform).fps;
+      getMeetingCapabilities({ platform }).program_formats?.fps.push(120);
+      getMeetingProgramFormatLimits(platform).fps.push(120);
+      expect(getMeetingProgramFormatLimits(platform).fps).toEqual(before);
+    }
+  });
+
+  describe("recording_probe", () => {
+    it("is pending until a state is known and carries no recording block", () => {
+      const capabilities = getMeetingCapabilities({ platform: "darwin" });
+      expect(capabilities.recording_probe).toBe("pending");
+      expect(capabilities).not.toHaveProperty("recording");
+    });
+
+    it.each(["pending", "failed"] as const)(
+      "reports %s without a recording block",
+      (recordingProbeState) => {
+        const capabilities = getMeetingCapabilities({
+          platform: "darwin",
+          recordingProbe: null,
+          recordingProbeState,
+        });
+        expect(capabilities.recording_probe).toBe(recordingProbeState);
+        expect(capabilities).not.toHaveProperty("recording");
+      },
+    );
+
+    it("is done exactly when the recording block is present, also with an empty list", () => {
+      const capabilities = getMeetingCapabilities({
+        platform: "darwin",
+        recordingProbe: { backend: "videotoolbox", encoders: [] },
+        recordingProbeState: "done",
+      });
+      expect(capabilities.recording_probe).toBe("done");
+      expect(capabilities.recording).toEqual({ codecs: [], upload_copy: false });
+    });
+
+    it("is done with an empty list on a platform without a recorder, whatever the probe did", () => {
+      for (const recordingProbeState of ["pending", "failed"] as const) {
+        const capabilities = getMeetingCapabilities({
+          platform: "linux",
+          recordingProbeState,
+        });
+        expect(capabilities.recording_probe).toBe("done");
+        expect(capabilities.recording).toEqual({ codecs: [], upload_copy: false });
+      }
+    });
   });
 
   describe("recording", () => {
     it("is left out while the encoder probe result is unknown", () => {
-      expect(getMeetingCapabilities()).not.toHaveProperty("recording");
-      expect(
-        getMeetingCapabilities({ recordingProbe: null }),
-      ).not.toHaveProperty("recording");
+      for (const platform of ["darwin", "win32"] as const) {
+        expect(getMeetingCapabilities({ platform })).not.toHaveProperty("recording");
+        expect(
+          getMeetingCapabilities({ platform, recordingProbe: null }),
+        ).not.toHaveProperty("recording");
+      }
     });
 
     it("lists what each platform recorder writes: everything on macOS, H.264 on Windows", () => {
@@ -79,11 +138,11 @@ describe("meeting-capabilities", () => {
           .recording,
       ).toEqual({
         codecs: [
-          { codec: "h264", container: "mp4", max_height: 1080, max_fps: 30 },
-          { codec: "hevc", container: "mp4", max_height: 1080, max_fps: 30 },
-          { codec: "prores_422_lt", container: "mov", max_height: 1080, max_fps: 30 },
-          { codec: "prores_422", container: "mov", max_height: 1080, max_fps: 30 },
-          { codec: "prores_422_hq", container: "mov", max_height: 1080, max_fps: 30 },
+          { codec: "h264", container: "mp4", max_height: 1080, max_fps: 60 },
+          { codec: "hevc", container: "mp4", max_height: 1080, max_fps: 60 },
+          { codec: "prores_422_lt", container: "mov", max_height: 1080, max_fps: 60 },
+          { codec: "prores_422", container: "mov", max_height: 1080, max_fps: 60 },
+          { codec: "prores_422_hq", container: "mov", max_height: 1080, max_fps: 60 },
         ],
         upload_copy: false,
       });
@@ -124,35 +183,112 @@ describe("meeting-capabilities", () => {
       ).toEqual({ codecs: [], upload_copy: false });
     });
 
-    it("keeps every codec within the advertised program formats", () => {
-      const capabilities = getMeetingCapabilities({
-        platform: "darwin",
-        recordingProbe: MAC_PROBE,
+    it("caps every codec of a platform recorder at a frame rate the platform runs", () => {
+      expect(MEETING_RECORDER_CODEC_MAX_FPS).toEqual({
+        darwin: {
+          h264: 60,
+          hevc: 60,
+          prores_422_lt: 60,
+          prores_422: 60,
+          prores_422_hq: 60,
+        },
+        win32: { h264: 30 },
       });
-      for (const entry of capabilities.recording?.codecs ?? []) {
-        expect(entry.max_height).toBeLessThanOrEqual(PROGRAM_FORMATS.max_height);
-        expect(PROGRAM_FORMATS.fps).toContain(entry.max_fps);
+      for (const platform of ["darwin", "win32"] as const) {
+        expect(Object.keys(MEETING_RECORDER_CODEC_MAX_FPS[platform] ?? {})).toEqual(
+          MEETING_RECORDER_SUPPORTED_CODECS[platform],
+        );
+        const capabilities = getMeetingCapabilities({
+          platform,
+          recordingProbe: MAC_PROBE,
+        });
+        const limits = getMeetingProgramFormatLimits(platform);
+        for (const entry of capabilities.recording?.codecs ?? []) {
+          expect(entry.max_height).toBeLessThanOrEqual(limits.max_height);
+          expect(limits.fps).toContain(entry.max_fps);
+          expect(entry.max_fps).toBe(MEETING_RECORDER_CODEC_MAX_FPS[platform]?.[entry.codec]);
+        }
       }
     });
 
-    it("gates a requested codec on the advertised list", () => {
+    describe("checkRequestedRecordingCodec", () => {
       const mac = getMeetingCapabilities({
         platform: "darwin",
         recordingProbe: MAC_PROBE,
       });
-      expect(isAdvertisedRecordingCodec(mac, "prores_422_hq")).toBe(true);
       const windows = getMeetingCapabilities({
         platform: "win32",
         recordingProbe: MAC_PROBE,
       });
-      expect(isAdvertisedRecordingCodec(windows, "h264")).toBe(true);
-      expect(isAdvertisedRecordingCodec(windows, "hevc")).toBe(false);
-      // A name outside the contract is never advertised.
-      expect(isAdvertisedRecordingCodec(mac, "av1")).toBe(false);
-      // Probe unknown: nothing is advertised, so nothing may be requested.
-      expect(
-        isAdvertisedRecordingCodec(getMeetingCapabilities({ platform: "darwin" }), "h264"),
-      ).toBe(false);
+      const refused = (reason: string) => ({ ok: false, reason });
+
+      it("passes an advertised codec and names it", () => {
+        expect(checkRequestedRecordingCodec(mac, "prores_422_hq", null)).toEqual({
+          ok: true,
+          codec: "prores_422_hq",
+        });
+        expect(checkRequestedRecordingCodec(windows, "h264", null)).toEqual({
+          ok: true,
+          codec: "h264",
+        });
+      });
+
+      it("refuses a codec that is not advertised, a name outside the contract included", () => {
+        expect(checkRequestedRecordingCodec(windows, "hevc", null)).toEqual(
+          refused("encoder_unavailable"),
+        );
+        expect(checkRequestedRecordingCodec(mac, "av1", null)).toEqual(
+          refused("encoder_unavailable"),
+        );
+      });
+
+      it.each(["pending", "failed"] as const)(
+        "refuses every codec while the probe is %s: the encoders are unknown",
+        (recordingProbeState) => {
+          const unknown = getMeetingCapabilities({
+            platform: "darwin",
+            recordingProbeState,
+          });
+          expect(checkRequestedRecordingCodec(unknown, "h264", null)).toEqual(
+            refused("encoders_unknown"),
+          );
+        },
+      );
+
+      it("holds the codec to the running program: shorter edge and frame rate", () => {
+        const capped = {
+          ...mac,
+          recording: {
+            codecs: [
+              { codec: "hevc", container: "mp4", max_height: 1080, max_fps: 30 },
+            ],
+            upload_copy: false,
+          },
+        } as const;
+        const check = (width: number, height: number, fps: number) =>
+          checkRequestedRecordingCodec(capped, "hevc", { width, height, fps });
+
+        expect(check(1920, 1080, 30)).toEqual({ ok: true, codec: "hevc" });
+        expect(check(1920, 1080, 25)).toEqual({ ok: true, codec: "hevc" });
+        // Portrait is measured by its shorter edge.
+        expect(check(1080, 1920, 30)).toEqual({ ok: true, codec: "hevc" });
+        expect(check(1920, 1080, 50)).toEqual(refused("program_format_exceeded"));
+        expect(check(1920, 1080, 60)).toEqual(refused("program_format_exceeded"));
+        expect(check(3840, 2160, 30)).toEqual(refused("program_format_exceeded"));
+        expect(check(2160, 3840, 30)).toEqual(refused("program_format_exceeded"));
+      });
+
+      it("records a 60 fps program with every macOS codec", () => {
+        for (const entry of mac.recording?.codecs ?? []) {
+          expect(
+            checkRequestedRecordingCodec(mac, entry.codec, {
+              width: 1920,
+              height: 1080,
+              fps: 60,
+            }),
+          ).toEqual({ ok: true, codec: entry.codec });
+        }
+      });
     });
 
     it("lists a codec once even when two hardware encoders offer it", () => {
@@ -199,11 +335,9 @@ describe("meeting-capabilities", () => {
   });
 
   it("defaults to the platform of the running process", () => {
-    expect(getMeetingCapabilities()).toEqual({
-      program_portrait: process.platform === "darwin",
-      layer_canvas: true,
-      program_formats: PROGRAM_FORMATS,
-    });
+    expect(getMeetingCapabilities()).toEqual(
+      getMeetingCapabilities({ platform: process.platform }),
+    );
   });
 
   it("keeps the error codes the web app matches on", () => {
@@ -252,21 +386,38 @@ describe("meeting-capabilities", () => {
   });
 
   it.each([
-    [{ width: 1920, height: 1080, fps: 30 }, true],
-    [{ width: 1920, height: 1080, fps: 25 }, true],
-    [{ width: 1280, height: 720, fps: 30 }, true],
+    [{ width: 1920, height: 1080, fps: 30 }, true, true],
+    [{ width: 1920, height: 1080, fps: 25 }, true, true],
+    [{ width: 1280, height: 720, fps: 30 }, true, true],
     // Portrait is measured with its edges swapped.
-    [{ width: 1080, height: 1920, fps: 30 }, true],
-    [{ width: 720, height: 1280, fps: 25 }, true],
-    [{ width: 1920, height: 1080, fps: 60 }, false],
-    [{ width: 1920, height: 1080, fps: 24 }, false],
-    [{ width: 3840, height: 2160, fps: 30 }, false],
-    [{ width: 2160, height: 3840, fps: 30 }, false],
-    [{ width: 1920, height: 1200, fps: 30 }, false],
-    [{ width: 1200, height: 1920, fps: 30 }, false],
-  ])("checks %j against the advertised program formats: %s", (format, supported) => {
-    expect(isSupportedProgramFormat(format)).toBe(supported);
-  });
+    [{ width: 1080, height: 1920, fps: 30 }, true, true],
+    [{ width: 720, height: 1280, fps: 25 }, true, true],
+    // 50 and 60 fps on macOS only.
+    [{ width: 1920, height: 1080, fps: 50 }, true, false],
+    [{ width: 1920, height: 1080, fps: 60 }, true, false],
+    [{ width: 1080, height: 1920, fps: 60 }, true, false],
+    [{ width: 1920, height: 1080, fps: 24 }, false, false],
+    [{ width: 1920, height: 1080, fps: 120 }, false, false],
+    [{ width: 3840, height: 2160, fps: 30 }, false, false],
+    [{ width: 2160, height: 3840, fps: 30 }, false, false],
+    [{ width: 1920, height: 1200, fps: 30 }, false, false],
+    [{ width: 1200, height: 1920, fps: 30 }, false, false],
+  ])(
+    "checks %j against the advertised program formats: macOS %s, elsewhere %s",
+    (format, onMac, elsewhere) => {
+      expect(
+        isSupportedProgramFormat(format, getMeetingProgramFormatLimits("darwin")),
+      ).toBe(onMac);
+      for (const platform of ["win32", "linux"] as const) {
+        expect(
+          isSupportedProgramFormat(format, getMeetingProgramFormatLimits(platform)),
+        ).toBe(elsewhere);
+      }
+      expect(isSupportedProgramFormat(format)).toBe(
+        isSupportedProgramFormat(format, getMeetingProgramFormatLimits(process.platform)),
+      );
+    },
+  );
 
   it("checks a program format against explicit limits", () => {
     const limits = { max_width: 3840, max_height: 2160, fps: [50] };

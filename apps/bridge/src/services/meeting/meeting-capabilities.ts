@@ -28,18 +28,39 @@ type MeetingProgramFormatLimitsT = NonNullable<
 >;
 
 /**
- * Program formats `meeting_engine_start` accepts (ADR-0010), the same on
- * every platform for now. Deliberately the verified envelope, not what the
- * helper would technically start with: 1080p is the size the Windows camera
- * is capped at and the virtual camera is built for, and both rates stay
- * within the Windows camera's 30 fps cap. 4K and 50/60 fps are added here
- * once they have been measured on a device.
+ * Program formats `meeting_engine_start` accepts on a platform without an
+ * entry in `MEETING_PROGRAM_FORMAT_LIMITS` (ADR-0010). Deliberately the
+ * verified envelope, not what the helper would technically start with: 1080p
+ * is the size the Windows camera is capped at and the virtual camera is built
+ * for, and both rates stay within the Windows camera's 30 fps cap.
  */
-export const MEETING_PROGRAM_FORMAT_LIMITS: MeetingProgramFormatLimitsT = {
+const BASE_MEETING_PROGRAM_FORMAT_LIMITS: MeetingProgramFormatLimitsT = {
   max_width: 1920,
   max_height: 1080,
   fps: [25, 30],
 };
+
+/**
+ * Platforms whose program formats go beyond the base envelope. macOS runs
+ * the program (and therefore the recording) at 50 and 60 fps as well; the
+ * virtual camera and the previews get every second frame of those (ADR-0010).
+ * Windows stays on the base envelope until 50/60 fps have been measured on a
+ * device; 4K is added here once it has been measured.
+ */
+export const MEETING_PROGRAM_FORMAT_LIMITS: Readonly<
+  Partial<Record<NodeJS.Platform, MeetingProgramFormatLimitsT>>
+> = {
+  darwin: { ...BASE_MEETING_PROGRAM_FORMAT_LIMITS, fps: [25, 30, 50, 60] },
+};
+
+/** The program formats of a platform, as a copy the caller may hand out. */
+export function getMeetingProgramFormatLimits(
+  platform: NodeJS.Platform = process.platform,
+): MeetingProgramFormatLimitsT {
+  const limits =
+    MEETING_PROGRAM_FORMAT_LIMITS[platform] ?? BASE_MEETING_PROGRAM_FORMAT_LIMITS;
+  return { ...limits, fps: [...limits.fps] };
+}
 
 /**
  * Codecs the meeting recorder of each platform can write (a platform without
@@ -59,6 +80,39 @@ export const MEETING_RECORDER_SUPPORTED_CODECS: Readonly<
   win32: ["h264"],
 };
 
+/**
+ * Highest program frame rate each platform recorder writes per codec
+ * (ADR-0010); a codec without an entry records every rate of the platform.
+ * The one place to lower when a device measurement shows that a codec does
+ * not hold a rate: the capability then reports the lower `max_fps` and the
+ * recording gate refuses that codec for a faster program.
+ */
+export const MEETING_RECORDER_CODEC_MAX_FPS: Readonly<
+  Partial<
+    Record<NodeJS.Platform, Readonly<Partial<Record<MeetingRecordingCodecT, number>>>>
+  >
+> = {
+  darwin: {
+    h264: 60,
+    hevc: 60,
+    prores_422_lt: 60,
+    prores_422: 60,
+    prores_422_hq: 60,
+  },
+  win32: { h264: 30 },
+};
+
+/** State of the helper's encoder probe, as `recording_probe` reports it. */
+export type MeetingRecordingProbeStateT = NonNullable<
+  MeetingCapabilitiesT["recording_probe"]
+>;
+
+/** Why a requested recording codec cannot be recorded right now. */
+export type MeetingRecordingCodecRefusalReasonT =
+  | "encoder_unavailable"
+  | "program_format_exceeded"
+  | "encoders_unknown";
+
 type MeetingCapabilityDepsT = {
   platform?: NodeJS.Platform;
   /**
@@ -66,28 +120,37 @@ type MeetingCapabilityDepsT = {
    * (`MeetingHelperManager.getRecordingProbe`); null while it is unknown.
    */
   recordingProbe?: MeetingRecordingProbeT | null;
+  /**
+   * Why there is no result (`MeetingHelperManager.getRecordingProbeState`):
+   * still `pending` or `failed` for this bridge run. Not read when
+   * `recordingProbe` is given - a result is always `done`.
+   */
+  recordingProbeState?: MeetingRecordingProbeStateT;
 };
 
 /**
  * Recording capability for a probe result: the platform recorder's codecs
  * for which the machine has a hardware encoder (hardware only, no software
- * fallback - ADR-0010), each up to the largest program format. No codec has
- * a limit of its own yet: every one records whatever `program_formats`
- * allows.
+ * fallback - ADR-0010). Each records the largest program size of the
+ * platform, at up to the platform's highest frame rate or the codec's own
+ * cap (`MEETING_RECORDER_CODEC_MAX_FPS`), whichever is lower.
  */
 function resolveRecordingCapability(
   probe: MeetingRecordingProbeT,
   platform: NodeJS.Platform,
 ): NonNullable<MeetingCapabilitiesT["recording"]> {
   const hardwareCodecs = new Set(probe.encoders.map((encoder) => encoder.codec));
+  const limits = getMeetingProgramFormatLimits(platform);
+  const platformMaxFps = Math.max(...limits.fps);
+  const codecMaxFps = MEETING_RECORDER_CODEC_MAX_FPS[platform] ?? {};
   return {
     codecs: (MEETING_RECORDER_SUPPORTED_CODECS[platform] ?? [])
       .filter((codec) => hardwareCodecs.has(codec))
       .map((codec) => ({
         codec,
         container: meetingRecordingContainer(codec),
-        max_height: MEETING_PROGRAM_FORMAT_LIMITS.max_height,
-        max_fps: Math.max(...MEETING_PROGRAM_FORMAT_LIMITS.fps),
+        max_height: limits.max_height,
+        max_fps: Math.min(platformMaxFps, codecMaxFps[codec] ?? platformMaxFps),
       })),
     upload_copy: false,
   };
@@ -107,41 +170,68 @@ function resolveRecordingCapability(
  *
  * `program_formats` bounds what `meeting_engine_start` accepts (ADR-0010).
  *
- * `recording` is derived from the helper's hardware-encoder probe and is
- * left out while that result is unknown (probe not finished, failed or timed
- * out): the web app treats the missing field as "no recording format choice".
+ * `recording_probe` is the state of the helper's hardware-encoder probe and
+ * `recording` its result: present exactly when the state is `done`. While
+ * the probe is `pending` (not started, running, or about to be retried) or
+ * has `failed` for this bridge run, `recording` is left out. A platform
+ * without a recorder needs no probe: it reports `done` with an empty list.
  */
 export function getMeetingCapabilities(
   deps: MeetingCapabilityDepsT = {},
 ): MeetingCapabilitiesT {
-  const { platform = process.platform, recordingProbe = null } = deps;
+  const {
+    platform = process.platform,
+    recordingProbe = null,
+    recordingProbeState = "pending",
+  } = deps;
+  const recording = !MEETING_RECORDER_SUPPORTED_CODECS[platform]
+    ? { codecs: [], upload_copy: false }
+    : recordingProbe
+      ? resolveRecordingCapability(recordingProbe, platform)
+      : null;
   return {
     program_portrait: platform === "darwin",
     layer_canvas: true,
-    program_formats: {
-      ...MEETING_PROGRAM_FORMAT_LIMITS,
-      fps: [...MEETING_PROGRAM_FORMAT_LIMITS.fps],
-    },
-    ...(recordingProbe
-      ? { recording: resolveRecordingCapability(recordingProbe, platform) }
-      : {}),
+    program_formats: getMeetingProgramFormatLimits(platform),
+    recording_probe: recording ? "done" : recordingProbeState,
+    ...(recording ? { recording } : {}),
   };
 }
 
+export type MeetingRecordingCodecCheckT =
+  | { ok: true; codec: MeetingRecordingCodecT }
+  | { ok: false; reason: MeetingRecordingCodecRefusalReasonT };
+
 /**
- * Whether a recording may be started with an explicitly requested codec: only
- * with one the capability block advertises, which excludes every name outside
- * the contract. Without the block (probe unknown) no codec may be requested -
- * the web app sends one only when it is reported.
+ * Whether a recording with an explicitly requested codec may start, and why
+ * not otherwise. The codec has to be advertised (`capabilities.recording`,
+ * which excludes every name outside the contract) and has to cover the
+ * running program: its shorter edge and its frame rate. Without a running
+ * program (`programFormat` null) only the name is checked. Without the
+ * capability block the encoders are unknown and no codec may be requested.
  */
-export function isAdvertisedRecordingCodec(
+export function checkRequestedRecordingCodec(
   capabilities: MeetingCapabilitiesT,
   codec: string,
-): codec is MeetingRecordingCodecT {
-  return (
-    capabilities.recording?.codecs.some((entry) => entry.codec === codec) ??
-    false
+  programFormat: MeetingProgramFormatT | null,
+): MeetingRecordingCodecCheckT {
+  if (!capabilities.recording) {
+    return { ok: false, reason: "encoders_unknown" };
+  }
+  const entry = capabilities.recording.codecs.find(
+    (candidate) => candidate.codec === codec,
   );
+  if (!entry) {
+    return { ok: false, reason: "encoder_unavailable" };
+  }
+  if (
+    programFormat &&
+    (Math.min(programFormat.width, programFormat.height) > entry.max_height ||
+      programFormat.fps > entry.max_fps)
+  ) {
+    return { ok: false, reason: "program_format_exceeded" };
+  }
+  return { ok: true, codec: entry.codec };
 }
 
 /** Fills the engine defaults into a (partial) start payload. */
@@ -165,13 +255,14 @@ export function isPortraitGeometry(size: {
 }
 
 /**
- * Whether a program format is within the advertised limits. The limits bound
- * a landscape canvas; a portrait canvas is measured with its edges swapped
- * (whether portrait is allowed at all is `program_portrait`).
+ * Whether a program format is within the limits, by default those advertised
+ * on this platform. The limits bound a landscape canvas; a portrait canvas is
+ * measured with its edges swapped (whether portrait is allowed at all is
+ * `program_portrait`).
  */
 export function isSupportedProgramFormat(
   format: MeetingProgramFormatT,
-  limits: MeetingProgramFormatLimitsT = MEETING_PROGRAM_FORMAT_LIMITS,
+  limits: MeetingProgramFormatLimitsT = getMeetingProgramFormatLimits(),
 ): boolean {
   return (
     Math.max(format.width, format.height) <= limits.max_width &&

@@ -96,12 +96,14 @@ describe("meeting-helper-manager", () => {
       const second = manager.probeRecordingEncoders();
       // Not known yet: the synchronous read neither waits nor starts a run.
       expect(manager.getRecordingProbe()).toBeNull();
+      expect(manager.getRecordingProbeState()).toBe("pending");
       finish({ ok: true, probe: PROBE });
 
       expect(await first).toEqual(PROBE);
       expect(await second).toEqual(PROBE);
       expect(await manager.probeRecordingEncoders()).toEqual(PROBE);
       expect(manager.getRecordingProbe()).toEqual(PROBE);
+      expect(manager.getRecordingProbeState()).toBe("done");
       expect(mockRunProbe).toHaveBeenCalledTimes(1);
       expect(mockRunProbe).toHaveBeenCalledWith("/path/to/meeting-helper");
       expect(mockLogger.info).toHaveBeenCalledWith(
@@ -119,6 +121,7 @@ describe("meeting-helper-manager", () => {
         expect(await manager.probeRecordingEncoders()).toBeNull();
 
         expect(manager.getRecordingProbe()).toBeNull();
+        expect(manager.getRecordingProbeState()).toBe("failed");
         expect(mockRunProbe).toHaveBeenCalledTimes(1);
         expect(mockLogger.warn).toHaveBeenCalledTimes(1);
         expect(mockLogger.warn).toHaveBeenCalledWith(
@@ -146,10 +149,14 @@ describe("meeting-helper-manager", () => {
           `[Meeting] Recording encoder probe failed (${reason}), attempt 1/${MEETING_RECORDING_PROBE_MAX_ATTEMPTS}; retrying on the next status request.`,
         );
 
+        // A retry is left: not failed, the web app keeps asking.
+        expect(manager.getRecordingProbeState()).toBe("pending");
+
         // Later callers start one retry and get their answer while it runs.
         expect(await manager.probeRecordingEncoders()).toBeNull();
         expect(await manager.probeRecordingEncoders()).toBeNull();
         expect(mockRunProbe).toHaveBeenCalledTimes(2);
+        expect(manager.getRecordingProbeState()).toBe("pending");
 
         finishRetry({ ok: true, probe: PROBE });
         await Promise.resolve();
@@ -157,10 +164,74 @@ describe("meeting-helper-manager", () => {
 
         expect(await manager.probeRecordingEncoders()).toEqual(PROBE);
         expect(manager.getRecordingProbe()).toEqual(PROBE);
+        expect(manager.getRecordingProbeState()).toBe("done");
         expect(mockRunProbe).toHaveBeenCalledTimes(2);
         expect(mockLogger.warn).toHaveBeenCalledTimes(1);
       },
     );
+
+    describe("awaitRecordingProbe", () => {
+      it("starts the probe when nobody has asked for it yet and waits for the result", async () => {
+        // A REC key press with no web app connected: no get_status ran.
+        mockRunProbe.mockResolvedValue({ ok: true, probe: PROBE });
+        const manager = new MeetingHelperManager();
+
+        expect(await manager.awaitRecordingProbe()).toEqual(PROBE);
+        expect(manager.getRecordingProbeState()).toBe("done");
+        expect(mockRunProbe).toHaveBeenCalledTimes(1);
+      });
+
+      it("waits for a retry in flight, where probeRecordingEncoders answers at once", async () => {
+        let finishRetry!: (outcome: MeetingRecordingProbeOutcomeT) => void;
+        mockRunProbe
+          .mockResolvedValueOnce({ ok: false, reason: "timeout" })
+          .mockReturnValueOnce(
+            new Promise((resolve) => {
+              finishRetry = resolve;
+            }),
+          );
+        const manager = new MeetingHelperManager();
+        expect(await manager.probeRecordingEncoders()).toBeNull();
+        // Starts the retry and does not wait for it.
+        expect(await manager.probeRecordingEncoders()).toBeNull();
+
+        let waited: unknown = "waiting";
+        const waiting = manager.awaitRecordingProbe().then((probe) => {
+          waited = probe;
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(waited).toBe("waiting");
+
+        finishRetry({ ok: true, probe: PROBE });
+        await waiting;
+        expect(waited).toEqual(PROBE);
+        // Joined the retry in flight instead of starting a third run.
+        expect(mockRunProbe).toHaveBeenCalledTimes(2);
+      });
+
+      it("starts the next attempt after a transient failure and counts it against the bound", async () => {
+        mockRunProbe.mockResolvedValue({ ok: false, reason: "timeout" });
+        const manager = new MeetingHelperManager();
+
+        for (let call = 0; call < MEETING_RECORDING_PROBE_MAX_ATTEMPTS + 2; call += 1) {
+          expect(await manager.awaitRecordingProbe()).toBeNull();
+        }
+
+        expect(mockRunProbe).toHaveBeenCalledTimes(MEETING_RECORDING_PROBE_MAX_ATTEMPTS);
+        expect(manager.getRecordingProbeState()).toBe("failed");
+      });
+
+      it("answers from the settled state without another run", async () => {
+        mockRunProbe.mockResolvedValue({ ok: false, reason: "helper_missing" });
+        const manager = new MeetingHelperManager();
+
+        expect(await manager.awaitRecordingProbe()).toBeNull();
+        expect(await manager.awaitRecordingProbe()).toBeNull();
+
+        expect(mockRunProbe).toHaveBeenCalledTimes(1);
+        expect(manager.getRecordingProbeState()).toBe("failed");
+      });
+    });
 
     it("gives up after the bounded number of runs when the failure stays transient", async () => {
       mockRunProbe.mockResolvedValue({ ok: false, reason: "timeout" });
@@ -178,6 +249,7 @@ describe("meeting-helper-manager", () => {
         "[Meeting] Recording encoder probe failed (timeout); recording formats are not advertised.",
       );
       expect(manager.getRecordingProbe()).toBeNull();
+      expect(manager.getRecordingProbeState()).toBe("failed");
     });
 
     it("stops retrying once a retry fails definitively", async () => {
