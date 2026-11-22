@@ -22,6 +22,7 @@ export const MEETING_ENGINE_RESTART_REQUIRED_CODE =
   "meeting_engine_restart_required";
 export const MEETING_RECORDING_CODEC_UNSUPPORTED_CODE =
   "meeting_recording_codec_unsupported";
+export const MEETING_KEYER_FPS_UNSUPPORTED_CODE = "meeting_keyer_fps_unsupported";
 
 type MeetingProgramFormatLimitsT = NonNullable<
   MeetingCapabilitiesT["program_formats"]
@@ -33,11 +34,17 @@ type MeetingProgramFormatLimitsT = NonNullable<
  * verified envelope, not what the helper would technically start with: 1080p
  * is the size the Windows camera is capped at and the virtual camera is built
  * for, and both rates stay within the Windows camera's 30 fps cap.
+ *
+ * `keyer_max_fps` is the highest program frame rate keying runs at, the one
+ * place to raise when a keyer holds more. Measured on an M1 Pro (ADR-0010):
+ * one keyer run takes about 22 ms, so a 60 fps program reaches about 31
+ * ticks per second with the keyer and 59.97 without it.
  */
 const BASE_MEETING_PROGRAM_FORMAT_LIMITS: MeetingProgramFormatLimitsT = {
   max_width: 1920,
   max_height: 1080,
   fps: [25, 30],
+  keyer_max_fps: 30,
 };
 
 /**
@@ -168,7 +175,8 @@ function resolveRecordingCapability(
  * (ADR-0007). It is a feature of the graphics renderer, which is the same on
  * every platform, so it does not depend on `program_portrait`.
  *
- * `program_formats` bounds what `meeting_engine_start` accepts (ADR-0010).
+ * `program_formats` bounds what `meeting_engine_start` accepts (ADR-0010),
+ * and with `keyer_max_fps` the program frame rate keying may be turned on at.
  *
  * `recording_probe` is the state of the helper's hardware-encoder probe and
  * `recording` its result: present exactly when the state is `done`. While
@@ -232,6 +240,30 @@ export function checkRequestedRecordingCodec(
     return { ok: false, reason: "program_format_exceeded" };
   }
   return { ok: true, codec: entry.codec };
+}
+
+/** A program frame rate above the one keying runs at, as the refusal reports it. */
+export type MeetingKeyerFpsExcessT = {
+  program_fps: number;
+  keyer_max_fps: number;
+};
+
+/**
+ * The arbiter for keying and the program frame rate (ADR-0010): the excess
+ * when a program of this format runs faster than keying does
+ * (`program_formats.keyer_max_fps`), null when keying may be on. No running
+ * program (`programFormat` null) and limits without `keyer_max_fps` have
+ * nothing to exceed.
+ */
+export function findKeyerFpsExcess(
+  programFormat: MeetingProgramFormatT | null,
+  limits: MeetingProgramFormatLimitsT | undefined,
+): MeetingKeyerFpsExcessT | null {
+  const keyerMaxFps = limits?.keyer_max_fps;
+  if (!programFormat || keyerMaxFps === undefined || programFormat.fps <= keyerMaxFps) {
+    return null;
+  }
+  return { program_fps: programFormat.fps, keyer_max_fps: keyerMaxFps };
 }
 
 /** Fills the engine defaults into a (partial) start payload. */

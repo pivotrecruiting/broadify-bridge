@@ -31,6 +31,8 @@ import {
 import { meetingContentSourceState } from "./meeting-content-source-state.js";
 import type { MeetingProgramFormatT } from "@broadify/protocol";
 import {
+  findKeyerFpsExcess,
+  getMeetingProgramFormatLimits,
   resolveMeetingProgramFormat,
   type MeetingRecordingProbeStateT,
 } from "./meeting-capabilities.js";
@@ -975,9 +977,10 @@ export class MeetingHelperManager {
         );
       }
     }
-    if (this.keyerRestoreConfig) {
+    const keyerConfig = this.resolveKeyerRestoreConfig();
+    if (keyerConfig) {
       try {
-        await client.keyerConfigure(this.keyerRestoreConfig);
+        await client.keyerConfigure(keyerConfig);
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         getLogger().warn(
@@ -985,6 +988,33 @@ export class MeetingHelperManager {
         );
       }
     }
+  }
+
+  /**
+   * The keyer config to replay, held to the keying frame-rate limit like a
+   * `meeting_keyer_configure` (`findKeyerFpsExcess`). The config can stem
+   * from a slower engine: a user start during crash recovery spawns the
+   * helper with its own frame rate and replays nothing, and the config noted
+   * before the crash stays until the web app pushes its own. A later crash
+   * replays it with keying off rather than keying a program it cannot hold.
+   */
+  private resolveKeyerRestoreConfig(): Record<string, unknown> | null {
+    const config = this.keyerRestoreConfig;
+    if (config?.enabled !== true) {
+      return config;
+    }
+    const excess = findKeyerFpsExcess(
+      this.getProgramFormat(),
+      getMeetingProgramFormatLimits(),
+    );
+    if (!excess) {
+      return config;
+    }
+    getLogger().warn(
+      `[Meeting] Keying is not restored after the helper restart: the program runs at ${excess.program_fps} fps, keying at up to ${excess.keyer_max_fps} fps.`,
+    );
+    this.keyerRestoreConfig = { ...config, enabled: false };
+    return this.keyerRestoreConfig;
   }
 
   getFramebusName(): string {

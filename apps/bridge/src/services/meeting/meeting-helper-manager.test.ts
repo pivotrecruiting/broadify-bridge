@@ -814,6 +814,69 @@ describe("meeting-helper-manager", () => {
       });
     });
 
+    describe("keyer replay after a crash restart", () => {
+      type InternalsT = {
+        client: { keyerConfigure: jest.Mock };
+        state: string;
+        lastStartOptions: { fps?: number };
+        restoreRuntimeConfig: () => Promise<void>;
+      };
+
+      const restartedAt = (fps: number) => {
+        const manager = new MeetingHelperManager();
+        const internals = manager as unknown as InternalsT;
+        internals.client = { keyerConfigure: jest.fn(async () => ({})) };
+        internals.state = "running";
+        internals.lastStartOptions = { fps };
+        return { manager, internals };
+      };
+
+      it.each([25, 30])("replays keying into a %i fps engine", async (fps) => {
+        const { manager, internals } = restartedAt(fps);
+        manager.noteKeyerConfigured({ enabled: true, background_mode: "gradient" });
+
+        await internals.restoreRuntimeConfig();
+
+        expect(internals.client.keyerConfigure).toHaveBeenCalledWith({
+          enabled: true,
+          background_mode: "gradient",
+        });
+      });
+
+      it.each([50, 60])(
+        "replays a config noted on a slower engine into a %i fps engine with keying off",
+        async (fps) => {
+          const { manager, internals } = restartedAt(fps);
+          manager.noteKeyerConfigured({ enabled: true, background_mode: "gradient" });
+
+          await internals.restoreRuntimeConfig();
+          await internals.restoreRuntimeConfig();
+
+          expect(internals.client.keyerConfigure.mock.calls).toEqual([
+            [{ enabled: false, background_mode: "gradient" }],
+            [{ enabled: false, background_mode: "gradient" }],
+          ]);
+          expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+          expect(mockLogger.warn).toHaveBeenCalledWith(
+            `[Meeting] Keying is not restored after the helper restart: the program runs at ${fps} fps, keying at up to 30 fps.`,
+          );
+        },
+      );
+
+      it("replays a config without keying into a 60 fps engine unchanged", async () => {
+        const { manager, internals } = restartedAt(60);
+        manager.noteKeyerConfigured({ enabled: false, background_mode: "gradient" });
+
+        await internals.restoreRuntimeConfig();
+
+        expect(internals.client.keyerConfigure).toHaveBeenCalledWith({
+          enabled: false,
+          background_mode: "gradient",
+        });
+        expect(mockLogger.warn).not.toHaveBeenCalled();
+      });
+    });
+
     it("records VCam raw bind failures from helper stdout and rejects readiness", () => {
       const manager = new MeetingHelperManager();
       const readyRejecter = jest.fn();

@@ -474,11 +474,20 @@ export type MeetingCapabilitiesT = {
      * recording gets every frame. A start outside is refused with
      * `meeting_program_format_unsupported`. Absent on older bridges: only
      * 1920x1080 (and 1080x1920 with `program_portrait`) at 30 fps is safe.
+     *
+     * `keyer_max_fps` is the highest program frame rate keying runs at (30 on
+     * every platform today). `meeting_keyer_configure` with `enabled: true` on
+     * a faster program is refused with `meeting_keyer_fps_unsupported` and
+     * `data { program_fps, keyer_max_fps }`; the bridge never changes the
+     * frame rate itself. Keying is off in a freshly started engine, so
+     * `meeting_engine_start` is not bound by it. Absent on older bridges: no
+     * keying limit is known.
      */
     program_formats?: {
         max_width: number;
         max_height: number;
         fps: number[];
+        keyer_max_fps?: number;
     };
     /**
      * State of the hardware-encoder probe behind `recording` (ADR-0010):

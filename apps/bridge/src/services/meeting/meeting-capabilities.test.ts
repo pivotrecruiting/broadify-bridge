@@ -1,6 +1,7 @@
 import {
   DEFAULT_MEETING_PROGRAM_FORMAT,
   MEETING_ENGINE_RESTART_REQUIRED_CODE,
+  MEETING_KEYER_FPS_UNSUPPORTED_CODE,
   MEETING_PROGRAM_FORMAT_LIMITS,
   MEETING_PROGRAM_FORMAT_UNSUPPORTED_CODE,
   MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE,
@@ -8,6 +9,7 @@ import {
   MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
   MEETING_RECORDER_CODEC_MAX_FPS,
   checkRequestedRecordingCodec,
+  findKeyerFpsExcess,
   getMeetingCapabilities,
   getMeetingProgramFormatLimits,
   isPortraitGeometry,
@@ -17,7 +19,12 @@ import {
 } from "./meeting-capabilities.js";
 import type { MeetingRecordingProbeT } from "./meeting-recording-probe.js";
 
-const PROGRAM_FORMATS = { max_width: 1920, max_height: 1080, fps: [25, 30] };
+const PROGRAM_FORMATS = {
+  max_width: 1920,
+  max_height: 1080,
+  fps: [25, 30],
+  keyer_max_fps: 30,
+};
 const MAC_PROGRAM_FORMATS = { ...PROGRAM_FORMATS, fps: [25, 30, 50, 60] };
 
 /** What an Apple Silicon Mac with ProRes hardware reports. */
@@ -353,6 +360,61 @@ describe("meeting-capabilities", () => {
     expect(MEETING_RECORDING_CODEC_UNSUPPORTED_CODE).toBe(
       "meeting_recording_codec_unsupported",
     );
+    expect(MEETING_KEYER_FPS_UNSUPPORTED_CODE).toBe("meeting_keyer_fps_unsupported");
+  });
+
+  describe("keyer_max_fps", () => {
+    it.each(["darwin", "win32", "linux"] as const)(
+      "advertises keying at up to 30 fps on %s",
+      (platform) => {
+        expect(
+          getMeetingCapabilities({ platform }).program_formats?.keyer_max_fps,
+        ).toBe(30);
+      },
+    );
+
+    it.each(["darwin", "win32", "linux"] as const)(
+      "starts a first-use engine on %s at 30 fps, a rate keying runs at",
+      (platform) => {
+        const firstUse = resolveMeetingProgramFormat({});
+        const limits = getMeetingProgramFormatLimits(platform);
+        expect(firstUse.fps).toBe(30);
+        expect(isSupportedProgramFormat(firstUse, limits)).toBe(true);
+        expect(findKeyerFpsExcess(firstUse, limits)).toBeNull();
+      },
+    );
+
+    it.each([
+      [25, null],
+      [30, null],
+      [50, { program_fps: 50, keyer_max_fps: 30 }],
+      [60, { program_fps: 60, keyer_max_fps: 30 }],
+    ])("checks a %i fps program against the limit", (fps, excess) => {
+      expect(
+        findKeyerFpsExcess(
+          { width: 1920, height: 1080, fps },
+          getMeetingProgramFormatLimits("darwin"),
+        ),
+      ).toEqual(excess);
+    });
+
+    it("follows the advertised limit, not a fixed 30", () => {
+      const limits = { ...PROGRAM_FORMATS, fps: [25, 30, 50, 60], keyer_max_fps: 50 };
+      expect(findKeyerFpsExcess({ width: 1920, height: 1080, fps: 50 }, limits)).toBeNull();
+      expect(findKeyerFpsExcess({ width: 1920, height: 1080, fps: 60 }, limits)).toEqual({
+        program_fps: 60,
+        keyer_max_fps: 50,
+      });
+    });
+
+    it("has nothing to exceed without a running program or without a limit", () => {
+      expect(findKeyerFpsExcess(null, getMeetingProgramFormatLimits("darwin"))).toBeNull();
+      const format = { width: 1920, height: 1080, fps: 60 };
+      expect(findKeyerFpsExcess(format, undefined)).toBeNull();
+      expect(
+        findKeyerFpsExcess(format, { max_width: 1920, max_height: 1080, fps: [60] }),
+      ).toBeNull();
+    });
   });
 
   it("fills the engine defaults into a partial start payload", () => {

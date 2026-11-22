@@ -131,6 +131,7 @@ describe("registerServerRoutes", () => {
         max_width: 1920,
         max_height: 1080,
         fps: process.platform === "darwin" ? [25, 30, 50, 60] : [25, 30],
+        keyer_max_fps: 30,
       },
       ...(hasRecorder
         ? { recording_probe: "pending" }

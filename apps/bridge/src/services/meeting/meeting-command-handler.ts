@@ -78,8 +78,10 @@ import {
   MEETING_ENGINE_RESTART_REQUIRED_CODE,
   MEETING_PROGRAM_FORMAT_UNSUPPORTED_CODE,
   MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE,
+  MEETING_KEYER_FPS_UNSUPPORTED_CODE,
   MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
   checkRequestedRecordingCodec,
+  findKeyerFpsExcess,
   getMeetingCapabilities,
   isPortraitGeometry,
   isSameProgramFormat,
@@ -495,6 +497,32 @@ async function gateRequestedRecordingCodec(
       errorCode: MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
       data: { codec, reason: check.reason },
     },
+  };
+}
+
+/**
+ * Refusal for a keyer patch that turns keying on while the running program
+ * is faster than keying runs (`findKeyerFpsExcess`), null otherwise. Every
+ * client reaches the keyer through `meeting_keyer_configure` - web app,
+ * Stream Deck key, another tab - so this is the one gate; lowering the
+ * frame rate needs an engine restart and stays with the web app.
+ */
+function gateKeyerEnable(patch: { enabled?: boolean }): MeetingCommandResultT | null {
+  if (patch.enabled !== true) {
+    return null;
+  }
+  const excess = findKeyerFpsExcess(
+    meetingHelperManager.getProgramFormat(),
+    getMeetingCapabilities().program_formats,
+  );
+  if (!excess) {
+    return null;
+  }
+  return {
+    success: false,
+    error: `Keying runs at up to ${excess.keyer_max_fps} fps; the meeting program runs at ${excess.program_fps} fps.`,
+    errorCode: MEETING_KEYER_FPS_UNSUPPORTED_CODE,
+    data: excess,
   };
 }
 
@@ -1332,6 +1360,10 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_keyer_configure",
       );
+      const refusal = gateKeyerEnable(patch);
+      if (refusal) {
+        return refusal;
+      }
       const data = await requireClient().keyerConfigure(patch);
       meetingHelperManager.noteKeyerConfigured(patch);
       meetingHelperManager.requestStatusPublish("keyer_configure");

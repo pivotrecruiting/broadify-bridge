@@ -265,7 +265,12 @@ describe("command-router", () => {
           meeting: {
             program_portrait: process.platform === "darwin",
             layer_canvas: true,
-            program_formats: { max_width: 1920, max_height: 1080, fps },
+            program_formats: {
+              max_width: 1920,
+              max_height: 1080,
+              fps,
+              keyer_max_fps: 30,
+            },
             recording_probe: "done",
             recording: {
               codecs: (recorderCodecs[process.platform] ?? []).map((codec) => ({

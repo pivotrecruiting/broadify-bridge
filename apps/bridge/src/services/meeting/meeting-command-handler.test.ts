@@ -12,6 +12,7 @@ const mockGetMeetingCapabilities = jest.fn(
 const mockGetRecordingProbe = jest.fn();
 const mockGetRecordingProbeState = jest.fn();
 const mockAwaitRecordingProbe = jest.fn();
+const mockNoteKeyerConfigured = jest.fn();
 const mockNotifyRecordingChanged = jest.fn();
 const mockRequestStatusPublish = jest.fn();
 const mockMeetingBackGraphicsConfigureOutputs = jest.fn();
@@ -50,7 +51,7 @@ jest.mock("./meeting-helper-manager.js", () => ({
     noteCameraStopped: () => undefined,
     noteVirtualCameraStarted: () => undefined,
     noteVirtualCameraStopped: () => undefined,
-    noteKeyerConfigured: () => undefined,
+    noteKeyerConfigured: (...args: unknown[]) => mockNoteKeyerConfigured(...args),
     notifyRecordingChanged: (...args: unknown[]) =>
       mockNotifyRecordingChanged(...args),
     requestStatusPublish: (...args: unknown[]) =>
@@ -195,6 +196,11 @@ const BASE_CAPABILITIES = {
 const HIGH_FPS_CAPABILITIES = {
   ...BASE_CAPABILITIES,
   program_formats: { ...BASE_CAPABILITIES.program_formats, fps: [25, 30, 50, 60] },
+};
+/** The block of a platform whose keyer holds at most 30 fps of those. */
+const KEYER_LIMIT_CAPABILITIES = {
+  ...HIGH_FPS_CAPABILITIES,
+  program_formats: { ...HIGH_FPS_CAPABILITIES.program_formats, keyer_max_fps: 30 },
 };
 
 describe("meeting-command-handler", () => {
@@ -1174,6 +1180,72 @@ describe("meeting-command-handler", () => {
       });
       expect(result.success).toBe(true);
       expect(mockRequestStatusPublish).toHaveBeenCalledWith("keyer_configure");
+    });
+
+    describe("keying frame-rate limit", () => {
+      const programAt = (fps: number) => ({ width: 1920, height: 1080, fps });
+
+      beforeEach(() => {
+        mockGetMeetingCapabilities.mockReturnValue(KEYER_LIMIT_CAPABILITIES);
+        mockClient.keyerConfigure.mockResolvedValue({ settings: {} });
+      });
+
+      it.each([50, 60])(
+        "refuses to turn keying on while the program runs at %i fps, before anything is touched",
+        async (fps) => {
+          mockGetProgramFormat.mockReturnValue(programAt(fps));
+
+          const result = await handleMeetingCommand("meeting_keyer_configure", {
+            enabled: true,
+            background_mode: "transparent",
+          });
+
+          expect(result).toEqual({
+            success: false,
+            error: `Keying runs at up to 30 fps; the meeting program runs at ${fps} fps.`,
+            errorCode: "meeting_keyer_fps_unsupported",
+            data: { program_fps: fps, keyer_max_fps: 30 },
+          });
+          expect(mockClient.keyerConfigure).not.toHaveBeenCalled();
+          expect(mockNoteKeyerConfigured).not.toHaveBeenCalled();
+          expect(mockRequestStatusPublish).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([25, 30])("turns keying on at %i fps", async (fps) => {
+        mockGetProgramFormat.mockReturnValue(programAt(fps));
+
+        const result = await handleMeetingCommand("meeting_keyer_configure", {
+          enabled: true,
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.keyerConfigure).toHaveBeenCalledWith({ enabled: true });
+        expect(mockNoteKeyerConfigured).toHaveBeenCalledWith({ enabled: true });
+      });
+
+      it.each([
+        ["keying off", { enabled: false, background_mode: "transparent" }],
+        ["no keying switch", { background_asset_id: "asset-1", quality_mode: "fast" }],
+      ])("forwards a patch with %s at 60 fps", async (_label, patch) => {
+        mockGetProgramFormat.mockReturnValue(programAt(60));
+
+        const result = await handleMeetingCommand("meeting_keyer_configure", patch);
+
+        expect(result.success).toBe(true);
+        expect(mockClient.keyerConfigure).toHaveBeenCalledWith(patch);
+      });
+
+      it("knows no limit when the capability block carries none", async () => {
+        mockGetMeetingCapabilities.mockReturnValue(HIGH_FPS_CAPABILITIES);
+        mockGetProgramFormat.mockReturnValue(programAt(60));
+
+        const result = await handleMeetingCommand("meeting_keyer_configure", {
+          enabled: true,
+        });
+
+        expect(result.success).toBe(true);
+      });
     });
 
     it("forwards automatic keyer configuration without forcing a model", async () => {
