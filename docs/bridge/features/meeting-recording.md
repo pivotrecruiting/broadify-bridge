@@ -328,6 +328,12 @@ web app without one with 22 s:
 | `meeting_recording_stop` | 30 000 | 35 000 | 3 000 | 43 000 | 43 000 |
 | `meeting_recording_toggle` | 30 000 | 35 000 | 3 000 | 43 000 | 43 000 |
 
+`meeting_recording_pick_path` with a codec: the gate may wait up to 5 s for
+the encoder probe before the save panel (120 s) opens, so the chain can reach
+the bridge-local SLA of 125 s exactly. A panel left open to its limit after
+such a wait can log `command_sla_exceeded`; the result is still delivered,
+inside the relay's 130 s (guarded by the release contract test).
+
 Relay service (`src/command-timeouts.ts`): all four are
 `timeoutClass: "helper_start"`; `concurrencyKey` is `meeting.recording`
 (`meeting.recording.dialog` for the save panel) and all invalidate
@@ -670,10 +676,13 @@ above 30 fps:
   `selectCaptureFormat` (`capture_format_selection.{h,cpp}`) picks, in this
   order: the requested rate at a size not below the requested one; above
   30 fps, **half the rate** at such a size (60 -> 30, 50 -> 25, match
-  `half_rate`); the requested rate at a smaller size; the nearest rate. A
+  `half_rate`); the requested rate at a smaller size; the nearest rate,
+  above 30 fps first among the formats not below the requested size. A
   webcam with 1080p30 and 720p60 therefore stays at 1080p30 in a 60 fps
   program and each camera frame is shown twice (a clean 2:1), while graphics,
-  screen and media run at the full rate. The program and the recording keep
+  screen and media run at the full rate. In a 50 fps program the same webcam
+  has no 25 fps mode; it also stays at 1080p30 (match `nearest`), and its
+  frames are repeated unevenly (30 in a 50 fps grid). The program and the recording keep
   the configured rate; nothing is refused. The helper reports what the
   program camera delivers as `engine.camera_format` (see
   `meeting-status-contract.md`), and the web app shows a hint when that rate
@@ -691,7 +700,16 @@ above 30 fps:
 Unmeasured so far (device test): the keyer at 16.7 ms, each codec at 1080p50
 and 1080p60 from the running engine (a codec that does not hold is lowered in
 `MEETING_RECORDER_CODEC_MAX_FPS`), and the program loop's 16.7 ms grid under
-load.
+load. Two cases belong to that measurement:
+
+- The virtual camera's frame rate while the keyer runs at 60 fps. The preview
+  gate halves the rate the program actually reaches, not the nominal one: a
+  program that only manages a tick every 20 ms delivers 25 fps to the virtual
+  camera instead of 30, and a single late tick costs one longer gap.
+- Screen capture without a camera at 60 fps. The loop holds an absolute
+  frame grid only with a camera or with no source; with screen capture alone
+  it wakes on every new screen frame, so its ticks follow the screen source.
+
 
 ## WebApp
 

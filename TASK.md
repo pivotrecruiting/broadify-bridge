@@ -61,11 +61,16 @@ Local commits only; nothing is pushed, no PR, no bridge/helper instance is start
   - Keyer holds: scaled by the keyer's run rate (camera frames the program takes), not by the program rate alone,
     so a half-rate camera keeps today's hold lengths and 25/30 fps stay bit-identical.
   - `camera_format` is read from the camera backend, not stored in `MeetingState`; Windows reports null.
+  - Review round 1: the nearest tier of `selectCaptureFormat` prefers formats not below the requested size above
+    30 fps (1080p30 + 720p60 webcam at 50 fps stays 1080p30). This goes beyond the contract's tier list; owner to
+    confirm. The release contract test also adds up probe + save panel for `meeting_recording_pick_path`.
   - The raw stream header (`X-Broadify-Frame-Fps`) carries the delivered rate (30 / 25 above 30 fps); the macOS
     extension does not read it.
 - Handoff to human (if any):
   - Device test: keyer at 60 fps, one recording per codec at 1080p50 and 1080p60 from the running engine, program
-    loop grid under load, virtual camera in Teams/Zoom, a half-rate camera.
+    loop grid under load, virtual camera in Teams/Zoom, a half-rate camera, virtual-camera frame rate while the
+    keyer runs at 60 fps (the preview gate halves the rate the program reaches), screen capture without a camera at
+    60 fps (the loop then follows the screen source, not the absolute grid), a 1080p30 + 720p60 webcam at 50 fps.
   - Windows: `frame_pipeline.cpp` changes inside `_WIN32` blocks (two call sites get `holdScale = 1`) are not
     compiled here.
   - Relay and web app packages must land with this one (timeout tables, deck stamp, `recording_probe`).

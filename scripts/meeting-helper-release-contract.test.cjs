@@ -435,6 +435,29 @@ test("recording stop and start chains stay inside the bridge-local SLA and the r
     );
   }
 
+  // meeting_recording_pick_path with a codec waits for the same probe attempt
+  // in front of the save panel. Probe + panel may reach the bridge-local SLA
+  // (that only logs command_sla_exceeded) but must stay below the relay
+  // timeout, or a path picked at the last moment would be lost.
+  const dialog = read("apps/bridge/src/services/meeting/meeting-recording-dialog.ts");
+  const panelMatch = dialog.match(/\{ timeout: ([0-9_]+) \}/);
+  assert.ok(panelMatch, "the save panel timeout must be defined");
+  const panelTimeoutMs = Number(panelMatch[1].replace(/_/g, ""));
+  const pickPathMatch = relayPolicy.match(
+    /sideEffect\("meeting_recording_pick_path", "[a-z_]+", ([0-9_]+), ([0-9_]+),/,
+  );
+  assert.ok(pickPathMatch, "meeting_recording_pick_path relay policy must be defined");
+  const pickPathRelayTimeoutMs = Number(pickPathMatch[1].replace(/_/g, ""));
+  const pickPathLocalSlaMs = Number(pickPathMatch[2].replace(/_/g, ""));
+  assert.ok(
+    probeTimeoutMs + panelTimeoutMs <= pickPathLocalSlaMs,
+    `probe ${probeTimeoutMs} ms + save panel ${panelTimeoutMs} ms must not exceed the bridge-local SLA ${pickPathLocalSlaMs} ms of meeting_recording_pick_path`,
+  );
+  assert.ok(
+    pickPathLocalSlaMs < pickPathRelayTimeoutMs,
+    `bridge-local SLA ${pickPathLocalSlaMs} ms of meeting_recording_pick_path must be below its relay timeout ${pickPathRelayTimeoutMs} ms`,
+  );
+
   // Both platform recorders must use the shared constant (no literal
   // drift) and report the same event name on timeout. On macOS the bounded
   // finishWriting wait lives in finalizeRecorderWriter
