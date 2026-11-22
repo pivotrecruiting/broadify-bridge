@@ -13,6 +13,7 @@ using broadify::helper::extractIntField;
 using broadify::helper::extractObjectField;
 using broadify::helper::extractStringArrayField;
 using broadify::helper::extractStringField;
+using broadify::helper::hasField;
 using broadify::helper::jsonEscape;
 using broadify::helper::nowNs;
 using broadify::helper::okResponse;

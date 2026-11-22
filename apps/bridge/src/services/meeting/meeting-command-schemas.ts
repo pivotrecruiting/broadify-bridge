@@ -1,11 +1,11 @@
 import { z } from "zod";
 
 import {
-  hasRecordingExtension,
-  type RecordingFileExtensionT,
+  RECORDING_FILE_EXTENSIONS,
+  isSafeRecordingPath,
 } from "../shared/recording-paths.js";
 import {
-  MEETING_RECORDING_CODECS,
+  isMeetingRecordingCodec,
   meetingRecordingContainer,
 } from "./meeting-recording-codecs.js";
 
@@ -127,46 +127,39 @@ export const MeetingGraphicsConfigureOutputsSchema = z
   })
   .strict();
 
-// An absolute path (POSIX "/..." or Windows "X:\...") ending in the extension
-// of the recording's container, with no parent-directory traversal or NUL
-// bytes. The native recorder deletes the target before writing, so this guards
-// the relay boundary against a compromised client deleting/clobbering
-// arbitrary files: only the honest meeting_recording_pick_path flow (or an
-// equally well-formed path) is allowed.
-const isSafeRecordingPath = (
-  filePath: string,
-  extension: RecordingFileExtensionT,
-): boolean => {
-  if (filePath.includes("\0") || filePath.includes("..")) {
-    return false;
-  }
-  if (!hasRecordingExtension(filePath, extension)) {
-    return false;
-  }
-  const isPosixAbsolute = filePath.startsWith("/");
-  const isWindowsAbsolute = /^[A-Za-z]:[\\/]/.test(filePath);
-  return isPosixAbsolute || isWindowsAbsolute;
-};
-
-const MeetingRecordingCodecSchema = z.enum(MEETING_RECORDING_CODECS);
+// A codec name, deliberately not the enum of this bridge's contract: a name
+// it does not know (a newer web app) passes the boundary and is refused by
+// the handler with `meeting_recording_codec_unsupported`, like a codec the
+// machine cannot encode, instead of as a generic invalid payload.
+const MeetingRecordingCodecNameSchema = z.string().min(1).max(64);
 
 // `codec` is optional (absent = h264) and the object is strict: the web app
 // sends it only to a bridge that reports `capabilities.meeting.recording`.
-// The extension of file_path must be the container of the requested codec.
+// file_path must pass the shared recording path guard with the container of
+// the requested codec as its extension; with a codec name outside the
+// contract (which the handler refuses before the path is used) any recording
+// extension passes.
 export const MeetingRecordingStartSchema = z
   .object({
     file_path: z.string().min(1),
     mic_device_id: z.string().optional(),
-    codec: MeetingRecordingCodecSchema.optional(),
+    codec: MeetingRecordingCodecNameSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
-    const extension = meetingRecordingContainer(value.codec);
-    if (!isSafeRecordingPath(value.file_path, extension)) {
+    const extensions =
+      value.codec === undefined || isMeetingRecordingCodec(value.codec)
+        ? [meetingRecordingContainer(value.codec)]
+        : RECORDING_FILE_EXTENSIONS;
+    if (
+      !extensions.some((extension) =>
+        isSafeRecordingPath(value.file_path, extension),
+      )
+    ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["file_path"],
-        message: `file_path must be an absolute .${extension} path without parent traversal`,
+        message: `file_path must be an absolute .${extensions.join(" or .")} path without parent traversal`,
       });
     }
   });
@@ -178,16 +171,17 @@ export const MeetingRecordingPickPathSchema = z
   .object({
     default_name: z.string().optional().catch(undefined),
     locale: z.string().optional().catch(undefined),
-    codec: MeetingRecordingCodecSchema.optional(),
+    codec: MeetingRecordingCodecNameSchema.optional(),
   })
   .strip();
 
-// One-key start/stop. A Stream Deck key sends no payload: the recording is
-// then h264. mic_device_id stays lenient like before.
+// One-key start/stop. The payload only matters when the toggle starts a
+// recording (the handler does not read it for a stop); without a codec the
+// recording is h264. mic_device_id stays lenient like before.
 export const MeetingRecordingToggleSchema = z
   .object({
     mic_device_id: z.string().optional().catch(undefined),
-    codec: MeetingRecordingCodecSchema.optional(),
+    codec: MeetingRecordingCodecNameSchema.optional(),
   })
   .strip();
 

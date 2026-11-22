@@ -131,9 +131,9 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   meeting_recording_start: sideEffect("meeting_recording_start", "helper_start", 35_000, 30_000, "meeting.recording", ["meeting.recording"], "after_state_check"),
   // A stop finalizes the file: the helper bounds that at 15 s
   // (kRecorderFinalizeTimeoutMs) inside a 20 s recording.stop RPC
-  // (MEETING_HELPER_RPC_TIMEOUTS_MS). The fast class (12 s / 8 s) reported a
-  // timeout while the helper was still finalizing; same budget as
-  // pgm_recording_stop.
+  // (MEETING_HELPER_RPC_TIMEOUTS_MS), which the fast class (12 s / 8 s) did
+  // not cover; same budget as pgm_recording_stop. The relay service and the
+  // web app enforce the timeout from their own tables, which must follow.
   meeting_recording_stop: sideEffect("meeting_recording_stop", "helper_start", 35_000, 30_000, "meeting.recording", ["meeting.recording"], "after_state_check"),
   meeting_recording_toggle: sideEffect("meeting_recording_toggle", "helper_start", 35_000, 30_000, "meeting.recording", ["meeting.recording"], "after_state_check"),
   meeting_recording_status: readOnly("meeting_recording_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.recording"]),

@@ -359,6 +359,15 @@ async function runMeetingRpc<T>(operation: () => Promise<T>): Promise<MeetingCom
  */
 const RECORDING_DISK_SPACE_LOW_CODE = "recording_disk_space_low";
 
+/**
+ * Token the recorders reported for a full disk before the check became
+ * proportional to the codec's data rate. Web apps released before
+ * `recording_disk_space_low` map only this token, and they also look for it
+ * in the error message: a low-disk refusal therefore keeps it as its message,
+ * so those versions still show their disk message instead of a generic error.
+ */
+const LEGACY_RECORDING_DISK_FULL_TOKEN = "disk_full";
+
 const RECORDING_ERROR_TOKENS = new Set([
   "microphone_permission_denied",
   "microphone_not_found",
@@ -411,6 +420,7 @@ function readRecordingDiskSpaceLow(
 /**
  * Result of a recording.start RPC for the relay: a known failure token
  * becomes the errorCode, and `recording_disk_space_low` additionally carries
+ * the legacy `disk_full` token as its message and
  * `data { required_bytes, free_bytes }`. The numbers come from the helper's
  * recording status (best effort: without them the errorCode stands alone).
  */
@@ -425,32 +435,43 @@ async function finishRecordingStart(
   const diskSpace = readRecordingDiskSpaceLow(
     await client.recordingStatus().catch(() => null),
   );
-  return diskSpace ? { ...result, data: diskSpace } : result;
+  return {
+    ...result,
+    error: LEGACY_RECORDING_DISK_FULL_TOKEN,
+    ...(diskSpace ? { data: diskSpace } : {}),
+  };
 }
 
+type RecordingCodecGateT =
+  | { refusal: null; codec: MeetingRecordingCodecT | undefined }
+  | { refusal: MeetingCommandResultT };
+
 /**
- * Refusal for a recording start that names a codec this machine does not
- * advertise (`capabilities.meeting.recording`), or null when the start may
- * proceed. A start without a codec is the h264 recording older clients
- * always got and is not gated here; the helper holds every codec to a
- * hardware encoder itself.
+ * Checks the codec name of a recording request against what this machine
+ * advertises (`capabilities.meeting.recording`): the codec to record with,
+ * or the refusal for a name that is not advertised - one this bridge does
+ * not know included. A request without a codec is the h264 recording older
+ * clients always got and is not gated here; the helper holds every codec to
+ * a hardware encoder itself.
  */
-function refuseUnadvertisedRecordingCodec(
-  codec: MeetingRecordingCodecT | undefined,
-): MeetingCommandResultT | null {
+function gateRequestedRecordingCodec(
+  codec: string | undefined,
+): RecordingCodecGateT {
   if (codec === undefined) {
-    return null;
+    return { refusal: null, codec };
   }
   const capabilities = getMeetingCapabilities({
     recordingProbe: meetingHelperManager.getRecordingProbe(),
   });
   if (isAdvertisedRecordingCodec(capabilities, codec)) {
-    return null;
+    return { refusal: null, codec };
   }
   return {
-    success: false,
-    error: `The recording codec ${codec} is not supported on this machine.`,
-    errorCode: MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
+    refusal: {
+      success: false,
+      error: `The recording codec ${codec} is not supported on this machine.`,
+      errorCode: MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
+    },
   };
 }
 
@@ -882,16 +903,21 @@ export async function handleMeetingCommand(
       // Bridge-local: the file is written on this machine by the helper, so the
       // save location is chosen here via the native macOS panel, not in the
       // browser. Returns { cancelled: true } when the user dismisses the panel.
-      // The path gets the extension of the codec's container (default h264).
+      // The path gets the extension of the codec's container (default h264);
+      // a codec the start would refuse is refused here, before the panel opens.
       const options = parseRelayPayload(
         MeetingRecordingPickPathSchema,
         payload ?? {},
         "Invalid payload for meeting_recording_pick_path",
       );
+      const gate = gateRequestedRecordingCodec(options.codec);
+      if (gate.refusal) {
+        return gate.refusal;
+      }
       const filePath = await pickRecordingSavePath(
         options.default_name ?? "meeting.mp4",
         options.locale ?? "de",
-        meetingRecordingContainer(options.codec),
+        meetingRecordingContainer(gate.codec),
       );
       if (filePath === null) {
         return { success: true, data: { cancelled: true } };
@@ -905,9 +931,9 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_recording_start",
       );
-      const refusal = refuseUnadvertisedRecordingCodec(options.codec);
-      if (refusal) {
-        return refusal;
+      const gate = gateRequestedRecordingCodec(options.codec);
+      if (gate.refusal) {
+        return gate.refusal;
       }
       const client = requireClient();
       const result = await runMeetingRpc(() => client.recordingStart(options));
@@ -932,14 +958,10 @@ export async function handleMeetingCommand(
       // is no save dialog: the file goes to the shared default recordings
       // folder (~/Movies/Broadify or ~/Videos/Broadify) with a timestamped
       // Broadify-Meeting-<stamp>.<ext> name - the same place the save-panel
-      // fallback and PGM recordings use. The optional codec applies to a
-      // start only; without it (a Stream Deck key sends no payload) the
-      // recording is h264.
-      const options = parseRelayPayload(
-        MeetingRecordingToggleSchema,
-        payload ?? {},
-        "Invalid payload for meeting_recording_toggle",
-      );
+      // fallback and PGM recordings use. The payload (microphone, codec)
+      // belongs to a start and is read only then: whatever a key binding
+      // carries, it can always stop a running recording. Without a codec
+      // (the REC key as the web app configures it) the recording is h264.
       const client = requireClient();
       const status = await runMeetingRpc(() => client.recordingStatus());
       const active = isRecordingActive(status.data);
@@ -950,18 +972,23 @@ export async function handleMeetingCommand(
         }
         return stopped;
       }
-      const refusal = refuseUnadvertisedRecordingCodec(options.codec);
-      if (refusal) {
-        return refusal;
+      const options = parseRelayPayload(
+        MeetingRecordingToggleSchema,
+        payload ?? {},
+        "Invalid payload for meeting_recording_toggle",
+      );
+      const gate = gateRequestedRecordingCodec(options.codec);
+      if (gate.refusal) {
+        return gate.refusal;
       }
       const filePath = buildDefaultRecordingPath("meeting", new Date(), {
-        extension: meetingRecordingContainer(options.codec),
+        extension: meetingRecordingContainer(gate.codec),
       });
       const started = await runMeetingRpc(() =>
         client.recordingStart({
           file_path: filePath,
           mic_device_id: options.mic_device_id ?? "",
-          ...(options.codec ? { codec: options.codec } : {}),
+          ...(gate.codec ? { codec: gate.codec } : {}),
         }),
       );
       if (started.success) {

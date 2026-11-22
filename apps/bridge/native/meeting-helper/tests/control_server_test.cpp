@@ -425,14 +425,19 @@ int main() {
   // recording.start parses the codec of the recording format (ADR-0010). A
   // name this helper does not know is refused with the stable token before
   // the recorder is touched; the bridge promotes it to the errorCode.
-  const std::string unknownCodec =
-      rpc("{\"id\":\"4r1\",\"method\":\"recording.start\","
-          "\"params\":{\"file_path\":\"/tmp/a.mp4\",\"codec\":\"av1\"}}");
-  if (!contains(unknownCodec, "\"code\":\"recording_start_failed\"") ||
-      !contains(unknownCodec,
-                "\"message\":\"meeting_recording_codec_unsupported\"")) {
-    stopServer();
-    fail("recording.start with an unknown codec was not refused with the codec token");
+  // The same holds for a codec that is present but not a name (empty, not a
+  // string): it must never fall back to H.264.
+  for (const char *codecValue : {"\"av1\"", "\"\"", "5", "null"}) {
+    const std::string refused =
+        rpc(std::string("{\"id\":\"4r1\",\"method\":\"recording.start\","
+                        "\"params\":{\"file_path\":\"/tmp/a.mp4\",\"codec\":") +
+            codecValue + "}}");
+    if (!contains(refused, "\"code\":\"recording_start_failed\"") ||
+        !contains(refused,
+                  "\"message\":\"meeting_recording_codec_unsupported\"")) {
+      stopServer();
+      fail("recording.start with an unknown codec was not refused with the codec token");
+    }
   }
   // A known codec and an absent one (= h264) both reach the recorder; the
   // stub recorder of this test refuses every start without a token.

@@ -5,6 +5,7 @@ import {
   DEFAULT_MEETING_RECORDING_CODEC,
   MEETING_RECORDING_CODECS,
   MEETING_RECORDING_CODEC_FORMATS,
+  isMeetingRecordingCodec,
   meetingRecordingContainer,
 } from "./meeting-recording-codecs.js";
 import { RECORDING_FILE_EXTENSIONS } from "../shared/recording-paths.js";
@@ -57,6 +58,15 @@ describe("meeting-recording-codecs", () => {
     expect(meetingRecordingContainer()).toBe("mp4");
     expect(meetingRecordingContainer("hevc")).toBe("mp4");
     expect(meetingRecordingContainer("prores_422_hq")).toBe("mov");
+  });
+
+  it("tells the codec names of the contract from any other string", () => {
+    for (const codec of MEETING_RECORDING_CODECS) {
+      expect(isMeetingRecordingCodec(codec)).toBe(true);
+    }
+    for (const name of ["av1", "H264", "", "toString", "constructor"]) {
+      expect(isMeetingRecordingCodec(name)).toBe(false);
+    }
   });
 
   it("uses only containers the recording paths know as file extensions", () => {

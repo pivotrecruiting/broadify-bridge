@@ -3,6 +3,7 @@ import {
   DEFAULT_RECORDINGS_SUBDIR,
   buildDefaultRecordingPath,
   hasRecordingExtension,
+  isSafeRecordingPath,
   withRecordingExtension,
   formatRecordingTimestamp,
   resolveDefaultRecordingsDir,
@@ -157,6 +158,21 @@ describe("recording-paths", () => {
       expect(hasRecordingExtension("/a/take.mp4", "mov")).toBe(false);
       expect(hasRecordingExtension("/a/take.mp4.txt", "mp4")).toBe(false);
       expect(hasRecordingExtension("/a/takemp4", "mp4")).toBe(false);
+    });
+
+    it("accepts only an absolute path with the extension as a recording target", () => {
+      expect(isSafeRecordingPath("/Users/x/Movies/rec.mp4", "mp4")).toBe(true);
+      expect(isSafeRecordingPath("C:\\rec\\a.MOV", "mov")).toBe(true);
+      expect(isSafeRecordingPath("D:/rec/a.mp4", "mp4")).toBe(true);
+      for (const filePath of [
+        "/Users/x/Movies/rec.mov", // another container
+        "relative.mp4",
+        "/Users/x/../../etc/hosts.mp4",
+        "/Users/x/rec.mp4\0",
+        "/Users/x/.zshrc",
+      ]) {
+        expect(isSafeRecordingPath(filePath, "mp4")).toBe(false);
+      }
     });
 
     it("keeps a path that already has the extension", () => {

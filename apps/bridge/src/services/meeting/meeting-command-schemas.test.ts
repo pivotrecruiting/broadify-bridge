@@ -224,13 +224,31 @@ describe("MeetingRecordingStartSchema", () => {
     }
   });
 
-  it("rejects an unknown codec and unknown keys", () => {
-    expect(
-      MeetingRecordingStartSchema.safeParse({
-        file_path: "/Users/x/rec.mp4",
-        codec: "av1",
-      }).success,
-    ).toBe(false);
+  it("lets a codec name outside the contract through for the handler to refuse", () => {
+    // The handler answers meeting_recording_codec_unsupported; the path still
+    // has to be a safe recording path of some container.
+    for (const filePath of ["/Users/x/rec.mp4", "/Users/x/rec.mov"]) {
+      expect(
+        MeetingRecordingStartSchema.parse({ file_path: filePath, codec: "av1" }),
+      ).toEqual({ file_path: filePath, codec: "av1" });
+    }
+    for (const filePath of ["/Users/x/.zshrc", "/Users/x/../rec.mp4", "rec.mov"]) {
+      expect(
+        MeetingRecordingStartSchema.safeParse({ file_path: filePath, codec: "av1" })
+          .success,
+      ).toBe(false);
+    }
+  });
+
+  it("rejects a codec that is not a name and unknown keys", () => {
+    for (const codec of [5, "", null, "x".repeat(65)]) {
+      expect(
+        MeetingRecordingStartSchema.safeParse({
+          file_path: "/Users/x/rec.mp4",
+          codec,
+        }).success,
+      ).toBe(false);
+    }
     expect(
       MeetingRecordingStartSchema.safeParse({
         file_path: "/Users/x/rec.mp4",
@@ -267,8 +285,10 @@ describe("MeetingRecordingPickPathSchema / MeetingRecordingToggleSchema", () => 
     expect(MeetingRecordingToggleSchema.parse({ mic_device_id: 5 })).toEqual({});
   });
 
-  it("reject an unknown codec", () => {
-    expect(MeetingRecordingPickPathSchema.safeParse({ codec: "av1" }).success).toBe(false);
-    expect(MeetingRecordingToggleSchema.safeParse({ codec: "av1" }).success).toBe(false);
+  it("let a codec name outside the contract through, reject a non-name", () => {
+    expect(MeetingRecordingPickPathSchema.parse({ codec: "av1" })).toEqual({ codec: "av1" });
+    expect(MeetingRecordingToggleSchema.parse({ codec: "av1" })).toEqual({ codec: "av1" });
+    expect(MeetingRecordingPickPathSchema.safeParse({ codec: 5 }).success).toBe(false);
+    expect(MeetingRecordingToggleSchema.safeParse({ codec: "" }).success).toBe(false);
   });
 });

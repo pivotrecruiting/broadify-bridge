@@ -35,6 +35,29 @@ export function hasRecordingExtension(
 }
 
 /**
+ * Guard of the relay boundary for a recording target: an absolute path (POSIX
+ * "/..." or Windows "X:\...") ending in the given recording extension, with
+ * no parent-directory traversal or NUL bytes. The native recorders delete the
+ * target before writing, so this keeps a compromised client from deleting or
+ * clobbering arbitrary files: only the honest pick_path flow (or an equally
+ * well-formed path) is allowed.
+ */
+export function isSafeRecordingPath(
+  filePath: string,
+  extension: RecordingFileExtensionT,
+): boolean {
+  if (filePath.includes("\0") || filePath.includes("..")) {
+    return false;
+  }
+  if (!hasRecordingExtension(filePath, extension)) {
+    return false;
+  }
+  const isPosixAbsolute = filePath.startsWith("/");
+  const isWindowsAbsolute = /^[A-Za-z]:[\\/]/.test(filePath);
+  return isPosixAbsolute || isWindowsAbsolute;
+}
+
+/**
  * The path with the given recording extension: unchanged when it already has
  * it, otherwise with another recording extension replaced or none appended
  * to (`take.mp4` -> `take.mov`, `take` -> `take.mov`).

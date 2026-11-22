@@ -4,10 +4,7 @@ import type {
   MeetingRecordingCodecT,
 } from "@broadify/protocol";
 
-import {
-  MEETING_RECORDING_CODECS,
-  meetingRecordingContainer,
-} from "./meeting-recording-codecs.js";
+import { meetingRecordingContainer } from "./meeting-recording-codecs.js";
 import type { MeetingRecordingProbeT } from "./meeting-recording-probe.js";
 
 /** Engine geometry used when `meeting_engine_start` omits a field. */
@@ -48,15 +45,17 @@ export const MEETING_PROGRAM_FORMAT_LIMITS: MeetingProgramFormatLimitsT = {
  * Codecs the meeting recorder of each platform can write (a platform without
  * an entry has no recorder). The single list to extend when a recorder
  * learns a codec: a codec is advertised only if it is listed here AND the
- * machine has a hardware encoder for it. macOS writes every codec of the
- * contract (AVAssetWriter); Windows writes H.264 only, and never ProRes -
- * there is no licensed encoder for it. The container follows from the codec
+ * machine has a hardware encoder for it. Each platform spells its codecs
+ * out, so a codec added to the contract is advertised nowhere until its
+ * writer exists. macOS writes H.264, HEVC and ProRes 422 LT / 422 / HQ
+ * (AVAssetWriter); Windows writes H.264 only, and never ProRes - there is no
+ * licensed encoder for it. The container follows from the codec
  * (`MEETING_RECORDING_CODEC_FORMATS`).
  */
 export const MEETING_RECORDER_SUPPORTED_CODECS: Readonly<
   Partial<Record<NodeJS.Platform, readonly MeetingRecordingCodecT[]>>
 > = {
-  darwin: MEETING_RECORDING_CODECS,
+  darwin: ["h264", "hevc", "prores_422_lt", "prores_422", "prores_422_hq"],
   win32: ["h264"],
 };
 
@@ -131,13 +130,14 @@ export function getMeetingCapabilities(
 
 /**
  * Whether a recording may be started with an explicitly requested codec: only
- * with one the capability block advertises. Without the block (probe unknown)
- * no codec may be requested - the web app sends one only when it is reported.
+ * with one the capability block advertises, which excludes every name outside
+ * the contract. Without the block (probe unknown) no codec may be requested -
+ * the web app sends one only when it is reported.
  */
 export function isAdvertisedRecordingCodec(
   capabilities: MeetingCapabilitiesT,
-  codec: MeetingRecordingCodecT,
-): boolean {
+  codec: string,
+): codec is MeetingRecordingCodecT {
   return (
     capabilities.recording?.codecs.some((entry) => entry.codec === codec) ??
     false

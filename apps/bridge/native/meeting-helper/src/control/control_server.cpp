@@ -789,12 +789,14 @@ std::string handleRpc(const std::string &line,
                            "recording.start requires file_path.");
     }
     // Absent codec = H.264, the only codec before the recording format
-    // became selectable (ADR-0010); a name this helper does not know is
-    // refused like a codec the machine cannot encode.
-    const std::string codecName = extractStringField(line, "codec");
+    // became selectable (ADR-0010). A codec that is present must be a name
+    // this helper knows: anything else (unknown name, empty string, not a
+    // string) is refused like a codec the machine cannot encode, never
+    // recorded as H.264.
     const std::optional<RecordingCodec> codec =
-        codecName.empty() ? RecordingCodec::H264
-                          : recordingCodecFromName(codecName);
+        hasField(line, "codec")
+            ? recordingCodecFromName(extractStringField(line, "codec"))
+            : RecordingCodec::H264;
     if (!codec) {
       return errorResponse(id, "recording_start_failed",
                            kRecordingCodecUnsupportedError);

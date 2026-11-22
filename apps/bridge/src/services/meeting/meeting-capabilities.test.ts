@@ -147,6 +147,8 @@ describe("meeting-capabilities", () => {
       });
       expect(isAdvertisedRecordingCodec(windows, "h264")).toBe(true);
       expect(isAdvertisedRecordingCodec(windows, "hevc")).toBe(false);
+      // A name outside the contract is never advertised.
+      expect(isAdvertisedRecordingCodec(mac, "av1")).toBe(false);
       // Probe unknown: nothing is advertised, so nothing may be requested.
       expect(
         isAdvertisedRecordingCodec(getMeetingCapabilities({ platform: "darwin" }), "h264"),

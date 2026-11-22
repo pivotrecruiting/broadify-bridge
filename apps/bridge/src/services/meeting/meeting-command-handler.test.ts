@@ -1506,16 +1506,6 @@ describe("meeting-command-handler", () => {
       });
     });
 
-    it("picks a path with the extension of the requested codec's container", async () => {
-      mockPickRecordingSavePath.mockResolvedValue("/Users/x/Movies/rec.mov");
-
-      await handleMeetingCommand("meeting_recording_pick_path", {
-        codec: "prores_422",
-      });
-
-      expect(mockPickRecordingSavePath).toHaveBeenCalledWith("meeting.mp4", "de", "mov");
-    });
-
     describe("recording codec", () => {
       const RECORDING_CAPABILITY = {
         program_portrait: true,
@@ -1529,6 +1519,17 @@ describe("meeting-command-handler", () => {
         },
       };
       const PROBE = { backend: "videotoolbox", encoders: [] };
+
+      it("picks a path with the extension of an advertised codec's container", async () => {
+        mockGetMeetingCapabilities.mockReturnValue(RECORDING_CAPABILITY);
+        mockPickRecordingSavePath.mockResolvedValue("/Users/x/Movies/rec.mov");
+
+        await handleMeetingCommand("meeting_recording_pick_path", {
+          codec: "prores_422",
+        });
+
+        expect(mockPickRecordingSavePath).toHaveBeenCalledWith("meeting.mp4", "de", "mov");
+      });
 
       it("starts with an advertised codec and hands it to the helper", async () => {
         mockGetMeetingCapabilities.mockReturnValue(RECORDING_CAPABILITY);
@@ -1554,10 +1555,12 @@ describe("meeting-command-handler", () => {
       it.each([
         ["a codec this machine does not advertise", RECORDING_CAPABILITY, "prores_422_hq", "mov"],
         ["any codec while the capability is unknown", { program_portrait: true }, "h264", "mp4"],
+        ["a codec name this bridge does not know", RECORDING_CAPABILITY, "av1", "mp4"],
       ])("refuses %s before the helper is asked", async (_label, capabilities, codec, extension) => {
         mockGetMeetingCapabilities.mockReturnValue(capabilities);
 
         for (const [command, payload] of [
+          ["meeting_recording_pick_path", { codec }],
           ["meeting_recording_start", { file_path: `/Users/x/rec.${extension}`, codec }],
           ["meeting_recording_toggle", { codec }],
         ] as const) {
@@ -1569,6 +1572,7 @@ describe("meeting-command-handler", () => {
             errorCode: "meeting_recording_codec_unsupported",
           });
         }
+        expect(mockPickRecordingSavePath).not.toHaveBeenCalled();
         expect(mockClient.recordingStart).not.toHaveBeenCalled();
         expect(mockNotifyRecordingChanged).not.toHaveBeenCalled();
       });
@@ -1620,25 +1624,28 @@ describe("meeting-command-handler", () => {
         expect(options.codec).toBe("prores_422");
       });
 
-      it("REC toggle stops an active recording whatever codec it names", async () => {
-        // The codec applies to a start only: a stop must never be refused.
+      it.each([
+        ["an unadvertised codec", { codec: "prores_422_hq" }],
+        ["an unknown codec name", { codec: "av1" }],
+        ["a payload that is invalid for a start", { codec: 5 }],
+      ])("REC toggle stops an active recording whatever it carries: %s", async (_label, payload) => {
+        // The payload belongs to a start only: a stop must never be refused.
         mockClient.recordingStatus.mockResolvedValue({ recording: { active: true } });
         mockClient.recordingStop.mockResolvedValue({ recording: { active: false } });
 
-        const result = await handleMeetingCommand("meeting_recording_toggle", {
-          codec: "prores_422_hq",
-        });
+        const result = await handleMeetingCommand("meeting_recording_toggle", payload);
 
         expect(result.success).toBe(true);
         expect(mockClient.recordingStop).toHaveBeenCalled();
       });
 
-      it("rejects an unknown codec name as an invalid payload", async () => {
+      it("rejects a codec that is not a name as an invalid payload of a start", async () => {
+        mockClient.recordingStatus.mockResolvedValue({ recording: { active: false } });
         await expect(
-          handleMeetingCommand("meeting_recording_toggle", { codec: "av1" }),
+          handleMeetingCommand("meeting_recording_toggle", { codec: 5 }),
         ).rejects.toThrow("Invalid payload for meeting_recording_toggle");
         await expect(
-          handleMeetingCommand("meeting_recording_pick_path", { codec: "av1" }),
+          handleMeetingCommand("meeting_recording_pick_path", { codec: 5 }),
         ).rejects.toThrow("Invalid payload for meeting_recording_pick_path");
       });
     });
@@ -1667,9 +1674,11 @@ describe("meeting-command-handler", () => {
           file_path: "/Users/x/Movies/rec.mp4",
         });
 
+        // The message is the legacy token: web apps released before
+        // recording_disk_space_low map only `disk_full`, also from the message.
         expect(result).toEqual({
           success: false,
-          error: "recording_disk_space_low",
+          error: "disk_full",
           errorCode: "recording_disk_space_low",
           data: { required_bytes: 816_480_000, free_bytes: 1_000 },
         });
@@ -1685,7 +1694,7 @@ describe("meeting-command-handler", () => {
 
         expect(result).toEqual({
           success: false,
-          error: "recording_disk_space_low",
+          error: "disk_full",
           errorCode: "recording_disk_space_low",
         });
       });

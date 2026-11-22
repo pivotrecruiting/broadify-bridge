@@ -483,6 +483,9 @@ export type MeetingCapabilitiesT = {
      * with its container and the largest program it records. An empty list means
      * no hardware encoder was found. Absent on older bridges and when the
      * encoder probe failed: the web app then offers no recording format choice.
+     * A `codec` sent to `meeting_recording_pick_path`, `meeting_recording_start`
+     * or `meeting_recording_toggle` that is not listed here is refused with
+     * `meeting_recording_codec_unsupported`.
      */
     recording?: {
         codecs: Array<{

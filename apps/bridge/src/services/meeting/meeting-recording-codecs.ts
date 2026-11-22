@@ -33,6 +33,13 @@ export const MEETING_RECORDING_CODECS = Object.keys(
   MEETING_RECORDING_CODEC_FORMATS,
 ) as [MeetingRecordingCodecT, ...MeetingRecordingCodecT[]];
 
+/** Whether the name is a codec of the recording contract. */
+export function isMeetingRecordingCodec(
+  name: string,
+): name is MeetingRecordingCodecT {
+  return Object.hasOwn(MEETING_RECORDING_CODEC_FORMATS, name);
+}
+
 /**
  * Codec of a recording started without one: what the recorder wrote before
  * the format became selectable, and what older web apps and a Stream Deck key

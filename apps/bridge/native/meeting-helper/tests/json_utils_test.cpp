@@ -9,6 +9,7 @@ using broadify::meeting::extractBoolField;
 using broadify::meeting::extractDoubleField;
 using broadify::meeting::extractIntField;
 using broadify::meeting::extractStringField;
+using broadify::meeting::hasField;
 
 namespace {
 
@@ -112,6 +113,17 @@ int main() {
                  "absent field");
     ok &= expect(extractStringArrayField(R"({"k":"a"})", "k").empty(),
                  "non-array value");
+  }
+
+  // A key is present whatever its value; a name that is only a value is not.
+  {
+    ok &= expect(hasField(R"({"codec":"hevc"})", "codec"), "string value");
+    ok &= expect(hasField(R"({"codec":5})", "codec"), "number value");
+    ok &= expect(hasField(R"({"codec":null})", "codec"), "null value");
+    ok &= expect(hasField(R"({"codec":""})", "codec"), "empty string value");
+    ok &= expect(!hasField(R"({"file_path":"/a.mp4"})", "codec"), "absent key");
+    ok &= expect(!hasField(R"({"note":"codec"})", "codec"),
+                 "name only as a string value");
   }
 
   return ok ? 0 : 1;
