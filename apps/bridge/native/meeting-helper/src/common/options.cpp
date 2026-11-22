@@ -146,6 +146,8 @@ Options parseOptions(const std::vector<std::string> &args) {
       options.run = true;
     } else if (arg == "--keyer-self-test") {
       options.keyerSelfTest = true;
+    } else if (arg == "--probe-recording") {
+      options.probeRecording = true;
     } else if (arg == "--vcam-shm-selftest") {
       options.vcamShmSelfTest = true;
     } else if (arg == "--vcam-shm-reader-selftest") {

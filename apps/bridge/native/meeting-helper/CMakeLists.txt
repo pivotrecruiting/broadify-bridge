@@ -122,6 +122,7 @@ set(MEETING_HELPER_SOURCES
   src/preview/vcam_shm_layout.cpp
   src/preview/vcam_shm_ring_win.cpp
   src/recorder/recorder_frame_mailbox.cpp
+  src/recorder/recording_probe.cpp
   src/util/frame_fit.cpp
   src/util/sha256.cpp
   src/util/pixel_swizzle.cpp
@@ -148,6 +149,7 @@ if(APPLE)
     src/recorder/meeting_recorder.mm
     src/recorder/recorder_video_worker.mm
     src/recorder/recorder_writer_factory.mm
+    src/recorder/recording_probe_videotoolbox.mm
     src/macos/macos_app.mm
   )
   set_source_files_properties(src/keyer/coreml_keyer.mm PROPERTIES
@@ -188,13 +190,18 @@ elseif(WIN32)
     src/capture/camera_mediafoundation.cpp
     src/capture/screen_capture_wgc.cpp
     src/recorder/meeting_recorder_mediafoundation.cpp
+    src/recorder/recording_probe_mediafoundation.cpp
     src/compose/d3d11_compositor.cpp
   )
   set_source_files_properties(src/capture/screen_capture_wgc.cpp PROPERTIES
     COMPILE_OPTIONS "/permissive-;/bigobj"
   )
 else()
-  list(APPEND MEETING_HELPER_SOURCES src/capture/camera_stub.cpp src/recorder/meeting_recorder_stub.cpp)
+  list(APPEND MEETING_HELPER_SOURCES
+    src/capture/camera_stub.cpp
+    src/recorder/meeting_recorder_stub.cpp
+    src/recorder/recording_probe_stub.cpp
+  )
 endif()
 
 # Shared helper code (RPC transport, ...) - see apps/bridge/native/helper-common.
@@ -348,6 +355,7 @@ if(APPLE)
     "-framework Metal"
     "-framework MetalPerformanceShaders"
     "-framework ScreenCaptureKit"
+    "-framework VideoToolbox"
     "-framework Vision"
   )
   set_target_properties(meeting-helper PROPERTIES
@@ -375,6 +383,11 @@ if(MEETING_HELPER_BUILD_TESTS)
   )
   add_executable(recorder_encode_policy_test
     tests/recorder_encode_policy_test.cpp
+  )
+  # JSON line of `meeting-helper --probe-recording` (platform-neutral part).
+  add_executable(recording_probe_test
+    tests/recording_probe_test.cpp
+    src/recorder/recording_probe.cpp
   )
   add_executable(framebus_reader_log_gate_test
     tests/framebus_reader_log_gate_test.cpp
@@ -606,6 +619,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     guided_mask_refine_test
     guided_work_size_test
     recorder_encode_policy_test
+    recording_probe_test
     framebus_reader_log_gate_test
     staging_readback_ring_test
     d3d_adapter_select_test

@@ -48,6 +48,13 @@ int main() {
       parseOptions(std::vector<std::string>{"meeting-helper", "--models-dir"});
   CHECK(truncated.modelsDir.empty());
   CHECK(!truncated.run);
+  CHECK(!truncated.probeRecording);
+
+  // The recorder capability probe is its own mode, independent of --run.
+  const Options probe = parseOptions(
+      std::vector<std::string>{"meeting-helper", "--probe-recording"});
+  CHECK(probe.probeRecording);
+  CHECK(!probe.run);
 
   // Defaults survive an argument list without flags.
   const Options defaults = parseOptions(std::vector<std::string>{"meeting-helper"});

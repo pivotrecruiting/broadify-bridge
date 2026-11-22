@@ -11,6 +11,9 @@ struct Options {
   // Standalone keyer benchmark (--keyer-self-test): time MODNet inference per
   // input-size mode and exit, instead of running the meeting pipeline.
   bool keyerSelfTest = false;
+  // Recorder capability probe (--probe-recording): print the hardware video
+  // encoders of this machine as one JSON line and exit (recorder/recording_probe.h).
+  bool probeRecording = false;
   bool vcamShmSelfTest = false;
   bool vcamShmReaderSelfTest = false;
   bool vcamShmSelfTestLocalNamespace = false;
