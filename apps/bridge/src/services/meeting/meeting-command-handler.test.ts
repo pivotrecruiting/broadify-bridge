@@ -6,7 +6,10 @@ const mockStop = jest.fn();
 const mockGetFullStatus = jest.fn();
 const mockGetProgramFormat = jest.fn();
 const mockGetPendingStart = jest.fn();
-const mockGetMeetingCapabilities = jest.fn(() => ({ program_portrait: true }));
+const mockGetMeetingCapabilities = jest.fn(
+  (): Record<string, unknown> => ({ program_portrait: true }),
+);
+const mockGetRecordingProbe = jest.fn();
 const mockNotifyRecordingChanged = jest.fn();
 const mockRequestStatusPublish = jest.fn();
 const mockMeetingBackGraphicsConfigureOutputs = jest.fn();
@@ -36,6 +39,7 @@ jest.mock("./meeting-helper-manager.js", () => ({
     getFullStatus: (...args: unknown[]) => mockGetFullStatus(...args),
     getProgramFormat: (...args: unknown[]) => mockGetProgramFormat(...args),
     getPendingStart: (...args: unknown[]) => mockGetPendingStart(...args),
+    getRecordingProbe: (...args: unknown[]) => mockGetRecordingProbe(...args),
     noteCameraCall: () => undefined,
     noteCameraStopped: () => undefined,
     noteVirtualCameraStarted: () => undefined,
@@ -1495,10 +1499,208 @@ describe("meeting-command-handler", () => {
         locale: "en",
       });
 
-      expect(mockPickRecordingSavePath).toHaveBeenCalledWith("rec.mp4", "en");
+      expect(mockPickRecordingSavePath).toHaveBeenCalledWith("rec.mp4", "en", "mp4");
       expect(result).toEqual({
         success: true,
         data: { cancelled: false, file_path: "/Users/x/Movies/rec.mp4" },
+      });
+    });
+
+    it("picks a path with the extension of the requested codec's container", async () => {
+      mockPickRecordingSavePath.mockResolvedValue("/Users/x/Movies/rec.mov");
+
+      await handleMeetingCommand("meeting_recording_pick_path", {
+        codec: "prores_422",
+      });
+
+      expect(mockPickRecordingSavePath).toHaveBeenCalledWith("meeting.mp4", "de", "mov");
+    });
+
+    describe("recording codec", () => {
+      const RECORDING_CAPABILITY = {
+        program_portrait: true,
+        recording: {
+          codecs: [
+            { codec: "h264", container: "mp4", max_height: 1080, max_fps: 30 },
+            { codec: "hevc", container: "mp4", max_height: 1080, max_fps: 30 },
+            { codec: "prores_422", container: "mov", max_height: 1080, max_fps: 30 },
+          ],
+          upload_copy: false,
+        },
+      };
+      const PROBE = { backend: "videotoolbox", encoders: [] };
+
+      it("starts with an advertised codec and hands it to the helper", async () => {
+        mockGetMeetingCapabilities.mockReturnValue(RECORDING_CAPABILITY);
+        mockGetRecordingProbe.mockReturnValue(PROBE);
+        mockClient.recordingStart.mockResolvedValue({ recording: { active: true } });
+
+        const result = await handleMeetingCommand("meeting_recording_start", {
+          file_path: "/Users/x/Movies/rec.mov",
+          codec: "prores_422",
+        });
+
+        expect(result.success).toBe(true);
+        // The capability is derived from the cached probe of the manager.
+        expect(mockGetMeetingCapabilities).toHaveBeenCalledWith({
+          recordingProbe: PROBE,
+        });
+        expect(mockClient.recordingStart).toHaveBeenCalledWith({
+          file_path: "/Users/x/Movies/rec.mov",
+          codec: "prores_422",
+        });
+      });
+
+      it.each([
+        ["a codec this machine does not advertise", RECORDING_CAPABILITY, "prores_422_hq", "mov"],
+        ["any codec while the capability is unknown", { program_portrait: true }, "h264", "mp4"],
+      ])("refuses %s before the helper is asked", async (_label, capabilities, codec, extension) => {
+        mockGetMeetingCapabilities.mockReturnValue(capabilities);
+
+        for (const [command, payload] of [
+          ["meeting_recording_start", { file_path: `/Users/x/rec.${extension}`, codec }],
+          ["meeting_recording_toggle", { codec }],
+        ] as const) {
+          mockClient.recordingStatus.mockResolvedValue({ recording: { active: false } });
+          const result = await handleMeetingCommand(command, payload);
+          expect(result).toEqual({
+            success: false,
+            error: `The recording codec ${codec} is not supported on this machine.`,
+            errorCode: "meeting_recording_codec_unsupported",
+          });
+        }
+        expect(mockClient.recordingStart).not.toHaveBeenCalled();
+        expect(mockNotifyRecordingChanged).not.toHaveBeenCalled();
+      });
+
+      it("does not gate a start without codec (h264, as older clients send it)", async () => {
+        // No capability block at all: the legacy start must keep working.
+        mockClient.recordingStart.mockResolvedValue({ recording: { active: true } });
+
+        const result = await handleMeetingCommand("meeting_recording_start", {
+          file_path: "/Users/x/Movies/rec.mp4",
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockGetRecordingProbe).not.toHaveBeenCalled();
+      });
+
+      it("promotes the helper's codec refusal to the errorCode", async () => {
+        // The helper holds the codec to a hardware encoder itself.
+        mockGetMeetingCapabilities.mockReturnValue(RECORDING_CAPABILITY);
+        mockClient.recordingStart.mockRejectedValue(
+          new MeetingHelperRequestError(
+            "recording_start_failed",
+            "meeting_recording_codec_unsupported",
+          ),
+        );
+
+        const result = await handleMeetingCommand("meeting_recording_start", {
+          file_path: "/Users/x/Movies/rec.mp4",
+          codec: "hevc",
+        });
+
+        expect(result.errorCode).toBe("meeting_recording_codec_unsupported");
+      });
+
+      it("REC toggle starts the requested codec in its container", async () => {
+        mockGetMeetingCapabilities.mockReturnValue(RECORDING_CAPABILITY);
+        mockClient.recordingStatus.mockResolvedValue({ recording: { active: false } });
+        mockClient.recordingStart.mockResolvedValue({ recording: { active: true } });
+
+        const result = await handleMeetingCommand("meeting_recording_toggle", {
+          codec: "prores_422",
+        });
+
+        expect(result.success).toBe(true);
+        const [options] = mockClient.recordingStart.mock.calls[0] as [
+          { file_path: string; mic_device_id: string; codec?: string },
+        ];
+        expect(options.file_path).toMatch(/Broadify-Meeting-[\d_-]+\.mov$/);
+        expect(options.codec).toBe("prores_422");
+      });
+
+      it("REC toggle stops an active recording whatever codec it names", async () => {
+        // The codec applies to a start only: a stop must never be refused.
+        mockClient.recordingStatus.mockResolvedValue({ recording: { active: true } });
+        mockClient.recordingStop.mockResolvedValue({ recording: { active: false } });
+
+        const result = await handleMeetingCommand("meeting_recording_toggle", {
+          codec: "prores_422_hq",
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.recordingStop).toHaveBeenCalled();
+      });
+
+      it("rejects an unknown codec name as an invalid payload", async () => {
+        await expect(
+          handleMeetingCommand("meeting_recording_toggle", { codec: "av1" }),
+        ).rejects.toThrow("Invalid payload for meeting_recording_toggle");
+        await expect(
+          handleMeetingCommand("meeting_recording_pick_path", { codec: "av1" }),
+        ).rejects.toThrow("Invalid payload for meeting_recording_pick_path");
+      });
+    });
+
+    describe("recording_disk_space_low", () => {
+      const refuseForDiskSpace = (): void => {
+        mockClient.recordingStart.mockRejectedValue(
+          new MeetingHelperRequestError(
+            "recording_start_failed",
+            "recording_disk_space_low",
+          ),
+        );
+      };
+
+      it("carries the required and free bytes from the recording status", async () => {
+        refuseForDiskSpace();
+        mockClient.recordingStatus.mockResolvedValue({
+          recording: {
+            active: false,
+            last_error: "recording_disk_space_low",
+            disk_space_low: { required_bytes: 816_480_000, free_bytes: 1_000 },
+          },
+        });
+
+        const result = await handleMeetingCommand("meeting_recording_start", {
+          file_path: "/Users/x/Movies/rec.mp4",
+        });
+
+        expect(result).toEqual({
+          success: false,
+          error: "recording_disk_space_low",
+          errorCode: "recording_disk_space_low",
+          data: { required_bytes: 816_480_000, free_bytes: 1_000 },
+        });
+      });
+
+      it("keeps the errorCode when the status cannot be read", async () => {
+        refuseForDiskSpace();
+        mockClient.recordingStatus
+          .mockResolvedValueOnce({ recording: { active: false } })
+          .mockRejectedValueOnce(new Error("rpc down"));
+
+        const result = await handleMeetingCommand("meeting_recording_toggle", {});
+
+        expect(result).toEqual({
+          success: false,
+          error: "recording_disk_space_low",
+          errorCode: "recording_disk_space_low",
+        });
+      });
+
+      it("does not ask for the status after any other failure", async () => {
+        mockClient.recordingStart.mockRejectedValue(
+          new MeetingHelperRequestError("recording_start_failed", "already_recording"),
+        );
+
+        const result = await handleMeetingCommand("meeting_recording_start", {
+          file_path: "/Users/x/Movies/rec.mp4",
+        });
+
+        expect(result.errorCode).toBe("already_recording");
+        expect(mockClient.recordingStatus).not.toHaveBeenCalled();
       });
     });
 
@@ -1622,6 +1824,9 @@ describe("meeting-command-handler", () => {
       const [options] = mockClient.recordingStart.mock.calls[0] as [
         { file_path: string; mic_device_id: string },
       ];
+      // No payload codec (a Stream Deck key sends none): h264, and the helper
+      // is called exactly as before the codec existed.
+      expect(options).not.toHaveProperty("codec");
       // One default folder for every trigger: ~/Movies/Broadify (macOS/Linux)
       // or ~/Videos/Broadify (Windows), prefix Broadify-Meeting-.
       expect(options.file_path).toMatch(

@@ -13,4 +13,9 @@ describe("pickRecordingSavePath", () => {
     expect(result).toMatch(/\.mp4$/);
     expect(result).toContain("Broadify-Meeting-");
   });
+
+  it("gives the fallback path the extension of the requested container", async () => {
+    const result = await pickRecordingSavePath("take.mp4", "de", "mov");
+    expect(result).toMatch(/Videos[\\/]Broadify[\\/]Broadify-Meeting-.*\.mov$/);
+  });
 });

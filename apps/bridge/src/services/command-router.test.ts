@@ -253,18 +253,25 @@ describe("command-router", () => {
     it("get_status advertises the meeting capability block", async () => {
       const result = await commandRouter.handleCommand("get_status", {});
       expect(result.success).toBe(true);
+      // From the encoder probe (H.264 and HEVC hardware), cut to what the
+      // recorder of the platform running the test writes.
+      const recorderCodecs: Partial<Record<NodeJS.Platform, string[]>> = {
+        darwin: ["h264", "hevc"],
+        win32: ["h264"],
+      };
       expect(result.data).toMatchObject({
         capabilities: expect.objectContaining({
           meeting: {
             program_portrait: process.platform === "darwin",
             layer_canvas: true,
             program_formats: { max_width: 1920, max_height: 1080, fps: [25, 30] },
-            // From the encoder probe: the machine also has HEVC hardware, the
-            // recorder writes H.264 only.
             recording: {
-              codecs: [
-                { codec: "h264", container: "mp4", max_height: 1080, max_fps: 30 },
-              ],
+              codecs: (recorderCodecs[process.platform] ?? []).map((codec) => ({
+                codec,
+                container: "mp4",
+                max_height: 1080,
+                max_fps: 30,
+              })),
               upload_copy: false,
             },
           },

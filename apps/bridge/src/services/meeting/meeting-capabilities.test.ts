@@ -5,7 +5,9 @@ import {
   MEETING_PROGRAM_FORMAT_UNSUPPORTED_CODE,
   MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE,
   MEETING_RECORDER_SUPPORTED_CODECS,
+  MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
   getMeetingCapabilities,
+  isAdvertisedRecordingCodec,
   isPortraitGeometry,
   isSameProgramFormat,
   isSupportedProgramFormat,
@@ -64,16 +66,91 @@ describe("meeting-capabilities", () => {
       ).not.toHaveProperty("recording");
     });
 
-    it("advertises only what the recorder writes today: H.264 in mp4", () => {
-      // The machine has HEVC and ProRes hardware, the recorder does not write
-      // them yet.
-      expect(MEETING_RECORDER_SUPPORTED_CODECS).toEqual([
-        { codec: "h264", container: "mp4" },
-      ]);
-      expect(getMeetingCapabilities({ recordingProbe: MAC_PROBE }).recording).toEqual({
+    it("lists what each platform recorder writes: everything on macOS, H.264 on Windows", () => {
+      expect(MEETING_RECORDER_SUPPORTED_CODECS).toEqual({
+        darwin: ["h264", "hevc", "prores_422_lt", "prores_422", "prores_422_hq"],
+        win32: ["h264"],
+      });
+    });
+
+    it("advertises every codec on a Mac with HEVC and ProRes hardware, each in its container", () => {
+      expect(
+        getMeetingCapabilities({ platform: "darwin", recordingProbe: MAC_PROBE })
+          .recording,
+      ).toEqual({
+        codecs: [
+          { codec: "h264", container: "mp4", max_height: 1080, max_fps: 30 },
+          { codec: "hevc", container: "mp4", max_height: 1080, max_fps: 30 },
+          { codec: "prores_422_lt", container: "mov", max_height: 1080, max_fps: 30 },
+          { codec: "prores_422", container: "mov", max_height: 1080, max_fps: 30 },
+          { codec: "prores_422_hq", container: "mov", max_height: 1080, max_fps: 30 },
+        ],
+        upload_copy: false,
+      });
+    });
+
+    it("offers no ProRes on a Mac without ProRes hardware", () => {
+      const noProRes: MeetingRecordingProbeT = {
+        backend: "videotoolbox",
+        encoders: [
+          { codec: "h264", name: "Apple H.264 (HW)" },
+          { codec: "hevc", name: "Apple HEVC (HW)" },
+        ],
+      };
+      expect(
+        getMeetingCapabilities({ platform: "darwin", recordingProbe: noProRes })
+          .recording?.codecs.map((entry) => entry.codec),
+      ).toEqual(["h264", "hevc"]);
+    });
+
+    it("stays at H.264 on Windows even with HEVC hardware, and has no recorder elsewhere", () => {
+      const windowsProbe: MeetingRecordingProbeT = {
+        backend: "mediafoundation",
+        encoders: [
+          { codec: "h264", name: "NVIDIA H.264 Encoder MFT", vendor: "nvidia" },
+          { codec: "hevc", name: "NVIDIA HEVC Encoder MFT", vendor: "nvidia" },
+        ],
+      };
+      expect(
+        getMeetingCapabilities({ platform: "win32", recordingProbe: windowsProbe })
+          .recording,
+      ).toEqual({
         codecs: [{ codec: "h264", container: "mp4", max_height: 1080, max_fps: 30 }],
         upload_copy: false,
       });
+      expect(
+        getMeetingCapabilities({ platform: "linux", recordingProbe: windowsProbe })
+          .recording,
+      ).toEqual({ codecs: [], upload_copy: false });
+    });
+
+    it("keeps every codec within the advertised program formats", () => {
+      const capabilities = getMeetingCapabilities({
+        platform: "darwin",
+        recordingProbe: MAC_PROBE,
+      });
+      for (const entry of capabilities.recording?.codecs ?? []) {
+        expect(entry.max_height).toBeLessThanOrEqual(PROGRAM_FORMATS.max_height);
+        expect(PROGRAM_FORMATS.fps).toContain(entry.max_fps);
+      }
+    });
+
+    it("gates a requested codec on the advertised list", () => {
+      const mac = getMeetingCapabilities({
+        platform: "darwin",
+        recordingProbe: MAC_PROBE,
+      });
+      expect(isAdvertisedRecordingCodec(mac, "prores_422_hq")).toBe(true);
+      const windows = getMeetingCapabilities({
+        platform: "win32",
+        recordingProbe: MAC_PROBE,
+      });
+      expect(isAdvertisedRecordingCodec(windows, "h264")).toBe(true);
+      expect(isAdvertisedRecordingCodec(windows, "hevc")).toBe(false);
+      // Probe unknown: nothing is advertised, so nothing may be requested.
+      expect(
+        isAdvertisedRecordingCodec(getMeetingCapabilities({ platform: "darwin" }), "h264"),
+      ).toBe(false);
     });
 
     it("lists a codec once even when two hardware encoders offer it", () => {
@@ -95,12 +172,16 @@ describe("meeting-capabilities", () => {
         backend: "mediafoundation",
         encoders: [{ codec: "hevc", name: "HEVC Encoder MFT", vendor: "amd" }],
       };
-      expect(getMeetingCapabilities({ recordingProbe: hevcOnly }).recording).toEqual({
+      expect(
+        getMeetingCapabilities({ platform: "win32", recordingProbe: hevcOnly })
+          .recording,
+      ).toEqual({
         codecs: [],
         upload_copy: false,
       });
       expect(
         getMeetingCapabilities({
+          platform: "darwin",
           recordingProbe: { backend: "none", encoders: [] },
         }).recording,
       ).toEqual({ codecs: [], upload_copy: false });
@@ -132,6 +213,9 @@ describe("meeting-capabilities", () => {
     );
     expect(MEETING_ENGINE_RESTART_REQUIRED_CODE).toBe(
       "meeting_engine_restart_required",
+    );
+    expect(MEETING_RECORDING_CODEC_UNSUPPORTED_CODE).toBe(
+      "meeting_recording_codec_unsupported",
     );
   });
 

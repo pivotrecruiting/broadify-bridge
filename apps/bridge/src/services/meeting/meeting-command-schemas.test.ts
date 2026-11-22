@@ -2,6 +2,9 @@ import {
   MeetingCameraSelectionSchema,
   MeetingEngineStartSchema,
   MeetingGraphicsConfigureOutputsSchema,
+  MeetingRecordingPickPathSchema,
+  MeetingRecordingStartSchema,
+  MeetingRecordingToggleSchema,
   MeetingScreenPickSchema,
   MeetingScreenStartSchema,
 } from "./meeting-command-schemas.js";
@@ -164,5 +167,108 @@ describe("MeetingScreenPickSchema", () => {
         future_field: "strip-me",
       }),
     ).toEqual({ include_cursor: true });
+  });
+});
+
+describe("MeetingRecordingStartSchema", () => {
+  it("accepts a start without codec as before: an absolute .mp4 path", () => {
+    expect(
+      MeetingRecordingStartSchema.parse({
+        file_path: "/Users/x/Movies/rec.mp4",
+        mic_device_id: "m1",
+      }),
+    ).toEqual({ file_path: "/Users/x/Movies/rec.mp4", mic_device_id: "m1" });
+    expect(
+      MeetingRecordingStartSchema.safeParse({ file_path: "C:\\rec\\a.MP4" }).success,
+    ).toBe(true);
+  });
+
+  it.each([
+    ["h264", "/Users/x/rec.mp4"],
+    ["hevc", "/Users/x/rec.mp4"],
+    ["prores_422_lt", "/Users/x/rec.mov"],
+    ["prores_422", "/Users/x/rec.mov"],
+    ["prores_422_hq", "C:\\rec\\a.mov"],
+  ])("accepts %s with the extension of its container", (codec, filePath) => {
+    expect(
+      MeetingRecordingStartSchema.parse({ file_path: filePath, codec }),
+    ).toEqual({ file_path: filePath, codec });
+  });
+
+  it.each([
+    ["hevc", "/Users/x/rec.mov"],
+    ["prores_422", "/Users/x/rec.mp4"],
+    [undefined, "/Users/x/rec.mov"],
+  ])("rejects %s with the extension of another container", (codec, filePath) => {
+    const parsed = MeetingRecordingStartSchema.safeParse({
+      file_path: filePath,
+      ...(codec ? { codec } : {}),
+    });
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.path).toEqual(["file_path"]);
+  });
+
+  it("keeps the path guard for every codec", () => {
+    for (const filePath of [
+      "relative.mov",
+      "/Users/x/../../etc/hosts.mov",
+      "/Users/x/rec.mov\0",
+      "/Users/x/.zshrc",
+    ]) {
+      expect(
+        MeetingRecordingStartSchema.safeParse({
+          file_path: filePath,
+          codec: "prores_422",
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("rejects an unknown codec and unknown keys", () => {
+    expect(
+      MeetingRecordingStartSchema.safeParse({
+        file_path: "/Users/x/rec.mp4",
+        codec: "av1",
+      }).success,
+    ).toBe(false);
+    expect(
+      MeetingRecordingStartSchema.safeParse({
+        file_path: "/Users/x/rec.mp4",
+        upload_copy: true,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("MeetingRecordingPickPathSchema / MeetingRecordingToggleSchema", () => {
+  it("accept an empty payload (Stream Deck key, older web app)", () => {
+    expect(MeetingRecordingPickPathSchema.parse({})).toEqual({});
+    expect(MeetingRecordingToggleSchema.parse({})).toEqual({});
+  });
+
+  it("pass the codec through and drop unknown keys", () => {
+    expect(
+      MeetingRecordingPickPathSchema.parse({
+        default_name: "take.mov",
+        locale: "en",
+        codec: "prores_422",
+        extra: 1,
+      }),
+    ).toEqual({ default_name: "take.mov", locale: "en", codec: "prores_422" });
+    expect(
+      MeetingRecordingToggleSchema.parse({ mic_device_id: "m1", codec: "hevc", extra: 1 }),
+    ).toEqual({ mic_device_id: "m1", codec: "hevc" });
+  });
+
+  it("stay lenient on the fields that existed before the codec", () => {
+    expect(
+      MeetingRecordingPickPathSchema.parse({ default_name: 5, locale: null }),
+    ).toEqual({});
+    expect(MeetingRecordingToggleSchema.parse({ mic_device_id: 5 })).toEqual({});
+  });
+
+  it("reject an unknown codec", () => {
+    expect(MeetingRecordingPickPathSchema.safeParse({ codec: "av1" }).success).toBe(false);
+    expect(MeetingRecordingToggleSchema.safeParse({ codec: "av1" }).success).toBe(false);
   });
 });
