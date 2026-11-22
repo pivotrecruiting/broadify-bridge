@@ -171,7 +171,9 @@ Vorgabe des Auftraggebers: Eine Aufnahme muss das sein, was eingestellt ist – 
   Bilder auf ungerade Takte fallen.
 - **Auflösung vor Bildrate bei der Kamera; das Programm behält seine Rate.** Liefert die Kamera die Rate nicht in der
   angeforderten Größe, nimmt die Auswahl über 30 fps die halbe Rate in dieser Größe (60 → 30, 50 → 25, `half_rate`),
-  bevor sie auf eine kleinere Größe mit voller Rate ausweicht. Jedes Kamerabild steht dann zweimal im Programm;
+  bevor sie auf eine kleinere Größe mit voller Rate ausweicht. Hat die Kamera
+  auch die halbe Rate nicht (1080p30 + 720p60 im 50-fps-Programm), bleibt sie bei der nächstliegenden Rate in der
+  angeforderten Größe (1080p30) statt auf 720p60 zu wechseln; die Bildwiederholung ist dann ungleichmäßig. Jedes Kamerabild steht dann zweimal im Programm;
   Grafik, Bildschirm und Medien laufen mit voller Rate. Nichts wird abgelehnt. Der Helper meldet das Format der
   Programmkamera als `engine.camera_format`, die Web-App zeigt einen Hinweis.
 - **Keyer:** keine Änderung an Stufen oder Budget (die Regelung dazu gibt es nur unter Windows). Die Haltezeiten bei

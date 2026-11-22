@@ -363,7 +363,8 @@ durchgereicht:
   Anforderung. `match` sagt, wie das Format gewaehlt wurde: `exact` /
   `tolerant` = angeforderte Rate, `half_rate` = halbe Rate in der
   angeforderten Groesse (nur ueber 30 fps: 60 -> 30, 50 -> 25), `nearest` =
-  naechstliegende Rate, `none` = das Geraet hat die Auswahl nicht uebernommen
+  naechstliegende Rate (ueber 30 fps zuerst in der angeforderten Groesse:
+  1080p30 statt 720p60 im 50-fps-Programm), `none` = das Geraet hat die Auswahl nicht uebernommen
   und laeuft mit dem Format der Session-Voreinstellung.
 - Liefert die Kamera weniger als das Programm
   (`Math.round(camera_format.fps) < program_format.fps`), laeuft das Programm

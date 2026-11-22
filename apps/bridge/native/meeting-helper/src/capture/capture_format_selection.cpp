@@ -90,6 +90,12 @@ enum class SizeRule {
   Any,
 };
 
+bool admitted(const CaptureFormatCandidate &candidate,
+              const CaptureFormatTarget &target, SizeRule sizeRule) {
+  return usable(candidate) && (sizeRule == SizeRule::Any ||
+                               !belowTargetSize(candidate, target));
+}
+
 // Best candidate with a range that contains `fps` (exactly or within the
 // tolerance), ranked by resolution score; exact wins equal scores. Match None
 // when no candidate qualifies.
@@ -100,8 +106,7 @@ CaptureFormatSelection selectContaining(
   double bestScore = std::numeric_limits<double>::max();
   for (std::size_t index = 0; index < candidates.size(); ++index) {
     const CaptureFormatCandidate &candidate = candidates[index];
-    if (!usable(candidate) || (sizeRule == SizeRule::NotBelowTarget &&
-                               belowTargetSize(candidate, target))) {
+    if (!admitted(candidate, target, sizeRule)) {
       continue;
     }
     const RangeMatch match = containingRange(candidate, fps);
@@ -119,6 +124,43 @@ CaptureFormatSelection selectContaining(
       selection.rangeIndex = match.rangeIndex;
       selection.fps = match.fps;
       selection.match = match.match;
+    }
+  }
+  return selection;
+}
+
+// Closest supported rate across the candidates the size rule admits (higher
+// rate on equal distance), then the resolution score. Match None when no
+// candidate qualifies.
+CaptureFormatSelection selectNearest(
+    const std::vector<CaptureFormatCandidate> &candidates,
+    const CaptureFormatTarget &target, SizeRule sizeRule) {
+  CaptureFormatSelection selection;
+  double bestDistance = std::numeric_limits<double>::infinity();
+  double bestScore = std::numeric_limits<double>::max();
+  for (std::size_t index = 0; index < candidates.size(); ++index) {
+    const CaptureFormatCandidate &candidate = candidates[index];
+    if (!admitted(candidate, target, sizeRule)) {
+      continue;
+    }
+    const RangeMatch match = nearestRange(candidate, target.fps);
+    if (match.match == CaptureFormatMatch::None) {
+      continue;
+    }
+    const double distance = std::fabs(match.fps - target.fps);
+    const double score = resolutionScore(candidate, target);
+    const bool better =
+        distance < bestDistance ||
+        (distance == bestDistance &&
+         (match.fps > selection.fps ||
+          (match.fps == selection.fps && score < bestScore)));
+    if (better) {
+      bestDistance = distance;
+      bestScore = score;
+      selection.candidateIndex = static_cast<int>(index);
+      selection.rangeIndex = match.rangeIndex;
+      selection.fps = match.fps;
+      selection.match = CaptureFormatMatch::Nearest;
     }
   }
   return selection;
@@ -159,38 +201,17 @@ CaptureFormatSelection selectCaptureFormat(
     return selection;
   }
 
-  // Tier 4: nothing is close to the target; take the closest supported rate
-  // across all candidates (higher rate on equal distance), then resolution.
-  double bestDistance = std::numeric_limits<double>::infinity();
-  double bestRate = 0.0;
-  double bestScore = std::numeric_limits<double>::max();
-  for (std::size_t index = 0; index < candidates.size(); ++index) {
-    const CaptureFormatCandidate &candidate = candidates[index];
-    if (!usable(candidate)) {
-      continue;
-    }
-    const RangeMatch match = nearestRange(candidate, target.fps);
-    if (match.match == CaptureFormatMatch::None) {
-      continue;
-    }
-    const double distance = std::fabs(match.fps - target.fps);
-    const double score = resolutionScore(candidate, target);
-    const bool better =
-        distance < bestDistance ||
-        (distance == bestDistance &&
-         (match.fps > bestRate ||
-          (match.fps == bestRate && score < bestScore)));
-    if (better) {
-      bestDistance = distance;
-      bestRate = match.fps;
-      bestScore = score;
-      selection.candidateIndex = static_cast<int>(index);
-      selection.rangeIndex = match.rangeIndex;
-      selection.fps = match.fps;
-      selection.match = CaptureFormatMatch::Nearest;
+  // Tier 4: nothing is close to the target; take the closest supported rate.
+  // Above 30 fps the candidates not below the requested size compete first,
+  // so a 50 fps request on a 1080p30 + 720p60 camera keeps 1080p (30 fps)
+  // instead of dropping to 720p60.
+  if (outputDivisor(target.fps) > 1u) {
+    selection = selectNearest(candidates, target, SizeRule::NotBelowTarget);
+    if (selection.match != CaptureFormatMatch::None) {
+      return selection;
     }
   }
-  return selection;
+  return selectNearest(candidates, target, SizeRule::Any);
 }
 
 const char *captureFormatMatchName(CaptureFormatMatch match) {

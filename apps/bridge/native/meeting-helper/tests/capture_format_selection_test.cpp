@@ -364,6 +364,35 @@ int main() {
                  ("60 fps request without 60 or 30 gets nearest 48: " + describe(selection)).c_str());
   }
 
+  // 50 fps program on a 1080p30 + 720p60 webcam: the camera has neither 50
+  // nor 25, and the nearest rate is taken at the requested size (1080p30),
+  // not at the nearer rate of the smaller one (720p60).
+  {
+    const std::vector<CaptureFormatCandidate> formats{
+        candidate(1920, 1080, "420v", {{30.0, 30.0}}),
+        candidate(1280, 720, "420v", {{60.0, 60.0}}),
+    };
+    const CaptureFormatSelection selection =
+        selectCaptureFormat(formats, {1920, 1080, 50.0});
+    ok &= expect(selection.candidateIndex == 0 && near(selection.fps, 30.0) &&
+                     selection.match == CaptureFormatMatch::Nearest,
+                 ("50 fps request keeps 1080p at nearest 30: " + describe(selection)).c_str());
+  }
+
+  // Above 30 fps without any format at the requested size: the nearest rate
+  // across the smaller ones, as before.
+  {
+    const std::vector<CaptureFormatCandidate> formats{
+        candidate(1280, 720, "420v", {{30.0, 30.0}}),
+        candidate(640, 480, "420v", {{48.0, 48.0}}),
+    };
+    const CaptureFormatSelection selection =
+        selectCaptureFormat(formats, {1920, 1080, 50.0});
+    ok &= expect(selection.candidateIndex == 1 && near(selection.fps, 48.0) &&
+                     selection.match == CaptureFormatMatch::Nearest,
+                 ("nearest rate among smaller sizes: " + describe(selection)).c_str());
+  }
+
   // Up to 30 fps there is no half-rate tier: a 30 fps request on a 1080p15 +
   // 720p30 camera takes 720p30 (unchanged), never 1080p15.
   {

@@ -43,7 +43,9 @@ Rules (`src/capture/capture_format_selection.{h,cpp}`, unit-tested in
   twice. Only then a match at a smaller size is taken.
 - Without a match the closest supported rate across all formats wins
   (25/50-only device asked for 30 gets 25; equal distance prefers the higher
-  rate), then the resolution score. `none` only when the device lists no
+  rate), then the resolution score. Above 30 fps the formats not below the
+  requested size compete first: a 1080p30 + 720p60 webcam in a 50 fps
+  program stays at 1080p30 (`match:"nearest"`) instead of taking 720p60. `none` only when the device lists no
   usable format; the session preset path remains the fallback.
 - The frame duration is taken from the chosen range's own `CMTime` values
   (never `CMTimeMake(1, 30)` for a 30.00003 range: AVFoundation throws for a

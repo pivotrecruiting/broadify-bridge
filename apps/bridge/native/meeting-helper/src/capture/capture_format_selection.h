@@ -65,7 +65,10 @@ struct CaptureFormatSelection {
 // 3. Candidates of any size that contain the target rate.
 // 4. Without any of those, every candidate's closest supported rate (target
 //    clamped into each range) competes: minimal |rate - target| wins, equal
-//    distance prefers the higher rate, then the resolution score.
+//    distance prefers the higher rate, then the resolution score. Above
+//    30 fps the candidates not below the target size compete first (a 50 fps
+//    request on a 1080p30 + 720p60 camera keeps 1080p at 30), all candidates
+//    only when there is none.
 // 5. None only when no candidate has valid dimensions and at least one range
 //    (or the target itself is invalid).
 CaptureFormatSelection selectCaptureFormat(
