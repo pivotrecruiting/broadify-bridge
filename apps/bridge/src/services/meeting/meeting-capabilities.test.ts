@@ -46,6 +46,7 @@ describe("meeting-capabilities", () => {
       layer_canvas: true,
       program_formats: MAC_PROGRAM_FORMATS,
       recording_probe: "pending",
+      recording_upload: false,
     });
     // Same helper code, but not verified on a Windows device yet.
     expect(getMeetingCapabilities({ platform: "win32" })).toEqual({
@@ -53,6 +54,7 @@ describe("meeting-capabilities", () => {
       layer_canvas: true,
       program_formats: PROGRAM_FORMATS,
       recording_probe: "pending",
+      recording_upload: false,
     });
     expect(getMeetingCapabilities({ platform: "linux" })).toMatchObject({
       program_portrait: false,
@@ -330,6 +332,25 @@ describe("meeting-capabilities", () => {
           recordingProbe: { backend: "none", encoders: [] },
         }).recording,
       ).toEqual({ codecs: [], upload_copy: false });
+    });
+  });
+
+  describe("recording_upload (ADR-0011)", () => {
+    it("is false unless the bridge can upload, on every platform", () => {
+      for (const platform of ["darwin", "win32", "linux"] as const) {
+        expect(getMeetingCapabilities({ platform }).recording_upload).toBe(false);
+        expect(getMeetingCapabilities({ platform, recordingUpload: true }).recording_upload).toBe(true);
+      }
+    });
+
+    it("does not touch upload_copy, which stays reserved for the ProRes upload copy", () => {
+      const capabilities = getMeetingCapabilities({
+        platform: "darwin",
+        recordingProbe: { backend: "videotoolbox", encoders: [{ codec: "h264" }] },
+        recordingUpload: true,
+      });
+      expect(capabilities.recording_upload).toBe(true);
+      expect(capabilities.recording?.upload_copy).toBe(false);
     });
   });
 

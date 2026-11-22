@@ -185,6 +185,15 @@ export const MeetingRecordingToggleSchema = z
   })
   .strip();
 
+// Opt-in hint of the recording upload (ADR-0011). Strict, with the single
+// key `enabled`: the command can never carry a URL, a path or a token. The
+// platform address comes from the bridge's own configuration only.
+export const MeetingRecordingUploadConfigureSchema = z
+  .object({
+    enabled: z.boolean(),
+  })
+  .strict();
+
 // Cloud-hosted asset fetches: the bridge downloads the file itself because
 // HTTPS webapps cannot POST to http://127.0.0.1 in every browser (Safari
 // blocks active mixed content). URLs are re-validated by the guarded

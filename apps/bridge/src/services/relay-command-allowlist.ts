@@ -46,6 +46,8 @@ export const RELAY_COMMAND_ALLOWLIST = [
   "meeting_recording_stop",
   "meeting_recording_toggle",
   "meeting_recording_status",
+  // Recording upload opt-in hint – see ADR-0011
+  "meeting_recording_upload_configure",
   "meeting_keyer_get",
   "meeting_keyer_configure",
   "meeting_keyer_reset",

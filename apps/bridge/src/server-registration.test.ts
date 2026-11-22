@@ -139,6 +139,8 @@ describe("registerServerRoutes", () => {
             recording_probe: "done",
             recording: { codecs: [], upload_copy: false },
           }),
+      // No bridge context here: no platform address, no upload.
+      recording_upload: false,
     });
   });
 

@@ -1,5 +1,6 @@
 import { getLiveProgramCapabilities } from "./services/pgm/pgm-command-handler.js";
 import { getMeetingCapabilities } from "./services/meeting/meeting-capabilities.js";
+import { isRecordingUploadAvailable } from "./services/postpro/recording-upload-service.js";
 import { meetingHelperManager } from "./services/meeting/meeting-helper-manager.js";
 import { pgmHelperManager } from "./services/pgm/pgm-helper-manager.js";
 import { isAllowedOrigin } from "./routes/origin-allowlist.js";
@@ -93,6 +94,7 @@ export async function registerServerRoutes(
           meeting: getMeetingCapabilities({
             recordingProbe: meetingHelperManager.getRecordingProbe(),
             recordingProbeState: meetingHelperManager.getRecordingProbeState(),
+            recordingUpload: isRecordingUploadAvailable(),
           }),
         },
       };

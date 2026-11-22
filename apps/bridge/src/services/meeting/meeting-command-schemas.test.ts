@@ -5,6 +5,7 @@ import {
   MeetingRecordingPickPathSchema,
   MeetingRecordingStartSchema,
   MeetingRecordingToggleSchema,
+  MeetingRecordingUploadConfigureSchema,
   MeetingScreenPickSchema,
   MeetingScreenStartSchema,
 } from "./meeting-command-schemas.js";
@@ -290,5 +291,27 @@ describe("MeetingRecordingPickPathSchema / MeetingRecordingToggleSchema", () => 
     expect(MeetingRecordingToggleSchema.parse({ codec: "av1" })).toEqual({ codec: "av1" });
     expect(MeetingRecordingPickPathSchema.safeParse({ codec: 5 }).success).toBe(false);
     expect(MeetingRecordingToggleSchema.safeParse({ codec: "" }).success).toBe(false);
+  });
+});
+
+describe("MeetingRecordingUploadConfigureSchema", () => {
+  it("accepts exactly { enabled: boolean }", () => {
+    expect(MeetingRecordingUploadConfigureSchema.parse({ enabled: true })).toEqual({ enabled: true });
+    expect(MeetingRecordingUploadConfigureSchema.parse({ enabled: false })).toEqual({ enabled: false });
+    expect(Object.keys(MeetingRecordingUploadConfigureSchema.shape)).toEqual(["enabled"]);
+  });
+
+  it.each([
+    ["a missing flag", {}],
+    ["a non-boolean flag", { enabled: "true" }],
+    ["a platform URL", { enabled: true, url: "https://evil.example" }],
+    ["an API base URL", { enabled: true, api_url: "https://evil.example" }],
+    ["a file path", { enabled: true, file_path: "/etc/passwd" }],
+    ["a token", { enabled: true, token: "x" }],
+  ])("rejects %s", (_name, payload) => {
+    expect(MeetingRecordingUploadConfigureSchema.safeParse(payload).success).toBe(false);
+    expect(() =>
+      parseRelayPayload(MeetingRecordingUploadConfigureSchema, payload, "Invalid payload"),
+    ).toThrow("Invalid payload");
   });
 });

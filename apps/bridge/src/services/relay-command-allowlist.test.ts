@@ -20,6 +20,7 @@ describe("relay-command-allowlist", () => {
       expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_list_presets");
       expect(RELAY_COMMAND_ALLOWLIST).toContain("canon_xc_recall_preset");
       expect(RELAY_COMMAND_ALLOWLIST).toContain("mode_activate");
+      expect(RELAY_COMMAND_ALLOWLIST).toContain("meeting_recording_upload_configure");
     });
 
     it("is readonly tuple", () => {

@@ -147,4 +147,16 @@ describe("relay-command-policy", () => {
       }),
     );
   });
+
+  it("treats the recording upload opt-in as a fast, idempotent side effect on its own lane", () => {
+    expect(getRelayCommandPolicy("meeting_recording_upload_configure")).toEqual(
+      expect.objectContaining({
+        executionMode: "side_effect",
+        timeoutClass: "fast",
+        concurrencyKey: "meeting.recording_upload",
+        replayPolicy: "after_state_check",
+        responseMode: "sync",
+      }),
+    );
+  });
 });

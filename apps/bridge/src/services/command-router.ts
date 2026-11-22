@@ -40,6 +40,7 @@ import { canonXCService } from "./canon-xc/canon-xc-service.js";
 import { canonResponseToCommandResult } from "./canon-xc/canon-xc-command-result.js";
 import { getLiveProgramCapabilities, handlePgmCommand, isPgmCommand } from "./pgm/pgm-command-handler.js";
 import { getMeetingCapabilities } from "./meeting/meeting-capabilities.js";
+import { isRecordingUploadAvailable } from "./postpro/recording-upload-service.js";
 import { meetingHelperManager } from "./meeting/meeting-helper-manager.js";
 import { modeActivationService } from "./mode/mode-activation-service.js";
 import { OUTPUT_DEVICE_MODULE_NAMES } from "./output-device-modules.js";
@@ -149,6 +150,7 @@ export class CommandRouter {
                   recordingProbe: meetingHelperManager.getRecordingProbe(),
                   recordingProbeState:
                     meetingHelperManager.getRecordingProbeState(),
+                  recordingUpload: isRecordingUploadAvailable(),
                 }),
                 // The web app sends mode_activate only when this is present;
                 // older bridges restored Studio state at startup on their own.

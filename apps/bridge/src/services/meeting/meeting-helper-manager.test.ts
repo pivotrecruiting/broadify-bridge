@@ -5,6 +5,7 @@ import {
   summarizeMeetingStatus,
 } from "../session-log/meeting-session-events.js";
 import { recordSwitcherEvent } from "../session-log/session-log-service.js";
+import { noteMeetingStatusForRecordingUpload } from "../postpro/recording-upload-service.js";
 import {
   HELPER_NOT_REACHABLE_CODE,
   MeetingHelperRequestError,
@@ -38,6 +39,9 @@ jest.mock("./meeting-recording-probe.js", () => ({
 jest.mock("../session-log/session-log-service.js", () => ({
   ...jest.requireActual("../session-log/session-log-service.js"),
   recordSwitcherEvent: jest.fn(),
+}));
+jest.mock("../postpro/recording-upload-service.js", () => ({
+  noteMeetingStatusForRecordingUpload: jest.fn(),
 }));
 jest.mock("../session-log/meeting-session-events.js", () => {
   const actual = jest.requireActual("../session-log/meeting-session-events.js");
@@ -1619,6 +1623,29 @@ describe("meeting-helper-manager", () => {
         },
         { type: "recording_stopped", source: "meeting", at_ms: expect.any(Number) },
       ]);
+    });
+  });
+
+  describe("recording upload (ADR-0011)", () => {
+    it("hands every status snapshot to the recording upload, with or without a post-production URL", async () => {
+      const manager = new MeetingHelperManager();
+      const status: MeetingStatusT = {
+        manager: manager.getStatus(),
+        engine: { program_revision: 3 },
+        recording: { active: true, file_path: "/tmp/take.mp4.part", codec: "h264" },
+        call: { active: false, call_id: null },
+        content_source: { video: null, browser: null },
+        camera_permission_status: null,
+        program_format: { width: 1920, height: 1080, fps: 30 },
+      };
+      jest.spyOn(manager, "getFullStatus").mockResolvedValue(status);
+
+      await (
+        manager as unknown as { publishStatus: (reason: string, force: boolean) => Promise<void> }
+      ).publishStatus("recording_changed", true);
+
+      expect(noteMeetingStatusForRecordingUpload).toHaveBeenCalledTimes(1);
+      expect(noteMeetingStatusForRecordingUpload).toHaveBeenCalledWith(status);
     });
   });
 });

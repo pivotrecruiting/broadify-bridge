@@ -133,6 +133,11 @@ type MeetingCapabilityDepsT = {
    * `recordingProbe` is given - a result is always `done`.
    */
   recordingProbeState?: MeetingRecordingProbeStateT;
+  /**
+   * Whether this bridge can upload recordings to the platform
+   * (`isRecordingUploadAvailable`, ADR-0011).
+   */
+  recordingUpload?: boolean;
 };
 
 /**
@@ -183,6 +188,12 @@ function resolveRecordingCapability(
  * the probe is `pending` (not started, running, or about to be retried) or
  * has `failed` for this bridge run, `recording` is left out. A platform
  * without a recorder needs no probe: it reports `done` with an empty list.
+ *
+ * `recording_upload` says that finished H.264/HEVC recordings can be
+ * uploaded to the platform (ADR-0011) and that the web app may send
+ * `meeting_recording_upload_configure`. It is not `recording.upload_copy`,
+ * which stays false: that flag is reserved for the upload copy of a ProRes
+ * master.
  */
 export function getMeetingCapabilities(
   deps: MeetingCapabilityDepsT = {},
@@ -191,6 +202,7 @@ export function getMeetingCapabilities(
     platform = process.platform,
     recordingProbe = null,
     recordingProbeState = "pending",
+    recordingUpload = false,
   } = deps;
   const recording = !MEETING_RECORDER_SUPPORTED_CODECS[platform]
     ? { codecs: [], upload_copy: false }
@@ -203,6 +215,7 @@ export function getMeetingCapabilities(
     program_formats: getMeetingProgramFormatLimits(platform),
     recording_probe: recording ? "done" : recordingProbeState,
     ...(recording ? { recording } : {}),
+    recording_upload: recordingUpload,
   };
 }
 
