@@ -178,7 +178,8 @@ Vorgabe des Auftraggebers: Eine Aufnahme muss das sein, was eingestellt ist – 
   Programmkamera als `engine.camera_format`, die Web-App zeigt einen Hinweis.
 - **Keyer:** keine Änderung an Stufen oder Budget (die Regelung dazu gibt es nur unter Windows). Die Haltezeiten bei
   Masken-Aussetzern zählen Keyer-Läufe und werden verdoppelt, wenn der Keyer öfter als 30-mal je Sekunde läuft, damit
-  sie gleich lang bleiben. Ob der Keyer 16,7 ms je Bild hält, ist eine Messung am Gerät.
+  sie gleich lang bleiben. Ob der Keyer 16,7 ms je Bild hält, ist eine Messung am Gerät (Ergebnis: nein, siehe
+  Nachtrag „Keying nur bis 30 fps").
 
 Verworfen: **H.264 mit Hinweis statt Ablehnung** – siehe oben. **Den Codec in der Bridge speichern** – zweite Quelle
 neben der Web-Datenbank. **Die Bitraten-Grenze für 1080p60 anheben** – ändert die gemeinsame Funktion und damit die
@@ -186,8 +187,48 @@ PGM-Aufnahme. **50 → 30 für die virtuelle Kamera** – ungleichmäßiges Must
 Programm ablehnen oder die Programmrate senken** – die Aufnahme soll die eingestellte Rate haben, Grafik und
 Bildschirminhalte profitieren auch ohne schnelle Kamera.
 
-Nur am Gerät prüfbar und noch offen: Keyer bei 60 fps, je Codec eine Aufnahme mit 1080p50 und 1080p60 aus der
-laufenden Engine, das 16,7-ms-Raster der Programmschleife unter Last, virtuelle Kamera in Teams/Zoom bei 50/60 fps.
+Nur am Gerät prüfbar; Stand nach dem Gerätetest im Nachtrag „Keying nur bis 30 fps": Keyer bei 60 fps, je Codec eine
+Aufnahme mit 1080p50 und 1080p60 aus der laufenden Engine, das 16,7-ms-Raster der Programmschleife unter Last,
+virtuelle Kamera in Teams/Zoom bei 50/60 fps.
+
+## Nachtrag: Keying nur bis 30 fps (2026-11-22)
+Gerätetest auf einem M1 Pro: Ein Lauf des Keyers (fused CoreML MODNet) dauert rund 22 ms. Ein 60-fps-Programm hat
+16,7 ms je Takt; mit Keyer erreichte es rund 31 Takte je Sekunde (27 bis 31 über die Läufe), und die Aufnahme enthielt
+doppelte Bilder. Ohne Keyer hielt dasselbe Programm 59,97 fps. Die Aufnahme selbst hatte in allen Codecs bei 25, 30,
+50 und 60 fps die eingestellte Bildrate.
+
+Entscheidung des Auftraggebers: **50 und 60 fps gibt es nicht zusammen mit Keying.** Wird Keying bei 50/60 fps
+eingeschaltet, wird die Bildrate automatisch gesenkt und der Nutzer bekommt eine Meldung. Der Standard bei der ersten
+Inbetriebnahme bleibt 30 fps (`DEFAULT_MEETING_PROGRAM_FORMAT`).
+
+- **Eine Grenze im Vertrag.** `capabilities.meeting.program_formats.keyer_max_fps`, heute 30 auf jeder Plattform. Die
+  Web-App liest die Grenze von dort und rechnet nicht mit einer festen 30. Fehlt das Feld (ältere Bridge), ist keine
+  Grenze bekannt.
+- **Die Bridge ist der Schiedsrichter, die Web-App drosselt.** „Keying aktiv" ist `keyer.settings.enabled` im Helper;
+  einen zweiten Schalter gibt es nicht, und ein frisch gestarteter Helper hat Keying aus. `meeting_keyer_configure`
+  mit `enabled: true` auf einem Programm über `keyer_max_fps` wird mit `meeting_keyer_fps_unsupported` und
+  `data { program_fps, keyer_max_fps }` abgelehnt, bevor der Helper gefragt wird. Ausschalten und Durchreichen ohne
+  Keying bleiben bei 50/60 fps erlaubt. Das Senken der Bildrate braucht einen Engine-Neustart (beendet Aufnahme, Kamera
+  und virtuelle Kamera) und bleibt deshalb bei der Web-App: Sie stellt das Programm zuerst auf die halbe Rate (60 → 30,
+  50 → 25), schaltet dann Keying ein und zeigt die Meldung; während einer Aufnahme schaltet sie Keying nicht ein. Die
+  gedrosselte Rate ist danach das gespeicherte Programmformat. Beim Ausschalten wird nichts automatisch erhöht.
+- **`meeting_engine_start` braucht keine eigene Prüfung.** Der Zustand „Keying aktiv über der Grenze" kann über den
+  Start nicht entstehen: Eine laufende Engine mit anderer Bildrate antwortet `meeting_engine_restart_required`; ein
+  Start, der einen Helper erzeugt, beginnt mit Keying aus, und die Bridge spielt dabei keine Keyer-Einstellung ein.
+  Nur der Absturz-Neustart spielt sie selbst wieder ein – mit der Bildrate von vorher. Dieser Weg hält sich an
+  dieselbe Grenze: Stammt die gemerkte Einstellung von einer langsameren Engine, wird sie mit Keying aus eingespielt.
+- **Stream Deck: Ablehnung, kein Neustart aus der Bridge.** Eine Taste, die Keying bei 50/60 fps einschaltet, blinkt
+  rot; `streamdeck_error` trägt `error_code: "meeting_keyer_fps_unsupported"`, eine offene Web-App zeigt ihre Meldung
+  dazu. Bekannte Grenze: Ohne Web-App gibt es an der Taste keinen Text.
+
+Verworfen: **Den Keyer nur für jedes zweite Bild rechnen** (Maske für das Zwischenbild wiederverwenden) – eigenes
+Paket, müsste mit einer 50/60-fps-Kamera gemessen werden; die Grenze steht an einer Stelle und lässt sich danach
+anheben. **50/60 fps vorerst gar nicht anbieten** – ohne Keying hält das Programm die Rate. **Die Bildrate in der
+Bridge senken** – der Neustart beendet eine Aufnahme und gehört zu einer Entscheidung, die der Nutzer sieht.
+**Die Prüfung nur in der Web-App** – Stream Deck und ein zweiter Tab gehen an ihr vorbei.
+
+Nicht gemessen: der Keyer mit einer echten 50/60-fps-Kamera, die Encoder unter voller Last (das Bild im Test war fast
+schwarz), die virtuelle Kamera in Teams und Zoom.
 
 ## Alternativen
 - **Plattform-Weiche in der Web-App** („macOS kann ProRes, Windows nicht"): verworfen. Ob HEVC- oder ProRes-Hardware da

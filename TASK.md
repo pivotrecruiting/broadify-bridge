@@ -53,6 +53,20 @@ Local commits only; nothing is pushed, no PR, no bridge/helper instance is start
 9. probe 5 s + status 5 s + start 15 s < bridge-local 30 s < relay 35 s for start and toggle (release contract test,
    shown red with a 15 s probe timeout).
 
+## Follow-up after the device test (2026-11-22): keying runs at up to 30 fps
+Owner's decision: 50 and 60 fps are not available together with keying (keyer about 22 ms per run on the M1 Pro, a
+60 fps program reaches about 31 ticks/s with it, 59.97 without). Bridge side:
+- `capabilities.meeting.program_formats.keyer_max_fps` (30), the one source of the limit.
+- `meeting_keyer_configure` with `enabled: true` on a faster program is refused with
+  `meeting_keyer_fps_unsupported` and `data { program_fps, keyer_max_fps }` before the helper is asked (jest).
+- `meeting_engine_start` needs no gate (a spawned helper has keying off, the bridge replays nothing into it); the
+  crash-recovery replay is held to the limit (jest). A Stream Deck key is refused by the same gate.
+- Recorder: a start refused with `already_recording` no longer overwrites `recording.last_error`
+  (`claimRecordingStart`, ctest `recorder_start_claim_test`, shown red with the old write).
+- Analysed, unchanged: the audio track starting 90-100 ms after the video is a late-starting microphone placed at
+  the right time (meeting-recording.md). `audio_samples_*` are Windows-only; the contract says so.
+- Not compiled here: `meeting_recorder_mediafoundation.cpp` (Windows) with the shared claim and the new return type.
+
 ## Review
 - Round: 0/3
 - Verdict: (pending)

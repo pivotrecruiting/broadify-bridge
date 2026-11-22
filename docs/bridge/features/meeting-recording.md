@@ -59,8 +59,12 @@ of the current or last recording and are `null` before the first start.
 `disk_space_low` is `null`, or `{ required_bytes, free_bytes }` after a start
 that was refused with `recording_disk_space_low`. The two
 `audio_samples_*` counters are additive diagnostics (Oct 2026): numbers on
-Windows, `null` on macOS and the stub — see
+Windows only. macOS and the stub always report `null`, also while audio is
+being recorded: `null` means "not counted", not "no audio" — see
 [Audio diagnostics](#audio-diagnostics-mute-recordings) below.
+`last_error` is the error of the current or last recording, or of the last
+failed start; it is empty after a recording that finalized cleanly. A start
+refused with `already_recording` does not touch it.
 `dropped_frames` / `queued_frames` (Nov 2026, always numbers) count program
 frames the recorder could not encode (encoder backpressure; on macOS also
 frames the recorder mailbox replaced because the worker thread fell behind)
@@ -162,6 +166,16 @@ recorder reports a token as the message of `recording_start_failed`;
 | `meeting_recording_codec_unsupported` | The requested codec cannot be recorded right now: refused by the bridge before the helper is asked (see [Every recording is what is configured](#every-recording-is-what-is-configured)), or the helper has no hardware encoder for it. Also the code of a refused `meeting_recording_pick_path`. | `{ codec, reason }` from the bridge gate (`encoder_unavailable`, `program_format_exceeded`, `encoders_unknown`); none when the helper refuses |
 | `recording_disk_space_low` | The target volume has less free space than the codec needs for five minutes (see [Free disk space](#free-disk-space)). Replaces `disk_full` as the code; the `error` message of this refusal is still the token `disk_full`, because web apps released before this code map only that token and read it from the message too. | `{ required_bytes, free_bytes }` |
 | `microphone_permission_denied`, `microphone_not_found`, `microphone_input_failed`, `microphone_input_rejected`, `writer_create_failed`, `already_recording`, `invalid_arguments` | unchanged | none |
+
+`already_recording` (a start while a recording runs or is starting) is
+reported in the answer of the refused command only. The recorder state
+belongs to the recording that runs: `claimRecordingStart`
+(`recorder/recorder_start_claim.h`, shared by both platform recorders,
+`recorder_start_claim_test`) refuses without writing anything, and
+`MeetingRecorder::start` returns `RecordingStartOutcome::AlreadyRecording`
+for the control server to report. Until Nov 2026 the refusal was written to
+`recording.last_error` and stayed there after the recording had finished
+cleanly.
 
 Any other failure keeps `errorCode: "recording_start_failed"` with the
 platform's message. A `codec` that is not a name (empty, not a string) is an
@@ -690,25 +704,103 @@ above 30 fps:
 - **Graphics planes** run at the program rate; the pre-warm at engine start
   uses the requested frame rate (it used a fixed 30 before, which configured
   the planes twice for every other rate).
-- **Keyer:** no ladder or budget change. On macOS the fused CoreML keyer runs
-  once per new camera frame, so with a 60 fps camera it has 16.7 ms instead
-  of 33.3 ms per run; whether it holds is a device measurement. The dropout
-  holds of `stabilizeFusedMask` count keyer runs and are doubled when the
-  keyer runs above 30 times per second (`fusedKeyerHoldScale`), so they stay
-  1.5 s / 3 s; with a half-rate camera they are unchanged.
+- **Keyer:** 50 and 60 fps are not available together with keying, see
+  [Keying runs at up to 30 fps](#keying-runs-at-up-to-30-fps). No ladder or
+  budget change. The dropout holds of `stabilizeFusedMask` count keyer runs
+  and are doubled when the keyer runs above 30 times per second
+  (`fusedKeyerHoldScale`), so they stay 1.5 s / 3 s; with a half-rate camera
+  they are unchanged.
 
-Unmeasured so far (device test): the keyer at 16.7 ms, each codec at 1080p50
-and 1080p60 from the running engine (a codec that does not hold is lowered in
-`MEETING_RECORDER_CODEC_MAX_FPS`), and the program loop's 16.7 ms grid under
-load. Two cases belong to that measurement:
+### Keying runs at up to 30 fps
 
-- The virtual camera's frame rate while the keyer runs at 60 fps. The preview
-  gate halves the rate the program actually reaches, not the nominal one: a
-  program that only manages a tick every 20 ms delivers 25 fps to the virtual
-  camera instead of 30, and a single late tick costs one longer gap.
-- Screen capture without a camera at 60 fps. The loop holds an absolute
-  frame grid only with a camera or with no source; with screen capture alone
-  it wakes on every new screen frame, so its ticks follow the screen source.
+Device test on an M1 Pro (2026-11-22): one run of the fused CoreML MODNet
+keyer takes about 22 ms. A 60 fps program has 16.7 ms per tick, so with the
+keyer on it reached about 31 ticks per second (27 to 31 across the runs) and
+the recording, written on a 60 fps grid, contained duplicated frames. Without
+the keyer the same program held 59.97 fps.
+
+Owner's decision (ADR-0010, addendum "Keying nur bis 30 fps"): 50 and 60 fps
+are not available together with keying.
+
+- **One limit:** `capabilities.meeting.program_formats.keyer_max_fps`, `30`
+  on every platform (`BASE_MEETING_PROGRAM_FORMAT_LIMITS` in
+  `services/meeting/meeting-capabilities.ts`, the one place to raise when a
+  keyer holds more). The web app reads the limit from there.
+- **What "keying active" is:** `keyer.settings.enabled` in the helper, set
+  only by `meeting_keyer_configure` (`enabled`). Model and background fields
+  do not turn keying on, and a freshly started helper has it off.
+- **The gate** (`gateKeyerEnable` in `meeting-command-handler.ts`, deciding
+  with `findKeyerFpsExcess`): `meeting_keyer_configure` with `enabled: true`
+  while the running program is faster than `keyer_max_fps` is refused with
+  `errorCode: "meeting_keyer_fps_unsupported"` and
+  `data { program_fps, keyer_max_fps }`, before the helper is asked: nothing
+  of the patch is applied, also not its background. Turning keying off and
+  patches without `enabled` pass at every rate, so passthrough at 50/60 fps
+  stays possible.
+- **`meeting_engine_start` needs no gate.** A start with another frame rate
+  than the running engine is refused with `meeting_engine_restart_required`
+  anyway. A start that spawns a helper begins with keying off, and the
+  bridge replays no keyer config into it (`meeting_engine_stop` drops the
+  noted config); keying comes back only through `meeting_keyer_configure`,
+  i.e. through the gate.
+- **Crash recovery** is the only place the bridge re-applies a keyer config
+  itself (`MeetingHelperManager.restoreRuntimeConfig`), into an engine with
+  the frame rate it had. The replay is held to the same limit
+  (`resolveKeyerRestoreConfig`): a config noted on a slower engine - a user
+  start at 50/60 fps during a recovery, then another crash - is replayed
+  with keying off and a warning in the log.
+- **Lowering the rate is the web app's job.** It needs an engine restart,
+  which ends a recording and drops camera and virtual camera, so the bridge
+  never does it. When the user turns keying on at 50/60 fps the web app
+  first switches the program to half the rate (60 -> 30, 50 -> 25) through
+  its program-format switch, then enables keying and tells the user; during
+  a recording it does not enable keying. Nothing raises the rate again when
+  keying is turned off.
+- **Stream Deck limit:** a key bound to `meeting_keyer_configure` with
+  `enabled: true` runs in the bridge without the web app. At 50/60 fps it is
+  refused by the gate: the key flashes red and `streamdeck_error` carries
+  `error_code: "meeting_keyer_fps_unsupported"`, which an open web app
+  translates. There is no automatic restart from the bridge; lower the frame
+  rate on the recording-format page (or turn keying on in the web app) first.
+
+Measured in the same device test: recordings in every codec at 25, 30, 50
+and 60 fps have the configured frame rate and codec. Not measured: the
+encoders under full load (the picture was almost black, so the data rates
+say nothing; a codec that does not hold a rate is lowered in
+`MEETING_RECORDER_CODEC_MAX_FPS`), a real 50/60 fps camera, the virtual
+camera in Teams/Zoom, and screen capture without a camera at 60 fps (the
+loop holds an absolute frame grid only with a camera or with no source; with
+screen capture alone it wakes on every new screen frame, so its ticks follow
+the screen source).
+
+### Audio track starts about 0.1 s after the video (macOS)
+
+Every file of the device test shows the audio stream starting 90 to 100 ms
+after the video (`ffprobe -show_entries stream=codec_type,start_time`: video
+`0.000000`, audio `0.090000` to `0.100167`, AAC and PCM alike). This is a
+microphone that starts late, placed at the right time - not a shifted track:
+
+- The writer session starts at a host-clock time (`startSessionAtSourceTime`)
+  taken **before** the microphone session is started. `startRunning` blocks
+  until the device runs, and the capture delegate appends nothing until the
+  recorder is published as active after it. The first buffer that reaches
+  the writer was captured roughly 0.1 s after the session start.
+- Audio buffers are appended with their own capture timestamps, unchanged.
+  The writer places them at `timestamp - session start` and represents the
+  missing beginning as a gap at the start of the track, which ffprobe shows
+  as `start_time`. Nothing is shifted to fill it.
+- Video frames are placed on the CFR grid by the host-clock time of their
+  tick relative to the same session start. The grid is filled from index 0:
+  the first program frame is repeated for the frames before it
+  (`RecorderFrameClock::plan`), which is why the video track starts at 0.
+- The files agree: for the four PCM recordings (no encoder delay to account
+  for), audio start plus audio duration ends within -17 to +25 ms of the end
+  of the video track (+1.7, +6.7, -17.4, +24.7 ms). An audio track shifted
+  by 95 ms would end about 95 ms after the video.
+
+So no behaviour was changed. What this does not cover: the latency of the
+picture itself (camera, keyer, compositor) is not compensated in the audio;
+measuring lip sync needs a clap in front of camera and microphone.
 
 
 ## WebApp
@@ -742,6 +834,8 @@ flashes the key red and publishes `streamdeck_error` with
 `error_code: "meeting_recording_codec_unsupported"`
 (see [Every recording is what is configured](#every-recording-is-what-is-configured)).
 The payload is read only when the toggle starts a recording: on an active
-recording the toggle stops it whatever the binding carries. Before Oct 2026 the toggle wrote `~/Videos/Broadify Recordings/
+recording the toggle stops it whatever the binding carries. A key that turns
+keying on is refused at 50/60 fps the same way, see
+[Keying runs at up to 30 fps](#keying-runs-at-up-to-30-fps). Before Oct 2026 the toggle wrote `~/Videos/Broadify Recordings/
 meeting-<iso-stamp>.mp4` on every platform, i.e. a different folder than the
 other triggers and a Windows-style path on macOS.

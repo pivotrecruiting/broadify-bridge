@@ -242,10 +242,10 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
     "container": "mp4", // string|null, additiv seit Nov 2026 (ADR-0010); "mp4" | "mov", folgt aus codec
     "elapsed_seconds": 21, // number, required, volatil, seit Bestand
     "video_frames": 630, // number, required, volatil, seit Bestand
-    "audio_samples_written": 2100, // number|null, additiv seit Okt 2026 (B-9), volatil; Windows-Helper Zahl, macOS/Stub null
-    "audio_samples_dropped": 3, // number|null, additiv seit Okt 2026 (B-9), volatil; Samples vor Session-Start verworfen (siehe meeting-recording.md)
+    "audio_samples_written": 2100, // number|null, additiv seit Okt 2026 (B-9), volatil; nur der Windows-Helper zaehlt. macOS und Stub melden immer null, auch waehrend Ton aufgenommen wird: null heisst "nicht gezaehlt", nicht "kein Ton"
+    "audio_samples_dropped": 3, // number|null, additiv seit Okt 2026 (B-9), volatil; Samples vor Session-Start verworfen (siehe meeting-recording.md); wie audio_samples_written nur unter Windows eine Zahl, macOS/Stub immer null
     "disk_space_low": null, // object|null, additiv seit Nov 2026; { required_bytes, free_bytes } nach einem mit recording_disk_space_low abgelehnten Start
-    "last_error": "" // string, required, seit Bestand; "finalize_timeout" wenn stop() den Finalize-Schritt nach kRecorderFinalizeTimeoutMs abbricht (.part bleibt)
+    "last_error": "" // string, required, seit Bestand; Fehler der laufenden bzw. letzten Aufnahme oder des letzten gescheiterten Starts, "" nach einer sauber abgeschlossenen Aufnahme. "finalize_timeout" wenn stop() den Finalize-Schritt nach kRecorderFinalizeTimeoutMs abbricht (.part bleibt). Ein mit already_recording abgelehnter Start aendert das Feld nicht
   },
   "virtualCamera": { // object, optional, camelCase, seit Bestand
     "active": true, // boolean, required wenn Windows-helper Status, seit Bestand
@@ -386,7 +386,8 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   "program_formats": { // object, optional, seit ADR-0010
     "max_width": 1920, // number, groesste Breite einer Querformat-Leinwand
     "max_height": 1080, // number, groesste Hoehe einer Querformat-Leinwand
-    "fps": [25, 30, 50, 60] // number[], zulaessige Bildraten (macOS; sonst [25, 30])
+    "fps": [25, 30, 50, 60], // number[], zulaessige Bildraten (macOS; sonst [25, 30])
+    "keyer_max_fps": 30 // number, optional, seit Nov 2026; hoechste Programm-Bildrate, bei der Keying laeuft
   },
   "recording_probe": "done", // "pending" | "done" | "failed", optional, Zustand der Encoder-Probe
   "recording": { // object, optional, seit ADR-0010; steht genau bei recording_probe "done"
@@ -412,6 +413,43 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   gemeldet. Ueber 30 fps bekommen virtuelle Kamera und Programm-Vorschauen
   jedes zweite Programmbild (60 -> 30, 50 -> 25), die Aufnahme jedes; siehe
   [meeting-recording.md](./meeting-recording.md), Abschnitt 50 and 60 fps.
+- `program_formats.keyer_max_fps` ist die hoechste Programm-Bildrate, bei der
+  Keying laeuft: heute `30` auf jeder Plattform (eine Stelle:
+  `BASE_MEETING_PROGRAM_FORMAT_LIMITS` in
+  `services/meeting/meeting-capabilities.ts`). Es ist die einzige Quelle der
+  Grenze; die Web-App rechnet nicht mit einer festen 30. Fehlt das Feld
+  (aeltere Bridge), ist keine Grenze bekannt. 50 und 60 fps gibt es also nur
+  ohne Keying. Die Bridge ist der Schiedsrichter:
+  - "Keying aktiv" heisst `keyer.settings.enabled: true` im Helper. Es gibt
+    keinen zweiten Schalter; Modell und Hintergrund schalten nichts ein. Ein
+    frisch gestarteter Helper hat Keying aus.
+  - `meeting_keyer_configure` mit `enabled: true`, waehrend das laufende
+    Programm schneller ist als `keyer_max_fps`, wird abgelehnt:
+    `errorCode: "meeting_keyer_fps_unsupported"` mit
+    `data { program_fps, keyer_max_fps }`. Die Ablehnung kommt vor jeder
+    Wirkung: der Helper wird nicht gefragt, nichts aus dem Patch wird
+    uebernommen (auch der Hintergrund nicht), kein Status wird ausgeloest.
+    Ein Patch mit `enabled: false` oder ohne `enabled` geht bei jeder
+    Bildrate durch.
+  - `meeting_engine_start` prueft die Grenze nicht, weil der Zustand
+    "Keying aktiv bei mehr als `keyer_max_fps`" ueber diesen Weg nicht
+    entstehen kann: bei laufender Engine mit anderer Bildrate kommt ohnehin
+    `meeting_engine_restart_required`; ein Start, der einen Helper erzeugt,
+    beginnt mit Keying aus, und die Bridge spielt bei einem solchen Start
+    keine Keyer-Einstellung ein (`meeting_engine_stop` verwirft die gemerkte
+    Einstellung). Wieder eingeschaltet wird Keying nur ueber
+    `meeting_keyer_configure` (die Web-App schiebt ihre Einstellung nach dem
+    Start nach) und damit durch die Pruefung oben.
+  - Nur der Absturz-Neustart spielt die gemerkte Keyer-Einstellung selbst
+    wieder ein, mit derselben Bildrate wie zuvor. Stammt sie von einer
+    langsameren Engine (Nutzer-Start mit 50/60 fps waehrend einer laufenden
+    Wiederherstellung, danach ein weiterer Absturz), wird sie mit
+    `enabled: false` eingespielt und eine Warnung geloggt.
+  - Die Bridge senkt die Bildrate nie selbst: das braucht einen
+    Engine-Neustart (beendet Aufnahme, Kamera, virtuelle Kamera) und bleibt
+    Sache der Web-App. Eine Stream-Deck-Taste, die Keying bei 50/60 fps
+    einschaltet, wird deshalb abgelehnt: die Taste blinkt rot,
+    `streamdeck_error` traegt `error_code: "meeting_keyer_fps_unsupported"`.
 - `recording_probe` ist der Zustand der Encoder-Probe hinter `recording`:
   `pending` = noch kein Ergebnis (nicht gestartet, laeuft, oder ein
   voruebergehender Fehler mit verbleibenden Versuchen; spaetere `get_status`
@@ -488,7 +526,12 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   Code, die Meldung `error` dieser Ablehnung bleibt `disk_full`, damit
   Web-Apps vor diesem Code weiter ihre Speicherplatz-Meldung zeigen). Die
   uebrigen Codes (`microphone_*`, `writer_create_failed`, `already_recording`,
-  `invalid_arguments`) sind unveraendert. Tabellen und Datenraten in
+  `invalid_arguments`) sind unveraendert. `already_recording` (Start, waehrend
+  eine Aufnahme laeuft oder gerade startet) steht nur in der Antwort des
+  abgelehnten Befehls: der Status der laufenden Aufnahme bleibt, wie er ist,
+  `recording.last_error` wird davon nicht beschrieben (bis Nov 2026 blieb
+  `already_recording` dort stehen, auch nachdem die Aufnahme sauber fertig
+  war). Tabellen und Datenraten in
   [meeting-recording.md](./meeting-recording.md).
 - `meeting_recording_stop` ist in der Bridge-Policy jetzt mit 35 s
   Relay-Timeout und 30 s lokaler SLA deklariert (vorher 12 s / 8 s), weil das

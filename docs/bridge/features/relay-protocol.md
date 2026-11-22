@@ -180,7 +180,11 @@ Flag ist die Box immer 1920×1080.
 `program_formats` (optional) – größte Leinwand und zulässige Bildraten für
 `meeting_engine_start` (25 und 30 fps überall, unter macOS auch 50 und 60);
 außerhalb davon antwortet die Bridge mit
-`meeting_program_format_unsupported`. `recording_probe` (optional) – Zustand
+`meeting_program_format_unsupported`. Darin `keyer_max_fps` (optional) – die
+höchste Programm-Bildrate, bei der Keying läuft (heute 30);
+`meeting_keyer_configure` mit `enabled: true` auf einem schnelleren Programm
+wird mit `meeting_keyer_fps_unsupported` und
+`data { program_fps, keyer_max_fps }` abgelehnt. `recording_probe` (optional) – Zustand
 der Encoder-Probe des Helpers: `pending`, `done` oder `failed`. `recording`
 (optional) – Codecs, die der Meeting-Recorder auf diesem Rechner mit
 Hardware-Encoder schreiben kann; steht genau bei `recording_probe: "done"`.
@@ -318,7 +322,9 @@ Wichtige Bridge-Events:
   `{ key_index, command, error, error_code? }`. `error` ist der englische Text
   der Bridge, `error_code` der stabile Fehlercode des Befehls, wenn er einen
   hat (z. B. `meeting_recording_codec_unsupported` bei einer REC-Taste, deren
-  eingestellter Codec gerade nicht aufgenommen werden kann). Die Web-App
+  eingestellter Codec gerade nicht aufgenommen werden kann, oder
+  `meeting_keyer_fps_unsupported` bei einer Taste, die Keying bei 50/60 fps
+  einschaltet). Die Web-App
   übersetzt nach `error_code`, wo sie ihn kennt. Fehlt auf älteren Bridges.
 
 ## Ablauf (Mermaid)
