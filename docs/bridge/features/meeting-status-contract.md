@@ -753,15 +753,23 @@ genutzt vom GPU-Plan und vom CPU-Pfad ueber `visibleBackgroundImage`): bei
   ausgeblendet. Sie traegt neben Hintergrund-Templates auch Inhalts-Templates
   und Folien (`resolveMeetingGraphicsPlane`), die ohne Keying sichtbar sein
   muessen (Folien ohne Kamera, Conference mit Kamera-PiP); der Helper kann die
-  Ebenen dieser Flaeche nicht unterscheiden. Ein Hintergrund-TEMPLATE kann bei
-  Keying aus und fehlendem Kamerabild also weiterhin kurz zu sehen sein; das
-  entscheidet die WebApp, die die Ebene sendet (offen, siehe
-  `docs/meeting/recording-format.md` der WebApp, "Ohne Keying kein
-  Hintergrund").
+  Ebenen dieser Flaeche nicht unterscheiden. Ob ein Hintergrund-TEMPLATE bei
+  Keying aus zu sehen ist, entscheidet deshalb die WebApp: sie sendet die Ebene
+  `meeting-background-template` im Meeting-Modus nur bei Keying an und entfernt
+  sie beim Ausschalten (`docs/meeting/recording-format.md` der WebApp, "Ohne
+  Keying kein Hintergrund"). Ein Client, der die Ebene bei Keying aus trotzdem
+  sendet, bekommt sie gezeichnet.
 
-Test: `background_image_cache_test` (Auswahl bei Keying aus/an, Cache-Slot
-bleibt unberuehrt). Einen Render-Test des Compositors gibt es nicht; der
-Klicktest steht in der WebApp-Doku (Punkt 28).
+Tests: `background_image_cache_test` (Auswahl bei Keying aus/an, Cache-Slot
+bleibt unberuehrt) und, nur macOS, `compositor_background_render_test`: rendert
+Programmbilder ohne Kamerabild ueber das produktive `renderProgramFrame` und
+erwartet bei Keying aus genau die Fuellflaeche, bei Keying an das Bild. ctest
+faehrt ihn zweimal, mit Metal (GPU-Plan) und als
+`compositor_background_render_cpu_test` mit
+`BROADIFY_MEETING_GPU_COMPOSITOR=0` (CPU-Pfad); auf einem Mac ohne Metal
+laufen beide ueber den CPU-Pfad. Der D3D11-Pfad (Windows) teilt denselben
+GPU-Plan, hat aber keinen eigenen Render-Test. Der Klicktest mit neu gebautem
+Helper steht in der WebApp-Doku (Punkt 28).
 
 ## Kompatibilitaet
 
