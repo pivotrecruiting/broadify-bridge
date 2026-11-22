@@ -15,4 +15,4 @@ bekommt die alte den Status „abgelöst durch ADR-NNNN“.
 | [0007](0007-meeting-programm-im-hochformat.md) | Meeting-Programm im Hochformat (9:16) | akzeptiert; Bildraten-Vergleich abgelöst durch ADR-0010 |
 | [0008](0008-session-event-log-nur-auf-opt-in.md) | Session-Event-Log nur auf Opt-in | akzeptiert |
 | [0009](0009-live-pgm-windows-media-foundation.md) | Live-PGM unter Windows: Media-Foundation-Hardware-Encoder, OpenSSL statisch, WASAPI | akzeptiert (Umsetzung hinter Schaltern) |
-| [0010](0010-meeting-aufnahmeformat-und-faehigkeiten.md) | Meeting: Aufnahmeformat und Fähigkeiten | akzeptiert (Fähigkeitsmodell umgesetzt; Codecs folgen) |
+| [0010](0010-meeting-aufnahmeformat-und-faehigkeiten.md) | Meeting: Aufnahmeformat und Fähigkeiten | akzeptiert (Fähigkeitsmodell und macOS-Codecs umgesetzt; Windows-HEVC, 4K, 50/60 fps folgen) |

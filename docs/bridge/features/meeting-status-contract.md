@@ -237,10 +237,13 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
   "recording": { // object|null, required, seit Bestand
     "active": true, // boolean, required, seit Bestand
     "file_path": "/Users/.../meeting.mp4.part", // string, required, lokal, seit Bestand
+    "codec": "h264", // string|null, additiv seit Nov 2026 (ADR-0010); MeetingRecordingCodecT der laufenden bzw. letzten Aufnahme, null vor dem ersten Start
+    "container": "mp4", // string|null, additiv seit Nov 2026 (ADR-0010); "mp4" | "mov", folgt aus codec
     "elapsed_seconds": 21, // number, required, volatil, seit Bestand
     "video_frames": 630, // number, required, volatil, seit Bestand
     "audio_samples_written": 2100, // number|null, additiv seit Okt 2026 (B-9), volatil; Windows-Helper Zahl, macOS/Stub null
     "audio_samples_dropped": 3, // number|null, additiv seit Okt 2026 (B-9), volatil; Samples vor Session-Start verworfen (siehe meeting-recording.md)
+    "disk_space_low": null, // object|null, additiv seit Nov 2026; { required_bytes, free_bytes } nach einem mit recording_disk_space_low abgelehnten Start
     "last_error": "" // string, required, seit Bestand; "finalize_timeout" wenn stop() den Finalize-Schritt nach kRecorderFinalizeTimeoutMs abbricht (.part bleibt)
   },
   "virtualCamera": { // object, optional, camelCase, seit Bestand
@@ -354,7 +357,9 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   },
   "recording": { // object, optional, seit ADR-0010; fehlt, wenn die Encoder-Probe scheitert
     "codecs": [ // leer: kein Hardware-Encoder gefunden
-      { "codec": "h264", "container": "mp4", "max_height": 1080, "max_fps": 30 }
+      { "codec": "h264", "container": "mp4", "max_height": 1080, "max_fps": 30 },
+      { "codec": "hevc", "container": "mp4", "max_height": 1080, "max_fps": 30 },
+      { "codec": "prores_422", "container": "mov", "max_height": 1080, "max_fps": 30 }
     ],
     "upload_copy": false // boolean, Bridge kann eine Kopie der Aufnahme hochladen
   }
@@ -373,10 +378,13 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   fuer die dieser Rechner einen Hardware-Encoder hat, je mit Container und der
   groessten Programmgroesse/Bildrate (`max_height` wie bei `program_formats`
   auf das Querformat bezogen). `codec` ist `MeetingRecordingCodecT`: `h264`,
-  `hevc`, `prores_422_lt`, `prores_422`, `prores_422_hq`. Der Recorder schreibt
-  heute nur H.264 in `mp4` (`MEETING_RECORDER_SUPPORTED_CODECS`), deshalb steht
-  nur dieser Eintrag in der Liste, auch wenn der Rechner HEVC- oder
-  ProRes-Hardware hat.
+  `hevc`, `prores_422_lt`, `prores_422`, `prores_422_hq`. Was der Recorder je
+  Plattform schreibt, steht in `MEETING_RECORDER_SUPPORTED_CODECS`: unter macOS
+  alle fuenf, unter Windows nur `h264` (dort nie ProRes). Ein Mac ohne
+  ProRes-Hardware meldet also `h264` und `hevc`, Windows meldet `h264` auch
+  mit HEVC-Hardware. `container` folgt aus dem Codec (`h264`/`hevc`: `mp4`,
+  ProRes: `mov`; `MEETING_RECORDING_CODEC_FORMATS`), `max_height`/`max_fps`
+  sind heute fuer jeden Codec die Werte aus `program_formats`.
 - Die Encoder-Liste kommt aus `meeting-helper --probe-recording`
   (`services/meeting/meeting-recording-probe.ts`): die Bridge startet den
   Helper dafuer als eigenen, kurzlebigen Prozess (keine Engine, kein Geraet),
@@ -393,8 +401,26 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   und wird immer gemeldet.
 - Der lokale Status (`GET /video/status`) startet die Probe nie selbst; er
   traegt `recording` erst, nachdem ein `get_status` sie ausgefuehrt hat.
-- `meeting_recording_start` ist von diesen Feldern noch nicht abhaengig: die
-  Aufnahme laeuft wie bisher (H.264, `mp4`).
+- `meeting_recording_start` und `meeting_recording_toggle` nehmen ein
+  optionales `codec`. Ohne `codec` ist die Aufnahme `h264` in `mp4` wie bisher
+  und wird nicht gegen die Faehigkeiten geprueft. Mit `codec` muss der Wert in
+  `recording.codecs` stehen, sonst kommt
+  `errorCode: "meeting_recording_codec_unsupported"` (auch solange `recording`
+  fehlt), ohne dass der Helper gefragt wird. Die Web-App sendet `codec` nur,
+  wenn `recording` gemeldet ist: das Start-Schema ist strikt, aeltere Bridges
+  lehnen das unbekannte Feld ab. Die Endung von `file_path` muss zum Container
+  des Codecs passen (`.mp4` bzw. `.mov`), sonst ist die Payload ungueltig.
+- Fehlercodes eines abgelehnten Aufnahme-Starts (Start und Toggle):
+  `meeting_recording_codec_unsupported` (Codec nicht gemeldet, oder der Helper
+  hat keinen Hardware-Encoder dafuer; kein Software-Rueckfall) und
+  `recording_disk_space_low` mit `data { required_bytes, free_bytes }` (weniger
+  frei als fuenf Minuten zur Datenrate des Codecs; ersetzt `disk_full`). Die
+  uebrigen Codes (`microphone_*`, `writer_create_failed`, `already_recording`,
+  `invalid_arguments`) sind unveraendert. Tabellen und Datenraten in
+  [meeting-recording.md](./meeting-recording.md).
+- `meeting_recording_stop` hat jetzt 35 s Relay-Timeout und 30 s lokale SLA
+  (vorher 12 s / 8 s), weil das Abschliessen der Datei bis zu 15 s dauern
+  darf. Ein Client-Timeout fuer den Stop muss darueber liegen.
 
 #### `fallback_active` / `fallback_reason` / `model_hash_ok` auf macOS (B-11)
 

@@ -181,7 +181,10 @@ Flag ist die Box immer 1920×1080.
 `meeting_engine_start`; außerhalb davon antwortet die Bridge mit
 `meeting_program_format_unsupported`. `recording` (optional) – Codecs, die der
 Meeting-Recorder auf diesem Rechner mit Hardware-Encoder schreiben kann; fehlt,
-wenn die Encoder-Probe des Helpers scheitert. Beide Felder:
+wenn die Encoder-Probe des Helpers scheitert. `meeting_recording_start` und
+`meeting_recording_toggle` nehmen ein optionales `codec` aus dieser Liste
+(ohne: `h264`); ein nicht gemeldeter Codec wird mit
+`meeting_recording_codec_unsupported` abgelehnt. Beide Felder:
 `docs/bridge/features/meeting-status-contract.md`, Entscheidung: ADR-0010.
 
 #### mode_activate

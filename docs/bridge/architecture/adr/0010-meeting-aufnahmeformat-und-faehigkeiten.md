@@ -1,7 +1,8 @@
 # ADR-0010: Meeting: Aufnahmeformat und Fähigkeiten
 
-- Status: akzeptiert (Fähigkeitsmodell, Probe und Neustart-Regel umgesetzt; weitere Codecs, 4K und 50/60 fps folgen in
-  eigenen Schritten; der Windows-Teil der Probe ist nicht auf Windows-Hardware geprüft)
+- Status: akzeptiert (Fähigkeitsmodell, Probe, Neustart-Regel und die Codecs des macOS-Recorders umgesetzt; HEVC unter
+  Windows, 4K und 50/60 fps folgen in eigenen Schritten; der Windows-Teil von Probe und Recorder ist nicht auf
+  Windows-Hardware geprüft)
 - Datum: 2026-11-22
 
 ## Kontext
@@ -32,16 +33,17 @@ Zwei Lücken im bisherigen Vertrag kamen dazu:
   Beide Felder sind optional: ältere Bridges liefern sie nicht, ältere Web-Apps ignorieren sie. Die Web-App behandelt
   ein fehlendes Feld als „nicht unterstützt" und sendet neue Parameter nur, wenn die Fähigkeit gemeldet ist.
 - **Gemeldet wird die Schnittmenge aus „kann der Recorder" und „kann der Rechner".** Eine benannte Liste
-  (`MEETING_RECORDER_SUPPORTED_CODECS`, `services/meeting/meeting-capabilities.ts`) hält fest, welche Codecs der
-  Recorder schreibt – heute nur H.264 in `mp4`. Ein Codec erscheint nur, wenn er dort steht **und** die Probe einen
-  Hardware-Encoder dafür gefunden hat. HEVC und ProRes werden also noch nicht gemeldet, auch wenn der Rechner sie
-  beherrscht; die Liste wächst mit dem Recorder.
+  (`MEETING_RECORDER_SUPPORTED_CODECS`, `services/meeting/meeting-capabilities.ts`) hält je Plattform fest, welche
+  Codecs der Recorder schreibt: unter macOS H.264, HEVC und ProRes 422 LT/422/HQ, unter Windows nur H.264. Ein Codec
+  erscheint nur, wenn er dort steht **und** die Probe einen Hardware-Encoder dafür gefunden hat. Die Liste wächst mit
+  dem Recorder (siehe „Nachtrag: Codecs und Container").
 - **Nur Hardware-Encoder, kein stiller Software-Rückfall** – dieselbe Doktrin wie beim Live-Programm und der
   PGM-Aufnahme (ADR-0002/0006/0009), jetzt auch für den Meeting-Recorder. Ein Codec ohne Hardware-Encoder wird nicht
-  angeboten, statt auf der CPU zu laufen und Keyer und Programm das Zeitbudget zu nehmen. Stand dieses ADR: die Doktrin
-  gilt für das, was gemeldet wird. Der Recorder selbst schreibt H.264 weiter über `AVAssetWriter` (macOS) bzw. den
-  Sink Writer mit `MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS` (Windows) und wählt seinen Encoder noch nicht ausdrücklich;
-  das ausdrückliche Wählen und der Fehlercode statt Rückfall kommen mit den Codec-Schritten.
+  angeboten, statt auf der CPU zu laufen und Keyer und Programm das Zeitbudget zu nehmen. Die Doktrin gilt für das,
+  was gemeldet wird, und unter macOS auch für den Recorder selbst: er verlangt für jeden Codec einen Hardware-Encoder
+  und lehnt sonst mit Fehlercode ab (Nachtrag). Unter Windows schreibt der Recorder H.264 weiter über den Sink Writer
+  mit `MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS` und wählt seinen Encoder noch nicht ausdrücklich; das kommt mit dem
+  Windows-Schritt.
 - **Eine Probe im Helper, ein Ergebnis je Bridge-Lauf.** `meeting-helper --probe-recording` gibt eine JSON-Zeile aus
   (`recording_probe`: `backend`, `ok`, `encoders[{ codec, name, vendor? }]`) und beendet sich, ohne Engine oder Gerät zu
   starten – nach dem Vorbild von `pgm-helper --probe`. macOS liest die VideoToolbox-Encoder-Liste und behält die
@@ -72,6 +74,45 @@ Zwei Lücken im bisherigen Vertrag kamen dazu:
   Engine – oder während ein Start mit anderer Bildrate noch läuft – wird mit `meeting_engine_restart_required`
   abgelehnt. Alles Übrige aus ADR-0007 bleibt: die Bridge startet nie selbst neu, eine Ablehnung ändert nichts, läuft
   eine Aufnahme, nennt die Fehlermeldung das.
+
+## Nachtrag: Codecs und Container (2026-11-22)
+Der macOS-Recorder schreibt jetzt alle Codecs des Vertrags; der Codec wird je Aufnahme gewählt.
+
+- **Der Codec bestimmt Container und Ton.** H.264 (High) und HEVC (Main, Sample-Entry `hvc1`, damit QuickTime und
+  Apple-Player die Datei öffnen) gehen mit AAC in `.mp4`; ProRes 422 LT/422/HQ geht mit 24-Bit-PCM in `.mov`. Je Seite
+  hält genau eine Tabelle das fest – `MEETING_RECORDING_CODEC_FORMATS` (`services/meeting/meeting-recording-codecs.ts`)
+  und `kRecordingCodecFormats` (`recorder/recording_codec.h`) –, und ein Test vergleicht beide Zeile für Zeile.
+  Pfadprüfung, Standardpfad und Speichern-Dialog lesen die Endung aus der Bridge-Tabelle; die Endung muss zum Codec
+  passen.
+- **`codec` ist ein optionaler Parameter** von `meeting_recording_start`, `meeting_recording_toggle` und
+  `meeting_recording_pick_path`. Ohne ihn bleibt es bei H.264 in `.mp4`: so starten ältere Web-Apps und jede
+  Stream-Deck-Taste (sie sendet keine Payload, ihre Aufnahme ist deshalb immer H.264). Ein angegebener Codec muss in
+  `capabilities.meeting.recording.codecs` stehen, sonst lehnt die Bridge mit `meeting_recording_codec_unsupported` ab,
+  bevor der Helper gefragt wird. Ein Start ohne `codec` wird nicht an den Fähigkeiten geprüft, damit die Aufnahme
+  nicht von der Probe abhängt.
+- **Der macOS-Recorder verlangt Hardware und fällt nicht zurück.** Er fragt vor dem Anlegen der Datei die
+  VideoToolbox-Encoder-Liste (dieselbe Enumeration wie die Probe) und setzt an jedem Video-Eingang
+  `kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder`. Gemessen (M1 Pro): `AVAssetWriter` wertet die
+  Vorgabe in `startWriting` aus und scheitert dort mit `kVTCouldNotFindVideoEncoderErr`, wenn sie nicht erfüllbar ist –
+  für H.264, HEVC und ProRes. Beides führt zu `meeting_recording_codec_unsupported`. Grenze: `AVAssetWriter` nennt den
+  benutzten Encoder nicht; geprüft ist, dass die Vorgabe durchgesetzt wird, nicht der Name des Encoders.
+- **Datenrate je Codec** in der gemeinsamen Policy (`helper_common/recording_encode_policy.h`): H.264 unverändert
+  (0,35 bit/px, 2–40 Mbit/s; die PGM-Aufnahme nutzt dieselbe Funktion und bekommt dieselben Werte), HEVC 60 % davon,
+  ProRes nach Apples veröffentlichten Zielraten (102/147/220 Mbit/s bei 1080p29,97, skaliert mit Pixeln und Bildrate;
+  der Encoder bekommt keine Bitrate). 60 % statt der oft genannten 50 %, weil der Recorder in Echtzeit, in Hardware und
+  ohne Bild-Umsortierung encodiert. Die 40-Mbit/s-Grenze bleibt, bis 4K gemeldet wird.
+- **Freier Speicher im Verhältnis zur Datenrate:** ein Start braucht Platz für fünf Minuten zur erwarteten Datenrate
+  des Codecs (H.264 1080p30 rund 0,8 GB, ProRes 422 HQ rund 8,3 GB) statt fest 500 MB; sonst
+  `recording_disk_space_low` mit benötigten und freien Bytes. Der Code ersetzt `disk_full`.
+- **Stopp-Zeiten:** `meeting_recording_stop` bekommt 35 s Relay-Timeout und 30 s lokale SLA wie
+  `pgm_recording_stop`. Vorher (12 s / 8 s) lag beides unter dem Abschluss der Datei (bis 15 s) und dem RPC (20 s).
+- **Windows:** der Recorder nimmt dieselbe Anfrage (`RecordingRequest`) entgegen, schreibt nur H.264 und lehnt jeden
+  anderen Codec mit `meeting_recording_codec_unsupported` ab. ProRes wird es dort nicht geben.
+
+Verworfen: **der Stream-Deck-Taste den zuletzt in der Web-App gewählten Codec geben** – die Wahl liegt in der Web-App
+und nicht in der Bridge; die Bridge müsste sie speichern oder erraten. **Jede Endung annehmen und den Container aus
+der Endung ableiten** – dann hätten Endung und Codec zwei Quellen. **Software-ProRes auf Macs ohne ProRes-Hardware**
+– siehe Doktrin.
 
 ## Alternativen
 - **Plattform-Weiche in der Web-App** („macOS kann ProRes, Windows nicht"): verworfen. Ob HEVC- oder ProRes-Hardware da
@@ -113,13 +154,14 @@ Zwei Lücken im bisherigen Vertrag kamen dazu:
   zwei weitere Läufe, ohne darauf zu warten; `recording` erscheint dann erst in der Statusabfrage nach dem geglückten
   Lauf. Der lokale Status (`GET /video/status`) startet die Probe nie und zeigt
   `recording` erst danach.
-- `meeting_recording_start` wertet die neuen Felder noch nicht aus; die Aufnahme bleibt H.264 in `.mp4`. Mit jedem
-  Codec, den der Recorder lernt, wächst `MEETING_RECORDER_SUPPORTED_CODECS`; mit jeder Messung am Gerät wachsen
+- Mit jedem Codec, den ein Recorder lernt, wächst `MEETING_RECORDER_SUPPORTED_CODECS`; mit jeder Messung am Gerät wachsen
   `MEETING_PROGRAM_FORMAT_LIMITS` – dann voraussichtlich je Plattform und je Codec verschieden (`max_height`/`max_fps`
   je Eintrag sind dafür schon im Vertrag).
-- Auf Macs ohne ProRes-Hardware wird ProRes unter dieser Doktrin nicht angeboten werden. Ob das so bleiben soll, ist vor
-  dem ProRes-Schritt zu entscheiden; ein Abweichen wäre ein eigenes ADR.
+- Auf Macs ohne ProRes-Hardware wird ProRes unter dieser Doktrin nicht angeboten. Das ist so entschieden (2026-11-22):
+  ProRes gibt es nur, wo die Probe ProRes-Hardware meldet.
 - Die virtuelle Kamera unter macOS liefert fest 30 fps (`VCamDeviceSource.swift`); bei einem 25-fps-Programm
   wiederholt sie Bilder ungleichmäßig. Die Aufnahme ist davon nicht betroffen.
-- Nur am Gerät prüfbar: der gesamte Windows-Teil der Probe (`recording_probe_mediafoundation.cpp` ist auf macOS nicht
-  übersetzbar), ein 25-fps-Programm mit echter Kamera, virtueller Kamera und Aufnahme auf beiden Plattformen.
+- Nur am Gerät prüfbar: der gesamte Windows-Teil der Probe und des Recorders (`recording_probe_mediafoundation.cpp`
+  und `meeting_recorder_mediafoundation.cpp` sind auf macOS nicht übersetzbar), ein 25-fps-Programm mit echter Kamera,
+  virtueller Kamera und Aufnahme auf beiden Plattformen, und eine Aufnahme je Codec aus der laufenden Engine mit
+  Mikrofon (die Codecs sind mit dem eigenständigen Writer-Test geprüft, nicht im Helper-Betrieb).

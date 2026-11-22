@@ -1,58 +1,68 @@
-# Task: Meeting recording/program capabilities and contract (package A1)
+# Task: Meeting recording codecs and containers, macOS (package A2)
 
 ## Raw request
-Package A1 of the approved plan "Meeting-Aufnahmeformat einstellbar + Post Production in der Cloud" (Vorhaben A):
-the bridge reports what the machine can really do, instead of the web app guessing by platform. Scope: shared
-protocol types, a hardware-encoder probe in the meeting helper (macOS + Windows), the capability mapping in the
-bridge, frame rate as part of the restart decision, a format gate on `meeting_engine_start`, docs and ADR-0010.
-Out of scope: the recorder itself (codecs/containers are package A2), the web app, the virtual camera.
+Package A2 of the approved plan "Meeting-Aufnahmeformat einstellbar + Post Production in der Cloud" (Vorhaben A):
+the meeting recorder writes a selectable codec. Scope: one request struct for the native recorder, the macOS writer
+(H.264, HEVC, ProRes 422 LT/422/HQ, hardware only), one codec -> container table per side, the capability list per
+platform with a gate on start/toggle, bitrate policy per codec, a free-disk floor that follows the data rate, the
+stop timeouts, docs and ADR-0010. Out of scope: an upload copy, HEVC on Windows (A3), 4K (A4), the web app (A5).
 Local commits only; nothing is pushed, no PR, no bridge/helper instance is started.
 
 ## Context
 - Customer / project: broadify bridge, meeting mode
-- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/meeting-recording-capabilities,
-  feature/meeting-recording-capabilities
-- Base branch: dev (dfc9e160, v0.27.3-rc.24)
+- Worktree / branch: /Users/gabrielbaeuerle/broadify-bridge-worktrees/meeting-recording-codecs,
+  feature/meeting-recording-codecs
+- Base branch: feature/meeting-recording-capabilities (package A1, unmerged, on top of dev dfc9e160)
+- Decisions taken by the owner: 25 fps is offered now; hardware encoders only, so ProRes only where the probe
+  reports ProRes hardware; Windows gets no ProRes.
 
 ## Plan
-1. `packages/protocol`: `MeetingRecordingCodecT`, `MeetingRecordingContainerT`, `MeetingRecordingFormatT`;
-   `MeetingCapabilitiesT` gets optional `program_formats` and `recording`.
-2. Helper: `--probe-recording` prints one `recording_probe` JSON line (hardware encoders only) and exits.
-   Platform-neutral result + JSON in `recorder/recording_probe.{h,cpp}` (ctest); VideoToolbox, Media Foundation
-   and stub behind the existing per-platform split.
-3. Bridge: `meeting-recording-probe.ts` (spawn with timeout, zod); `MeetingHelperManager.probeRecordingEncoders()`
-   runs it once per bridge run, never from `start()`; `getMeetingCapabilities` maps it. Advertised codecs =
-   `MEETING_RECORDER_SUPPORTED_CODECS` (h264/mp4 today) intersected with the probe.
-4. `isSameProgramGeometry` -> `isSameProgramFormat` (width, height, fps); `meeting_engine_start` is gated against
-   `MEETING_PROGRAM_FORMAT_LIMITS` with `meeting_program_format_unsupported`.
-5. Docs: meeting-status-contract.md, meeting-recording.md, relay-protocol.md, meeting-helper-dev-setup.md,
-   ADR-0010 (cross-reference in ADR-0007 and the index).
+1. Native: `RecordingRequest` replaces the five parameters of `MeetingRecorder::start` (macOS, Windows, stub);
+   `RecordingCodec` moves to helper-common, `recorder/recording_codec.h` holds the codec -> container/audio table;
+   `recording.start` parses `codec` (absent = h264); the status reports `codec`, `container`, `disk_space_low`.
+2. macOS writer: codec, file type, profile and audio from the request; hardware required through the encoder
+   specification plus a VideoToolbox pre-check; CFR clock, BT.709 and `.part` finalize untouched.
+3. Bridge: `meeting-recording-codecs.ts` as the single table, read by the path guard, the default path, the save
+   panel, the schemas (`codec` optional on start, toggle, pick_path) and the capability block.
+4. `MEETING_RECORDER_SUPPORTED_CODECS` per platform; start/toggle gated with `meeting_recording_codec_unsupported`.
+5. `recording_encode_policy.h`: data rate per codec, H.264 unchanged; free-disk floor of five minutes with
+   `recording_disk_space_low` and the required bytes.
+6. `meeting_recording_stop`: relay 35 s / local 30 s, contract test extended.
+7. Docs: meeting-recording.md, meeting-status-contract.md, relay-protocol.md, ADR-0010 (addendum).
 
 ## Acceptance criteria
-1. `get_status.capabilities.meeting` carries `program_formats` always and `recording` when the probe succeeded;
-   with a failed or timed-out probe `recording` is absent and one warning is logged (jest).
-2. Only h264/mp4 is advertised, and only with a hardware H.264 encoder in the probe (jest).
-3. `meeting_engine_start` with another fps on a running engine or a pending start returns
-   `meeting_engine_restart_required`; the same format stays idempotent (jest, shown red without the fps compare).
-4. `meeting_engine_start` outside the advertised formats returns `meeting_program_format_unsupported` without
-   side effects (jest).
-5. The probe line's shape and codec names are pinned by ctest; the macOS helper prints a valid line.
-6. `MeetingHelperManager.start()` stays free of awaits and never runs the probe (jest).
+1. Each codec written by the production writer and worker reads back as the right container brand, sample entry,
+   profile, BT.709 tags and audio format (ctest `meeting_recorder_writer_test`, plus ffprobe by hand).
+2. A codec without a hardware encoder is refused with the codec token, and a writer that cannot get hardware fails
+   in `startWriting` instead of falling back (ctest).
+3. The H.264 rate by codec equals `recorderVideoBitrateBps` value for value, so the PGM recording is unchanged
+   (ctest `recording_encode_policy_test`).
+4. The bridge table and the native table agree row by row (jest reads `recording_codec.h`).
+5. A start without `codec` is byte-for-byte the RPC it was; a start with an unadvertised codec never reaches the
+   helper (jest).
+6. `recording_disk_space_low` carries `required_bytes` / `free_bytes` (jest, ctest for the status JSON).
+7. finalize 15 s < `recording.stop` RPC 20 s < local SLA 30 s < relay 35 s (release contract test, shown red with
+   the old 12 s / 8 s).
 
 ## Review
 - Round: 0/3
 - Verdict: (pending)
 - Must-fix (open):
 - Notes (non-blocking):
-  - `program_formats` is reported independently of the probe (it does not depend on encoders, and the start gate
-    must be synchronous); only `recording` is omitted when the probe fails.
-  - 25 fps is advertised next to 30 although only 30 fps has run on a device.
+  - A Stream Deck REC key sends no payload and therefore always records H.264, whatever the web app has selected.
+  - On a machine without a hardware H.264 encoder (hosted CI runner) `meeting_recorder_writer_test` verifies the
+    refusals and skips the cases that need a writer.
+  - `meeting_recording_pick_path` and `meeting_recording_toggle` now validate their payload with a schema; the old
+    fields stay lenient, an unknown `codec` is an invalid payload.
 - Handoff to human (if any):
-  - Windows probe (`recording_probe_mediafoundation.cpp`) is unverified until Windows CI / device.
+  - Windows recorder (`meeting_recorder_mediafoundation.cpp`) is unverified until Windows CI / device.
+  - No recording from the running engine with a real microphone was made; the bridge on this machine was not started.
+  - Web app: client timeout for `meeting_recording_stop`, mapping of the two new error codes, `codec` in the payloads.
 
 ## Verification
-- [x] Tests pass (jest 236 suites / 2839 tests; ctest recording_probe_test, options_test, control_server_test,
-      program_stream_rpc_test; release contract tests 138)
+- [x] Tests pass (jest 238 suites / 2899 tests; ctest recorder_encode_policy_test, recording_encode_policy_test,
+      recording_codec_test, recording_probe_test, control_server_test, meeting_recorder_writer_test; release contract
+      tests 138)
 - [x] Lint / type-check pass (`npm run lint`, `tsc -p apps/bridge/tsconfig.build.json`, `npm run build:protocol`)
 - [ ] Browser-verified (if UI-affecting) - not applicable, no UI in this package
-- [x] Behaviour change shown red before green (fps restart tests fail with the old width/height-only compare)
+- [x] Behaviour change shown red before green (stop-timeout contract test fails with the old fast class)
