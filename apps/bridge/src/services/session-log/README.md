@@ -55,7 +55,7 @@ Bridge-ADR-0008 (`docs/bridge/architecture/adr/0008-session-event-log-nur-auf-op
   Usage-Recorder (Abrechnung, nur Meeting) bleibt unverändert.
 
 - **Upload zur Plattform** (`session-log-uploader.ts`): nach `recording_stopped` (Datei komplett) direkt an die
-  Web-App, signiert mit dem Enrollment-Schlüssel der Bridge (`bridge-assertion.ts`, Format wie die Worker-Assertion,
+  Web-App, signiert mit dem Enrollment-Schlüssel der Bridge (`../postpro/bridge-assertion.ts`, Format wie die Worker-Assertion,
   `iss: broadify-bridge`): `POST /api/postpro/bridge/sessions/upload-url` → `PUT` Signed URL →
   `POST …/sessions/complete`. Marker `<session>.uploaded.json` verhindert Doppel-Uploads, Startscan holt Reste nach.
   Braucht zusätzlich zur URL eine Bridge-ID; ohne URL gibt es seit 2026-11-19 gar keine Logs mehr (siehe oben).
