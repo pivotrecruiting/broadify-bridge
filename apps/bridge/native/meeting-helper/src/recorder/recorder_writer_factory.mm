@@ -1,11 +1,102 @@
 #include "recorder/recorder_writer_factory.h"
 
 #if defined(__APPLE__)
+#include "recorder/meeting_recorder.h"
 #include "recorder/recorder_encode_policy.h"
+#include "recorder/recording_probe.h"
 #include "util/helper_event_log.h"
 #include "util/json_utils.h"
 
+#import <VideoToolbox/VideoToolbox.h>
+
 namespace broadify::meeting {
+
+namespace {
+
+AVVideoCodecType videoCodecType(RecordingCodec codec) {
+  switch (codec) {
+    case RecordingCodec::H264:
+      return AVVideoCodecTypeH264;
+    case RecordingCodec::Hevc:
+      return AVVideoCodecTypeHEVC;
+    case RecordingCodec::ProRes422Lt:
+      return AVVideoCodecTypeAppleProRes422LT;
+    case RecordingCodec::ProRes422:
+      return AVVideoCodecTypeAppleProRes422;
+    case RecordingCodec::ProRes422Hq:
+      return AVVideoCodecTypeAppleProRes422HQ;
+  }
+  return AVVideoCodecTypeH264;
+}
+
+// Encoder properties of the bitrate-driven codecs; nil for ProRes, which is
+// quality driven, all-intra and takes none of them.
+NSDictionary *videoCompressionProperties(RecordingCodec codec, uint32_t width,
+                                         uint32_t height, uint32_t fps) {
+  if (codec != RecordingCodec::H264 && codec != RecordingCodec::Hevc) {
+    return nil;
+  }
+  NSMutableDictionary *properties = [@{
+    AVVideoAverageBitRateKey :
+        @(recorderVideoDataRateBps(codec, width, height, fps)),
+    AVVideoExpectedSourceFrameRateKey : @(fps),
+    AVVideoAllowFrameReorderingKey : @NO,
+    AVVideoMaxKeyFrameIntervalKey : @(recorderKeyframeInterval(fps)),
+  } mutableCopy];
+  if (codec == RecordingCodec::H264) {
+    properties[AVVideoH264EntropyModeKey] = AVVideoH264EntropyModeCABAC;
+    properties[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel;
+  } else {
+    properties[AVVideoProfileLevelKey] =
+        (__bridge NSString *)kVTProfileLevel_HEVC_Main_AutoLevel;
+  }
+  return properties;
+}
+
+// AAC next to the delivery codecs, uncompressed 24-bit PCM next to ProRes
+// (an editing master keeps its audio uncompressed). Mono 48 kHz either way.
+NSDictionary *audioSettings(RecordingAudioCodec audio) {
+  switch (audio) {
+    case RecordingAudioCodec::Aac:
+      break;
+    case RecordingAudioCodec::Pcm:
+      return @{
+        AVFormatIDKey : @(kAudioFormatLinearPCM),
+        AVSampleRateKey : @(48000),
+        AVNumberOfChannelsKey : @(1),
+        AVLinearPCMBitDepthKey : @(24),
+        AVLinearPCMIsFloatKey : @NO,
+        AVLinearPCMIsBigEndianKey : @NO,
+        AVLinearPCMIsNonInterleaved : @NO,
+      };
+  }
+  return @{
+    AVFormatIDKey : @(kAudioFormatMPEG4AAC),
+    AVSampleRateKey : @(48000),
+    AVNumberOfChannelsKey : @(1),
+    AVEncoderBitRateKey : @(128000),
+  };
+}
+
+}  // namespace
+
+NSDictionary *recorderEncoderSpecification() {
+  return @{
+    (__bridge NSString *)
+    kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder : @YES,
+  };
+}
+
+std::string recorderStartWritingError(NSError *error) {
+  if (error == nil) {
+    return "start_writing_failed";
+  }
+  NSError *underlying = error.userInfo[NSUnderlyingErrorKey];
+  if (underlying != nil && underlying.code == kVTCouldNotFindVideoEncoderErr) {
+    return kRecordingCodecUnsupportedError;
+  }
+  return [[error localizedDescription] UTF8String] ?: "start_writing_failed";
+}
 
 void logRecorderEvent(const char *event, const std::string &detail) {
   emitHelperEvent("{\"type\":\"meeting_recorder\",\"event\":\"" +
@@ -45,15 +136,25 @@ std::string recorderSidecarPath(const std::string &finalPath) {
 
 RecorderWriterBundle makeRecorderWriter(const std::string &outputPath,
                                         uint32_t width, uint32_t height,
-                                        uint32_t fps) {
+                                        uint32_t fps, RecordingCodec codec) {
   RecorderWriterBundle bundle;
+  // Refused here with the stable token, before a file exists; the encoder
+  // specification below is what holds the writer itself to hardware.
+  if (!recordingProbeHasEncoder(probeRecordingEncoders(), codec)) {
+    bundle.error = kRecordingCodecUnsupportedError;
+    return bundle;
+  }
+  const RecordingCodecFormat &format = recordingCodecFormat(codec);
   NSString *path = [NSString stringWithUTF8String:outputPath.c_str()];
   NSURL *url = [NSURL fileURLWithPath:path];
 
   NSError *writerError = nil;
-  AVAssetWriter *writer = [AVAssetWriter assetWriterWithURL:url
-                                                   fileType:AVFileTypeMPEG4
-                                                      error:&writerError];
+  AVAssetWriter *writer =
+      [AVAssetWriter assetWriterWithURL:url
+                               fileType:format.container == RecordingContainer::Mov
+                                            ? AVFileTypeQuickTimeMovie
+                                            : AVFileTypeMPEG4
+                                  error:&writerError];
   if (writer == nil) {
     bundle.error = writerError != nil
                        ? ([[writerError localizedDescription] UTF8String]
@@ -70,25 +171,22 @@ RecorderWriterBundle makeRecorderWriter(const std::string &outputPath,
   // sidecar + atomic rename instead.
 
   const uint32_t safeFps = fps > 0 ? fps : 30;
-  const uint64_t bitrate = recorderVideoBitrateBps(width, height, safeFps);
-  NSDictionary *videoSettings = @{
-    AVVideoCodecKey : AVVideoCodecTypeH264,
+  NSMutableDictionary *videoSettings = [@{
+    AVVideoCodecKey : videoCodecType(codec),
     AVVideoWidthKey : @(width),
     AVVideoHeightKey : @(height),
-    AVVideoCompressionPropertiesKey : @{
-      AVVideoAverageBitRateKey : @(bitrate),
-      AVVideoExpectedSourceFrameRateKey : @(safeFps),
-      AVVideoAllowFrameReorderingKey : @NO,
-      AVVideoH264EntropyModeKey : AVVideoH264EntropyModeCABAC,
-      AVVideoMaxKeyFrameIntervalKey : @(recorderKeyframeInterval(safeFps)),
-      AVVideoProfileLevelKey : AVVideoProfileLevelH264HighAutoLevel,
-    },
+    AVVideoEncoderSpecificationKey : recorderEncoderSpecification(),
     AVVideoColorPropertiesKey : @{
       AVVideoColorPrimariesKey : AVVideoColorPrimaries_ITU_R_709_2,
       AVVideoTransferFunctionKey : AVVideoTransferFunction_ITU_R_709_2,
       AVVideoYCbCrMatrixKey : AVVideoYCbCrMatrix_ITU_R_709_2,
     },
-  };
+  } mutableCopy];
+  NSDictionary *compression =
+      videoCompressionProperties(codec, width, height, safeFps);
+  if (compression != nil) {
+    videoSettings[AVVideoCompressionPropertiesKey] = compression;
+  }
   AVAssetWriterInput *videoInput =
       [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
                                          outputSettings:videoSettings];
@@ -110,15 +208,9 @@ RecorderWriterBundle makeRecorderWriter(const std::string &outputPath,
     return bundle;
   }
 
-  NSDictionary *audioSettings = @{
-    AVFormatIDKey : @(kAudioFormatMPEG4AAC),
-    AVSampleRateKey : @(48000),
-    AVNumberOfChannelsKey : @(1),
-    AVEncoderBitRateKey : @(128000),
-  };
   AVAssetWriterInput *audioInput =
       [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio
-                                         outputSettings:audioSettings];
+                                         outputSettings:audioSettings(format.audio)];
   audioInput.expectsMediaDataInRealTime = YES;
   if ([writer canAddInput:audioInput]) {
     [writer addInput:audioInput];

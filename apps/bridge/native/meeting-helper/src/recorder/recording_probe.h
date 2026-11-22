@@ -1,5 +1,7 @@
 #pragma once
 
+#include "recorder/recording_codec.h"
+
 #include <string>
 #include <vector>
 
@@ -13,12 +15,6 @@ namespace broadify::meeting {
 // recording (ADR-0002/0006/0009): a software encoder is never listed, so a
 // codec without a hardware encoder is not offered instead of silently falling
 // back to the CPU.
-
-// Archive codecs of the recording contract; the names are the values of
-// `MeetingRecordingCodecT` in packages/protocol.
-enum class RecordingCodec { H264, Hevc, ProRes422Lt, ProRes422, ProRes422Hq };
-
-const char *recordingCodecName(RecordingCodec codec);
 
 struct RecordingEncoderInfo {
   RecordingCodec codec = RecordingCodec::H264;
@@ -48,6 +44,10 @@ struct RecordingProbeResult {
 //    "encoders":[{"codec":"h264","name":"...","vendor":"..."}]}
 // with "vendor" only where the platform reports one.
 std::string recordingProbeJson(const RecordingProbeResult &result);
+
+// Whether the enumeration found a hardware encoder for the codec.
+bool recordingProbeHasEncoder(const RecordingProbeResult &result,
+                              RecordingCodec codec);
 
 // Platform enumeration (VideoToolbox, Media Foundation, or the empty result of
 // a platform without a recorder backend). Enumeration only: no encoder session

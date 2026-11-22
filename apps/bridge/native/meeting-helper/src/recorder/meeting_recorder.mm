@@ -25,10 +25,6 @@ namespace broadify::meeting {
 
 namespace {
 
-// Minimum free disk space to start a recording (REC-02): well above what a
-// few minutes of 1080p H.264 needs, far below any realistic working drive.
-constexpr uint64_t kMinFreeDiskBytes = 500ull * 1024ull * 1024ull;
-
 double secondsSince(std::chrono::steady_clock::time_point start) {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
       .count();
@@ -91,6 +87,8 @@ struct MeetingRecorder::Impl {
   // recording is never deleted before the new one is complete.
   std::string partPath;
   std::string lastError;
+  std::optional<RecordingDiskSpace> diskSpaceLow;
+  std::optional<RecordingCodec> codec;
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t fps = 30;
@@ -200,9 +198,11 @@ std::vector<MicrophoneInfo> MeetingRecorder::listMicrophones() const {
   return result;
 }
 
-bool MeetingRecorder::start(const std::string &filePath,
-                            const std::string &micDeviceId, uint32_t width,
-                            uint32_t height, uint32_t fps) {
+bool MeetingRecorder::start(const RecordingRequest &request) {
+  const std::string &filePath = request.filePath;
+  const uint32_t width = request.width;
+  const uint32_t height = request.height;
+  const uint32_t fps = request.fps;
   // K-04: setup runs WITHOUT the mutex. appendVideoFrame is called from the
   // program loop every tick on this same mutex - holding it across the
   // microphone permission wait (up to 10 s) froze VCam/FrameBus/SDI/preview
@@ -214,6 +214,7 @@ bool MeetingRecorder::start(const std::string &filePath,
       impl_->lastError = "already_recording";
       return false;
     }
+    impl_->diskSpaceLow.reset();
     if (width == 0 || height == 0 || filePath.empty()) {
       impl_->lastError = "invalid_arguments";
       return false;
@@ -233,7 +234,8 @@ bool MeetingRecorder::start(const std::string &filePath,
     }
 
     // REC-02: refuse to start on a nearly full disk instead of failing
-    // opaquely minutes into the recording.
+    // opaquely minutes into the recording. The floor follows the expected
+    // data rate of the codec (recorderMinFreeDiskBytes).
     const std::string directory = [&] {
       const size_t slash = filePath.find_last_of('/');
       return slash == std::string::npos ? std::string(".")
@@ -243,8 +245,14 @@ bool MeetingRecorder::start(const std::string &filePath,
     if (statvfs(directory.c_str(), &vfs) == 0) {
       const uint64_t freeBytes =
           static_cast<uint64_t>(vfs.f_bavail) * vfs.f_frsize;
-      if (freeBytes < kMinFreeDiskBytes) {
-        return fail("disk_full");
+      const uint64_t requiredBytes =
+          recorderMinFreeDiskBytes(request.codec, width, height, fps);
+      if (freeBytes < requiredBytes) {
+        {
+          std::lock_guard<std::mutex> lock(impl_->mutex);
+          impl_->diskSpaceLow = RecordingDiskSpace{requiredBytes, freeBytes};
+        }
+        return fail(kRecordingDiskSpaceLowError);
       }
     }
 
@@ -259,7 +267,7 @@ bool MeetingRecorder::start(const std::string &filePath,
     }
 
     RecorderWriterBundle bundle =
-        makeRecorderWriter(partPathUtf8, width, height, fps);
+        makeRecorderWriter(partPathUtf8, width, height, fps, request.codec);
     if (bundle.writer == nil) {
       return fail(bundle.error);
     }
@@ -270,7 +278,7 @@ bool MeetingRecorder::start(const std::string &filePath,
     const uint32_t safeFps = fps > 0 ? fps : 30;
 
     // Microphone capture session.
-    AVCaptureDevice *micDevice = resolveMicrophone(micDeviceId);
+    AVCaptureDevice *micDevice = resolveMicrophone(request.micDeviceId);
     if (micDevice == nil) {
       return fail("microphone_not_found");
     }
@@ -295,9 +303,9 @@ bool MeetingRecorder::start(const std::string &filePath,
     [micSession addOutput:audioOutput];
 
     if (![writer startWriting]) {
-      return fail(writer.error != nil
-                      ? [[writer.error localizedDescription] UTF8String]
-                      : "start_writing_failed");
+      // The writer may already have created the (empty) sidecar.
+      [fm removeItemAtPath:partPath error:nil];
+      return fail(recorderStartWritingError(writer.error));
     }
     const CMTime sessionStart = CMClockGetTime(CMClockGetHostTimeClock());
     [writer startSessionAtSourceTime:sessionStart];
@@ -338,6 +346,7 @@ bool MeetingRecorder::start(const std::string &filePath,
     impl_->audioQueue = audioQueue;
     impl_->filePath = filePath;
     impl_->partPath = partPathUtf8;
+    impl_->codec = request.codec;
     impl_->width = width;
     impl_->height = height;
     impl_->fps = safeFps;
@@ -465,6 +474,8 @@ RecordingStatus MeetingRecorder::status() const {
   RecordingStatus status;
   status.active = impl_->active;
   status.filePath = impl_->filePath;
+  status.codec = impl_->codec;
+  status.diskSpaceLow = impl_->diskSpaceLow;
   if (impl_->videoWorker != nullptr) {
     const RecorderVideoWorker::Counters counters = impl_->videoWorker->counters();
     status.videoFrames = counters.videoFrames;

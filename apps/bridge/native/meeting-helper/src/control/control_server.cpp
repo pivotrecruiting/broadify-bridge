@@ -354,6 +354,28 @@ std::string optionalCounterJson(const std::optional<uint64_t> &value) {
   return value.has_value() ? std::to_string(*value) : std::string("null");
 }
 
+std::string quotedOrNull(const char *value) {
+  return value != nullptr ? "\"" + std::string(value) + "\"" : std::string("null");
+}
+
+std::string recordingCodecJson(const std::optional<RecordingCodec> &codec) {
+  return quotedOrNull(codec ? recordingCodecName(*codec) : nullptr);
+}
+
+std::string recordingContainerJson(const std::optional<RecordingCodec> &codec) {
+  return quotedOrNull(
+      codec ? recordingContainerName(recordingCodecFormat(*codec).container)
+            : nullptr);
+}
+
+std::string diskSpaceLowJson(const std::optional<RecordingDiskSpace> &space) {
+  if (!space) {
+    return "null";
+  }
+  return "{\"required_bytes\":" + std::to_string(space->requiredBytes) +
+         ",\"free_bytes\":" + std::to_string(space->freeBytes) + "}";
+}
+
 }  // namespace
 
 std::string recordingStatusJson(const RecordingStatus &s) {
@@ -361,6 +383,10 @@ std::string recordingStatusJson(const RecordingStatus &s) {
   out << "{\"ok\":true,\"recording\":{"
       << "\"active\":" << (s.active ? "true" : "false") << ","
       << "\"file_path\":\"" << jsonEscape(s.filePath) << "\","
+      // Codec and container of the current or last recording (ADR-0010);
+      // null before the first start.
+      << "\"codec\":" << recordingCodecJson(s.codec) << ","
+      << "\"container\":" << recordingContainerJson(s.codec) << ","
       << "\"elapsed_seconds\":" << s.elapsedSeconds << ","
       << "\"video_frames\":" << s.videoFrames << ","
       // Frames the recorder could not encode / frames waiting for the macOS
@@ -372,6 +398,8 @@ std::string recordingStatusJson(const RecordingStatus &s) {
       << optionalCounterJson(s.audioSamplesWritten) << ","
       << "\"audio_samples_dropped\":"
       << optionalCounterJson(s.audioSamplesDroppedBeforeStart) << ","
+      // What a start refused with recording_disk_space_low needed and found.
+      << "\"disk_space_low\":" << diskSpaceLowJson(s.diskSpaceLow) << ","
       << "\"last_error\":\"" << jsonEscape(s.lastError) << "\"}}";
   return out.str();
 }
@@ -760,9 +788,25 @@ std::string handleRpc(const std::string &line,
       return errorResponse(id, "invalid_request",
                            "recording.start requires file_path.");
     }
-    const bool started = recorder.start(filePath, micDeviceId, options.width,
-                                        options.height, options.fps);
-    if (!started) {
+    // Absent codec = H.264, the only codec before the recording format
+    // became selectable (ADR-0010); a name this helper does not know is
+    // refused like a codec the machine cannot encode.
+    const std::string codecName = extractStringField(line, "codec");
+    const std::optional<RecordingCodec> codec =
+        codecName.empty() ? RecordingCodec::H264
+                          : recordingCodecFromName(codecName);
+    if (!codec) {
+      return errorResponse(id, "recording_start_failed",
+                           kRecordingCodecUnsupportedError);
+    }
+    RecordingRequest request;
+    request.filePath = filePath;
+    request.micDeviceId = micDeviceId;
+    request.width = options.width;
+    request.height = options.height;
+    request.fps = options.fps;
+    request.codec = *codec;
+    if (!recorder.start(request)) {
       return errorResponse(id, "recording_start_failed",
                            recorder.status().lastError);
     }

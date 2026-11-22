@@ -2,22 +2,16 @@
 
 #include "util/json_utils.h"
 
+#include <algorithm>
+
 namespace broadify::meeting {
 
-const char *recordingCodecName(RecordingCodec codec) {
-  switch (codec) {
-    case RecordingCodec::H264:
-      return "h264";
-    case RecordingCodec::Hevc:
-      return "hevc";
-    case RecordingCodec::ProRes422Lt:
-      return "prores_422_lt";
-    case RecordingCodec::ProRes422:
-      return "prores_422";
-    case RecordingCodec::ProRes422Hq:
-      return "prores_422_hq";
-  }
-  return "unknown";
+bool recordingProbeHasEncoder(const RecordingProbeResult &result,
+                              RecordingCodec codec) {
+  return std::any_of(result.encoders.begin(), result.encoders.end(),
+                     [codec](const RecordingEncoderInfo &encoder) {
+                       return encoder.codec == codec;
+                     });
 }
 
 std::string recordingProbeJson(const RecordingProbeResult &result) {
