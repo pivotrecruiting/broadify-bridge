@@ -371,7 +371,9 @@ test("recorder finalize timeout stays below the recording.stop RPC timeout and i
   // The same ordering one level up: the relay commands that stop a recording
   // (meeting_recording_stop, and meeting_recording_toggle on an active
   // recording) must outlast the recording.stop RPC, or the web app sees a
-  // timeout while the helper is still finalizing.
+  // timeout while the helper is still finalizing. This pins the order of
+  // the numbers the bridge declares; the relay timeout itself is enforced by
+  // the relay service and the web app, in their own repositories.
   // Relay policy: sideEffect("<command>", <class>, <relay timeout>, <bridge-local SLA>, ...)
   const relayPolicy = read("apps/bridge/src/services/relay-command-policy.ts");
   for (const command of ["meeting_recording_stop", "meeting_recording_toggle"]) {

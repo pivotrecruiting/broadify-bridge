@@ -410,17 +410,27 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   wenn `recording` gemeldet ist: das Start-Schema ist strikt, aeltere Bridges
   lehnen das unbekannte Feld ab. Die Endung von `file_path` muss zum Container
   des Codecs passen (`.mp4` bzw. `.mov`), sonst ist die Payload ungueltig.
+  Ein Codec-Name, den die Bridge nicht kennt, ist keine ungueltige Payload,
+  sondern ebenfalls `meeting_recording_codec_unsupported`.
+  `meeting_recording_pick_path` bekommt dasselbe `codec` wie der Start und
+  prueft es genauso, bevor der Dialog aufgeht.
 - Fehlercodes eines abgelehnten Aufnahme-Starts (Start und Toggle):
   `meeting_recording_codec_unsupported` (Codec nicht gemeldet, oder der Helper
   hat keinen Hardware-Encoder dafuer; kein Software-Rueckfall) und
   `recording_disk_space_low` mit `data { required_bytes, free_bytes }` (weniger
-  frei als fuenf Minuten zur Datenrate des Codecs; ersetzt `disk_full`). Die
+  frei als fuenf Minuten zur Datenrate des Codecs; ersetzt `disk_full` als
+  Code, die Meldung `error` dieser Ablehnung bleibt `disk_full`, damit
+  Web-Apps vor diesem Code weiter ihre Speicherplatz-Meldung zeigen). Die
   uebrigen Codes (`microphone_*`, `writer_create_failed`, `already_recording`,
   `invalid_arguments`) sind unveraendert. Tabellen und Datenraten in
   [meeting-recording.md](./meeting-recording.md).
-- `meeting_recording_stop` hat jetzt 35 s Relay-Timeout und 30 s lokale SLA
-  (vorher 12 s / 8 s), weil das Abschliessen der Datei bis zu 15 s dauern
-  darf. Ein Client-Timeout fuer den Stop muss darueber liegen.
+- `meeting_recording_stop` ist in der Bridge-Policy jetzt mit 35 s
+  Relay-Timeout und 30 s lokaler SLA deklariert (vorher 12 s / 8 s), weil das
+  Abschliessen der Datei bis zu 15 s dauern darf. Die Bridge selbst bricht
+  keinen Befehl ab; wirksam wird das erst, wenn die Tabellen des
+  Relay-Dienstes und der Web-App fuer `meeting_recording_stop` und
+  `meeting_recording_toggle` nachziehen (siehe
+  [meeting-recording.md](./meeting-recording.md), Abschnitt Finalize timeout).
 
 #### `fallback_active` / `fallback_reason` / `model_hash_ok` auf macOS (B-11)
 

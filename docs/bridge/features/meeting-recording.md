@@ -41,7 +41,13 @@ Allowlisted in `relay-command-allowlist.ts`, policies in
 recording is `h264`. The start schema is strict, so the web app sends `codec`
 only to a bridge that reports `capabilities.meeting.recording`. The extension
 of `file_path` must be the container of the codec (`.mp4` or `.mov`),
-otherwise the payload is invalid.
+otherwise the payload is invalid. `codec` is validated as a name, not against
+this bridge's list: a name it does not know (a newer web app) is refused with
+`meeting_recording_codec_unsupported` like any codec that is not advertised.
+A client that records with a codec sends the same `codec` to
+`meeting_recording_pick_path` and to `meeting_recording_start`: without it the
+panel enforces `.mp4`, and a ProRes start with that path is an invalid
+payload.
 
 `recording` status shape: `{ active, file_path, codec, container,
 elapsed_seconds, video_frames, dropped_frames, queued_frames,
@@ -66,7 +72,8 @@ machine via osascript (`meeting-recording-dialog.ts`); the file is written
 locally by the helper, so the location cannot be chosen in the browser. The
 panel proposes and enforces the extension of the codec's container: a name
 without it gets it appended, a name with the other recording extension gets
-it replaced (`take.mp4` becomes `take.mov` for ProRes). On
+it replaced (`take.mp4` becomes `take.mov` for ProRes). A `codec` the start
+would refuse is refused here already, before the panel opens. On
 non-macOS platforms (no native save panel wired up) it falls back to
 `buildDefaultRecordingPath()` — a timestamped file in the shared default
 recordings folder — instead of returning `null`, which the webapp would
@@ -101,12 +108,13 @@ recorder reports a token as the message of `recording_start_failed`;
 | `errorCode` | Meaning | `data` |
 | --- | --- | --- |
 | `meeting_recording_codec_unsupported` | The requested codec is not in `capabilities.meeting.recording.codecs` (refused by the bridge before the helper is asked), or the helper has no hardware encoder for it. | none |
-| `recording_disk_space_low` | The target volume has less free space than the codec needs for five minutes (see [Free disk space](#free-disk-space)). Replaces `disk_full`. | `{ required_bytes, free_bytes }` |
+| `recording_disk_space_low` | The target volume has less free space than the codec needs for five minutes (see [Free disk space](#free-disk-space)). Replaces `disk_full` as the code; the `error` message of this refusal is still the token `disk_full`, because web apps released before this code map only that token and read it from the message too. | `{ required_bytes, free_bytes }` |
 | `microphone_permission_denied`, `microphone_not_found`, `microphone_input_failed`, `microphone_input_rejected`, `writer_create_failed`, `already_recording`, `invalid_arguments` | unchanged | none |
 
 Any other failure keeps `errorCode: "recording_start_failed"` with the
-platform's message. A codec name outside `MeetingRecordingCodecT` is an invalid
-payload, like any other schema violation.
+platform's message. A `codec` that is not a name (empty, not a string) is an
+invalid payload, like any other schema violation; on the helper RPC it is
+refused with the codec token, never recorded as H.264.
 
 ### macOS folder consent (Info.plist)
 
@@ -238,9 +246,24 @@ The relay commands that stop a recording sit above that RPC: finalize 15 s <
 `recording.stop` RPC 20 s < bridge-local SLA 30 s < relay timeout 35 s, for
 `meeting_recording_stop` and `meeting_recording_toggle`
 (`relay-command-policy.ts`, the same budget as `pgm_recording_stop`). Until
-Nov 2026 `meeting_recording_stop` was in the fast class (12 s relay / 8 s
-local): a finalize longer than that reported a relay timeout while the helper
-was still writing the file. The contract test covers this ordering too.
+Nov 2026 `meeting_recording_stop` was declared in the fast class (12 s relay /
+8 s local). The contract test covers the ordering of these numbers too.
+
+What the bridge policy does and does not do: the bridge never aborts a
+command. It reads only the bridge-local SLA, and only to log
+`command_sla_exceeded` when a command runs longer (`relay-client.ts`); the
+relay timeout in the policy is the budget the bridge declares, not a timeout
+it enforces. The timeouts that actually cut off a stop live in two other
+repositories and have to follow this declaration:
+
+| Where | Table | Needed for `meeting_recording_stop` and `meeting_recording_toggle` |
+| --- | --- | --- |
+| Relay service | `src/command-timeouts.ts` | an entry with at least 20 s execution (like `pgm_recording_stop`, 35 s); without an entry a command is in the fast class with 12 s |
+| Web app | `lib/bridge-command-timeouts.ts` | a client timeout above the relay timeout (the table's pattern is relay timeout + 8 s, i.e. 43 s); without an entry a command gets 22 s |
+
+Until both are in place a finalize that outlasts the shorter of the two still
+shows as a timeout in the web app, although the bridge completes the stop and
+reports the result through the recording status.
 
 - macOS: `finishWritingWithCompletionHandler` signals a semaphore; the control
   thread waits at most `kRecorderFinalizeTimeoutMs`.
@@ -390,6 +413,13 @@ ADR-0002/0006/0009). On macOS two things hold that:
    to the same token. `meeting_recorder_writer_test` repeats the measurement
    on every run.
 
+This holds for the default as well: a start without `codec` (older web app,
+REC key) is an H.264 recording and needs the hardware H.264 encoder. On a Mac
+without one (in practice a virtual machine) it is refused with
+`meeting_recording_codec_unsupported`, where the writer before ADR-0010 would
+have encoded in software. The web app therefore maps that code for every
+start, not only for one that named a codec.
+
 Limit of that proof: AVAssetWriter does not say which encoder it used, so the
 test shows that the requirement is enforced, not the encoder's name. On a
 machine without a hardware encoder for a codec (hosted CI runners) the test
@@ -439,8 +469,10 @@ recorder can write on this machine: `codecs[]` with `codec`, `container`,
 hold:
 
 1. the platform's recorder implements it (`MEETING_RECORDER_SUPPORTED_CODECS`
-   in `services/meeting/meeting-capabilities.ts`: every codec on macOS, `h264`
-   on Windows, none elsewhere), and
+   in `services/meeting/meeting-capabilities.ts`, spelled out per platform:
+   H.264, HEVC and ProRes 422 LT / 422 / HQ on macOS, `h264` on Windows, none
+   elsewhere; a codec added to the contract is advertised nowhere until it is
+   added to a platform there), and
 2. the machine has a **hardware** encoder for it.
 
 So a Mac without ProRes hardware reports `h264` and `hevc` only, and Windows
@@ -448,9 +480,11 @@ reports `h264` even with an HEVC encoder. `container` comes from the codec
 table; `max_height` / `max_fps` are those of `program_formats` for every codec
 (1080 and 30 today).
 
-`meeting_recording_start` and `meeting_recording_toggle` check a requested
-`codec` against this list and refuse anything else with
-`meeting_recording_codec_unsupported`, before the helper is asked. While the
+`meeting_recording_pick_path`, `meeting_recording_start` and
+`meeting_recording_toggle` check a requested `codec` against this list and
+refuse anything else - a name this bridge does not know included - with
+`meeting_recording_codec_unsupported`, before the panel opens or the helper
+is asked. While the
 capability is unknown (probe not finished or failed) no codec may be
 requested. A start **without** `codec` is not gated: it is the H.264
 recording every older client gets, and the helper holds it to a hardware
@@ -503,10 +537,10 @@ manual look.
 `MeetingRecordingControl` (meeting builder, below the preview panel) drives the
 flow through `stores/meeting-engine-store.ts`: pick path -> start -> poll
 `meeting_recording_status` every second while active -> stop. Client timeouts
-live in `lib/bridge-command-timeouts.ts` (pick_path 135 s for the user-facing
-dialog, start 40 s) and must stay above the bridge policy timeouts (130 s /
-35 s). Since `meeting_recording_stop` moved to the 35 s relay timeout, its
-client timeout has to be above 35 s as well (40 s like start and toggle).
+live in `lib/bridge-command-timeouts.ts`; the rule is that each is above the
+relay timeout of its command in the bridge policy (130 s for pick_path, 35 s
+for start, stop and toggle), see
+[Finalize timeout](#finalize-timeout-both-platforms) for stop and toggle.
 
 ## Stream Deck
 
@@ -517,10 +551,13 @@ above (`~/Movies/Broadify` on macOS, `~/Videos/Broadify` on Windows) as
 `Broadify-Meeting-<stamp>.<ext>` — the same place and naming as the save-panel
 fallback.
 
-A Stream Deck key sends no payload, so its recording is always **H.264 in
-`.mp4`**, whatever format the web app has selected. The command accepts an
-optional `codec` (and `mic_device_id`) for callers that do have a payload; the
-codec is checked against the capabilities like a start and only applies when
-the toggle starts a recording, never to a stop. Before Oct 2026 the toggle wrote `~/Videos/Broadify Recordings/
+The REC key as the web app configures it today carries no codec, so its
+recording is **H.264 in `.mp4`**, whatever format the web app has selected.
+That is a property of the key configuration, not of the bridge: the Stream
+Deck manager hands a binding's payload to the command, and a payload with
+`codec` (and `mic_device_id`) is honoured and checked against the
+capabilities like a start. The payload is read only when the toggle starts a
+recording: on an active recording the toggle stops it whatever the binding
+carries. Before Oct 2026 the toggle wrote `~/Videos/Broadify Recordings/
 meeting-<iso-stamp>.mp4` on every platform, i.e. a different folder than the
 other triggers and a Windows-style path on macOS.

@@ -85,16 +85,20 @@ Der macOS-Recorder schreibt jetzt alle Codecs des Vertrags; der Codec wird je Au
   Pfadprüfung, Standardpfad und Speichern-Dialog lesen die Endung aus der Bridge-Tabelle; die Endung muss zum Codec
   passen.
 - **`codec` ist ein optionaler Parameter** von `meeting_recording_start`, `meeting_recording_toggle` und
-  `meeting_recording_pick_path`. Ohne ihn bleibt es bei H.264 in `.mp4`: so starten ältere Web-Apps und jede
-  Stream-Deck-Taste (sie sendet keine Payload, ihre Aufnahme ist deshalb immer H.264). Ein angegebener Codec muss in
+  `meeting_recording_pick_path`. Ohne ihn bleibt es bei H.264 in `.mp4`: so starten ältere Web-Apps und die
+  REC-Taste des Stream Decks, wie die Web-App sie heute einrichtet (ohne Codec in der Payload; eine Tastenbelegung mit
+  `codec` würde wie ein Start geprüft und befolgt). Ein angegebener Codec muss in
   `capabilities.meeting.recording.codecs` stehen, sonst lehnt die Bridge mit `meeting_recording_codec_unsupported` ab,
-  bevor der Helper gefragt wird. Ein Start ohne `codec` wird nicht an den Fähigkeiten geprüft, damit die Aufnahme
-  nicht von der Probe abhängt.
+  bevor der Dialog aufgeht oder der Helper gefragt wird – auch bei einem Namen, den diese Bridge nicht kennt. Ein
+  Start ohne `codec` wird nicht an den Fähigkeiten geprüft, damit die Aufnahme nicht von der Probe abhängt. Ein Toggle
+  liest die Payload nur, wenn er eine Aufnahme startet: stoppen kann er immer.
 - **Der macOS-Recorder verlangt Hardware und fällt nicht zurück.** Er fragt vor dem Anlegen der Datei die
   VideoToolbox-Encoder-Liste (dieselbe Enumeration wie die Probe) und setzt an jedem Video-Eingang
   `kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder`. Gemessen (M1 Pro): `AVAssetWriter` wertet die
   Vorgabe in `startWriting` aus und scheitert dort mit `kVTCouldNotFindVideoEncoderErr`, wenn sie nicht erfüllbar ist –
-  für H.264, HEVC und ProRes. Beides führt zu `meeting_recording_codec_unsupported`. Grenze: `AVAssetWriter` nennt den
+  für H.264, HEVC und ProRes. Beides führt zu `meeting_recording_codec_unsupported`. Das gilt auch für den Start
+  ohne `codec`: auf einem Mac ohne H.264-Hardware (praktisch nur virtuelle Maschinen) wird er jetzt abgelehnt, wo der
+  Writer vorher in Software encodiert hätte. Grenze: `AVAssetWriter` nennt den
   benutzten Encoder nicht; geprüft ist, dass die Vorgabe durchgesetzt wird, nicht der Name des Encoders.
 - **Datenrate je Codec** in der gemeinsamen Policy (`helper_common/recording_encode_policy.h`): H.264 unverändert
   (0,35 bit/px, 2–40 Mbit/s; die PGM-Aufnahme nutzt dieselbe Funktion und bekommt dieselben Werte), HEVC 60 % davon,
@@ -103,9 +107,13 @@ Der macOS-Recorder schreibt jetzt alle Codecs des Vertrags; der Codec wird je Au
   ohne Bild-Umsortierung encodiert. Die 40-Mbit/s-Grenze bleibt, bis 4K gemeldet wird.
 - **Freier Speicher im Verhältnis zur Datenrate:** ein Start braucht Platz für fünf Minuten zur erwarteten Datenrate
   des Codecs (H.264 1080p30 rund 0,8 GB, ProRes 422 HQ rund 8,3 GB) statt fest 500 MB; sonst
-  `recording_disk_space_low` mit benötigten und freien Bytes. Der Code ersetzt `disk_full`.
-- **Stopp-Zeiten:** `meeting_recording_stop` bekommt 35 s Relay-Timeout und 30 s lokale SLA wie
-  `pgm_recording_stop`. Vorher (12 s / 8 s) lag beides unter dem Abschluss der Datei (bis 15 s) und dem RPC (20 s).
+  `recording_disk_space_low` mit benötigten und freien Bytes. Der Code ersetzt `disk_full`; als Meldung (`error`)
+  bleibt `disk_full` stehen, weil Web-Apps vor diesem Code nur dieses Wort kennen und es auch in der Meldung suchen.
+- **Stopp-Zeiten:** `meeting_recording_stop` ist in der Bridge-Policy mit 35 s Relay-Timeout und 30 s lokaler SLA
+  deklariert wie `pgm_recording_stop`. Vorher (12 s / 8 s) lag beides unter dem Abschluss der Datei (bis 15 s) und dem
+  RPC (20 s). Die Bridge bricht selbst keinen Befehl ab (die SLA löst nur eine Warnung im Log aus); wirksam wird die
+  Zeit erst mit passenden Einträgen für `meeting_recording_stop` und `meeting_recording_toggle` in den Tabellen des
+  Relay-Dienstes und der Web-App.
 - **Windows:** der Recorder nimmt dieselbe Anfrage (`RecordingRequest`) entgegen, schreibt nur H.264 und lehnt jeden
   anderen Codec mit `meeting_recording_codec_unsupported` ab. ProRes wird es dort nicht geben.
 
