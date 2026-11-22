@@ -39,7 +39,9 @@ Allowlisted in `relay-command-allowlist.ts`, policies in
 
 `codec` is a `MeetingRecordingCodecT` and optional everywhere; without it the
 recording is `h264`. The start schema is strict, so the web app sends `codec`
-only to a bridge that reports `capabilities.meeting.recording`. The extension
+only to a bridge that reports `capabilities.meeting.recording_probe` (a
+bridge that knows the field and checks it, see
+[Every recording is what is configured](#every-recording-is-what-is-configured)). The extension
 of `file_path` must be the container of the codec (`.mp4` or `.mov`),
 otherwise the payload is invalid. `codec` is validated as a name, not against
 this bridge's list: a name it does not know (a newer web app) is refused with
@@ -79,6 +81,56 @@ non-macOS platforms (no native save panel wired up) it falls back to
 recordings folder — instead of returning `null`, which the webapp would
 treat as a user cancel and silently never start.
 
+### Every recording is what is configured
+
+A recording is written with the codec that was requested, or it does not
+start. No trigger ever records another codec than the configured one, and
+there is no fallback to H.264.
+
+- **Source of truth:** the codec saved on the web app's recording-format page
+  (web database; nothing is persisted on the bridge). Absent means `h264`,
+  which is sent as "no `codec` field".
+- **Triggers** (there are two; no hotkey, no autostart, no other bridge-local
+  trigger): the web record button sends `codec` in
+  `meeting_recording_pick_path` and `meeting_recording_start`. The Stream
+  Deck REC key runs `meeting_recording_toggle` on the bridge without the web
+  app; the web app stamps `codec` into the payload of that key's binding and
+  pushes the mapping (`streamdeck_configure`), which the bridge persists, so
+  the key records the configured codec with the web app closed and after a
+  bridge restart. See [Stream Deck](#stream-deck).
+- **Arbiter:** `gateRequestedRecordingCodec` in `meeting-command-handler.ts`,
+  the same for all three commands. A request with `codec` is refused with
+  `meeting_recording_codec_unsupported` unless the codec is in
+  `capabilities.meeting.recording.codecs` **and** covers the running program
+  (`min(width, height) <= max_height` and `fps <= max_fps`; without a running
+  program only the name is checked). The refusal carries
+  `data { codec, reason }`:
+
+  | `reason` | Meaning |
+  | --- | --- |
+  | `encoder_unavailable` | The encoder probe has a result and the codec is not in it (no hardware encoder, not written on this platform, or a name this bridge does not know). |
+  | `program_format_exceeded` | The codec is available but does not record the running program's size or frame rate. |
+  | `encoders_unknown` | The encoder probe failed, or has still no result after the gate waited for it. |
+
+  If the probe has not settled, the gate waits for the attempt in flight
+  (starting one if none runs - a key press right after the bridge started,
+  with no web app connected, has had no `get_status` to start it), bounded by
+  the probe's 5 s timeout. A request without `codec` is never gated: it is
+  the H.264 recording every older client gets, and the helper holds it to a
+  hardware encoder itself.
+- **Why refuse instead of "H.264 with a notice":** a notice cannot be
+  guaranteed on the Stream Deck (the key has no text and the web app may be
+  closed), so a fallback there would be silent. A refusal is visible at once
+  with what exists: the key flashes red, REC does not come on, the web app
+  shows the `streamdeck_error` (now with `error_code`), the record button its
+  error line. A file in the wrong codec is found hours later and cannot be
+  repaired; a refused start is fixed with one click on the format page.
+- **Known limit:** the copy in the key binding is refreshed only by a web
+  session connected to this bridge. A codec change made while none is
+  connected reaches the deck on the next connect. A bridge older than this
+  package (no `recording_probe` in its capabilities) is not stamped by the
+  web app; its key records H.264.
+
 ### Default recording path (one folder for every trigger)
 
 `apps/bridge/src/services/shared/recording-paths.ts` is the single source of
@@ -107,7 +159,7 @@ recorder reports a token as the message of `recording_start_failed`;
 
 | `errorCode` | Meaning | `data` |
 | --- | --- | --- |
-| `meeting_recording_codec_unsupported` | The requested codec is not in `capabilities.meeting.recording.codecs` (refused by the bridge before the helper is asked), or the helper has no hardware encoder for it. | none |
+| `meeting_recording_codec_unsupported` | The requested codec cannot be recorded right now: refused by the bridge before the helper is asked (see [Every recording is what is configured](#every-recording-is-what-is-configured)), or the helper has no hardware encoder for it. Also the code of a refused `meeting_recording_pick_path`. | `{ codec, reason }` from the bridge gate (`encoder_unavailable`, `program_format_exceeded`, `encoders_unknown`); none when the helper refuses |
 | `recording_disk_space_low` | The target volume has less free space than the codec needs for five minutes (see [Free disk space](#free-disk-space)). Replaces `disk_full` as the code; the `error` message of this refusal is still the token `disk_full`, because web apps released before this code map only that token and read it from the message too. | `{ required_bytes, free_bytes }` |
 | `microphone_permission_denied`, `microphone_not_found`, `microphone_input_failed`, `microphone_input_rejected`, `writer_create_failed`, `already_recording`, `invalid_arguments` | unchanged | none |
 
@@ -163,9 +215,11 @@ recorder now splits the work:
 - `MeetingRecorder::appendVideoFrame` (pipeline thread) only takes the
   capture time (`host clock − session start`) and copies the RGBA frame into
   a `RecorderFrameMailbox` (`src/recorder/recorder_frame_mailbox.{h,cpp}`,
-  stdlib, unit-tested): single-producer/single-consumer, capacity 2, latest
-  wins (a full mailbox replaces its oldest pending frame), buffers recycled
-  by swapping so steady state allocates nothing. The copy of one 8.3 MB
+  stdlib, unit-tested): single-producer/single-consumer, latest wins (a full
+  mailbox replaces its oldest pending frame), buffers recycled by swapping
+  so steady state allocates nothing. The capacity follows the frame rate
+  (`capacityForFps`: `max(2, ceil(fps / 15))`, i.e. 2 at 25/30 fps and 4 at
+  50/60 fps), so the encoder has about 66 ms of slack at every rate. The copy of one 8.3 MB
   1080p frame measured 0.18 ms median / 0.23 ms p95 (memcpy) versus
   0.19 ms median but a 5.6 ms tail for the alternative of swizzling into a
   pooled CVPixelBuffer on the tick thread, which is why the mailbox copies
@@ -249,6 +303,12 @@ The relay commands that stop a recording sit above that RPC: finalize 15 s <
 Nov 2026 `meeting_recording_stop` was declared in the fast class (12 s relay /
 8 s local). The contract test covers the ordering of these numbers too.
 
+A start has its own chain inside the same bridge-local SLA
+(`meeting_recording_start`, and `meeting_recording_toggle` without an active
+recording): encoder probe wait 5 s (only with a `codec`, only while the probe
+has not settled) + `recording.status` 5 s (toggle) + `recording.start` RPC
+15 s = 25 s < 30 s < 35 s. The contract test adds these up as well.
+
 What the bridge policy does and does not do: the bridge never aborts a
 command. It reads only the bridge-local SLA, and only to log
 `command_sla_exceeded` when a command runs longer (`relay-client.ts`); the
@@ -256,14 +316,30 @@ relay timeout in the policy is the budget the bridge declares, not a timeout
 it enforces. The timeouts that actually cut off a stop live in two other
 repositories and have to follow this declaration:
 
-| Where | Table | Needed for `meeting_recording_stop` and `meeting_recording_toggle` |
-| --- | --- | --- |
-| Relay service | `src/command-timeouts.ts` | an entry with at least 20 s execution (like `pgm_recording_stop`, 35 s); without an entry a command is in the fast class with 12 s |
-| Web app | `lib/bridge-command-timeouts.ts` | a client timeout above the relay timeout (the table's pattern is relay timeout + 8 s, i.e. 43 s); without an entry a command gets 22 s |
+The exact values of the whole chain, per command (ms). The bridge columns
+are `relay-command-policy.ts`; the relay and web app columns are what their
+tables need - a relay without an entry runs a command with 12 s execution, a
+web app without one with 22 s:
 
-Until both are in place a finalize that outlasts the shorter of the two still
-shows as a timeout in the web app, although the bridge completes the stop and
-reports the result through the recording status.
+| Command | Bridge-local SLA | Relay execution (= bridge policy) | Relay queue | Relay total (ack 5 s + queue + execution) | Web app client timeout |
+| --- | --- | --- | --- | --- | --- |
+| `meeting_recording_pick_path` | 125 000 | 130 000 | 3 000 | 138 000 | 138 000 |
+| `meeting_recording_start` | 30 000 | 35 000 | 3 000 | 43 000 | 43 000 |
+| `meeting_recording_stop` | 30 000 | 35 000 | 3 000 | 43 000 | 43 000 |
+| `meeting_recording_toggle` | 30 000 | 35 000 | 3 000 | 43 000 | 43 000 |
+
+Relay service (`src/command-timeouts.ts`): all four are
+`timeoutClass: "helper_start"`; `concurrencyKey` is `meeting.recording`
+(`meeting.recording.dialog` for the save panel) and all invalidate
+`meeting.recording`, as in the bridge policy. The commands stay `no_retry`: a
+replayed toggle would stop what it just started. Web app
+(`lib/bridge-command-timeouts.ts`): the client timeout is the relay total;
+the web API route and the browser add their own margins on top.
+
+Until both tables carry these entries, a finalize (or a save panel left open)
+that outlasts the shorter default still shows as a timeout in the web app,
+although the bridge completes the command and reports the result through the
+recording status.
 
 - macOS: `finishWritingWithCompletionHandler` signals a semaphore; the control
   thread waits at most `kRecorderFinalizeTimeoutMs`.
@@ -359,10 +435,25 @@ calm picture are smaller). All values from `recorderVideoDataRateBps` in
 | `prores_422` | 147 Mbit/s | 66 GB | 122 Mbit/s | 55 GB |
 | `prores_422_hq` | 220 Mbit/s | 99 GB | 183 Mbit/s | 83 GB |
 
+At 50 and 60 fps (macOS, see
+[50 and 60 fps](#50-and-60-fps-macos)):
+
+| `codec` | 1080p60 | per hour | 1080p50 | per hour |
+| --- | --- | --- | --- | --- |
+| `h264` | 40 Mbit/s (cap) | 18 GB | 36.3 Mbit/s | 16.3 GB |
+| `hevc` | 24 Mbit/s | 10.8 GB | 21.8 Mbit/s | 9.8 GB |
+| `prores_422_lt` | 204 Mbit/s | 92 GB | 170 Mbit/s | 77 GB |
+| `prores_422` | 294 Mbit/s | 132 GB | 245 Mbit/s | 110 GB |
+| `prores_422_hq` | 440 Mbit/s | 198 GB | 367 Mbit/s | 165 GB |
+
 - H.264: 0.35 bit/px, clamped to 2-40 Mbit/s (`recorderVideoBitrateBps`,
   shared with the PGM recording since ADR-0006 and unchanged by the codecs:
   `recording_encode_policy_test` pins that the H.264 rate by codec equals that
-  function value for value).
+  function value for value). The 40 Mbit/s cap stays for 50/60 fps: 1080p50
+  is under it (36.288 Mbit/s), 1080p60 is held to it instead of the policy
+  value of 43.5 Mbit/s (0.32 instead of 0.35 bit/px). The linear policy
+  over-allocates at high frame rates, where neighbouring frames differ less,
+  and leaving the function alone keeps the PGM recording bit-identical.
 - HEVC: 60 % of the H.264 bitrate (`kRecorderHevcBitrateFactor`). The HEVC
   verification tests measured about half the bitrate at equal quality, for
   offline encoders with B-frames and look-ahead; the recorder runs a
@@ -380,13 +471,13 @@ less free space than **five minutes** of the codec's expected video data rate
 fixed 500 MB before. Five minutes is enough to notice the warning and finish
 a take; the floor is a start check, not a forecast for the whole recording.
 
-| `codec` | Required at 1080p30 | at 1080p25 |
-| --- | --- | --- |
-| `h264` | 0.82 GB | 0.68 GB |
-| `hevc` | 0.49 GB | 0.41 GB |
-| `prores_422_lt` | 3.8 GB | 3.2 GB |
-| `prores_422` | 5.5 GB | 4.6 GB |
-| `prores_422_hq` | 8.3 GB | 6.9 GB |
+| `codec` | Required at 1080p30 | at 1080p25 | at 1080p60 | at 1080p50 |
+| --- | --- | --- | --- | --- |
+| `h264` | 0.82 GB | 0.68 GB | 1.5 GB | 1.4 GB |
+| `hevc` | 0.49 GB | 0.41 GB | 0.9 GB | 0.82 GB |
+| `prores_422_lt` | 3.8 GB | 3.2 GB | 7.7 GB | 6.4 GB |
+| `prores_422` | 5.5 GB | 4.6 GB | 11 GB | 9.2 GB |
+| `prores_422_hq` | 8.3 GB | 6.9 GB | 16.5 GB | 13.8 GB |
 
 The refusal carries `data { required_bytes, free_bytes }`. The helper reports
 the numbers in `recording.disk_space_low`; the bridge reads them from
@@ -477,18 +568,31 @@ hold:
 
 So a Mac without ProRes hardware reports `h264` and `hevc` only, and Windows
 reports `h264` even with an HEVC encoder. `container` comes from the codec
-table; `max_height` / `max_fps` are those of `program_formats` for every codec
-(1080 and 30 today).
+table. `max_height` is that of `program_formats`; `max_fps` is the lower of
+the platform's highest program frame rate and the codec's own cap in
+`MEETING_RECORDER_CODEC_MAX_FPS` (macOS: 60 for every codec; Windows: 30 for
+`h264`). That table is the one place to lower when a device measurement
+shows that a codec does not hold a rate: the capability then reports the
+lower `max_fps`, the web app marks the codec as not available for a faster
+program, and the gate refuses it with `program_format_exceeded`.
+
+`capabilities.meeting.recording_probe` says where the probe behind the list
+stands, so the web app can tell "still checking" from "failed":
+
+| `recording_probe` | `recording` | Meaning |
+| --- | --- | --- |
+| `pending` | absent | No result yet: not started, running, or a transient failure with attempts left. Later `get_status` calls trigger the retries, so the web app keeps polling. |
+| `done` | present | The probe has a result (possibly an empty `codecs` list: no hardware encoder). A platform without a recorder reports `done` with an empty list without probing. |
+| `failed` | absent | Settled without a result for this bridge run (`helper_missing`, `invalid_output`, `enumeration_failed`, or a transient failure after three attempts). Only a bridge restart probes again. |
+
+The field is absent on bridges older than this package.
 
 `meeting_recording_pick_path`, `meeting_recording_start` and
 `meeting_recording_toggle` check a requested `codec` against this list and
-refuse anything else - a name this bridge does not know included - with
-`meeting_recording_codec_unsupported`, before the panel opens or the helper
-is asked. While the
-capability is unknown (probe not finished or failed) no codec may be
-requested. A start **without** `codec` is not gated: it is the H.264
-recording every older client gets, and the helper holds it to a hardware
-encoder itself.
+the running program and refuse anything else - a name this bridge does not
+know included - with `meeting_recording_codec_unsupported`, before the panel
+opens or the helper is asked; see
+[Every recording is what is configured](#every-recording-is-what-is-configured).
 
 The hardware encoders come from the helper's probe mode,
 `meeting-helper --probe-recording`
@@ -514,7 +618,10 @@ line and exits without starting the engine or opening a device:
 `get_status` (5 s timeout) and keeps a result, or a definitive failure, for
 the bridge run. A transient failure (timeout, launch error) is retried by
 later `get_status` calls in the background, at most three runs in total; those
-calls do not wait and answer without `recording` until a run has succeeded.
+calls do not wait and answer `recording_probe: "pending"` without `recording`
+until a run has succeeded. `awaitRecordingProbe()` is the variant for the
+codec gate: it always waits for the attempt in flight, also a retry, and
+starts one if none runs. `getRecordingProbeState()` is the state above.
 While there is no result the `recording` field is omitted and each failed run
 logs one warning with the reason; the recorder itself is unaffected. Software encoders are never listed: a codec
 without hardware support is not offered rather than encoded on the CPU.
@@ -531,6 +638,60 @@ Expected: `h264` High `avc1` / `hevc` Main `hvc1` with `major_brand=mp42`;
 a 1080p25 clip per codec through the production writer and worker and reads
 these properties back; `BROADIFY_RECORDER_TEST_KEEP=1` keeps the clips for a
 manual look.
+
+## 50 and 60 fps (macOS)
+
+`capabilities.meeting.program_formats.fps` is `[25, 30, 50, 60]` on macOS and
+`[25, 30]` everywhere else (`MEETING_PROGRAM_FORMAT_LIMITS`; Windows stays at
+25/30 until a device measurement). The recording always has the program's
+frame rate: at 50/60 fps the recorder gets every program frame, the CFR
+clock, the two-second keyframe interval (`2 x fps`) and the mailbox capacity
+follow the rate, and the data rates are those in
+[Data rates and file sizes](#data-rates-and-file-sizes). What else changes
+above 30 fps:
+
+- **Virtual camera and previews get every second frame** (`outputDivisor` in
+  `native/meeting-helper/src/common/output_rate.h`: 60 -> 30, 50 -> 25). The
+  macOS camera extension emits a fixed 30 Hz and Teams/Zoom cap at 30 anyway.
+  Everything fed by `PreviewFrameStore` is decimated at the one publish site
+  in the program loop (`PreviewPublishGate`, `frame_pipeline_gating.{h,cpp}`):
+  the virtual camera's raw stream, the WebRTC program stream (its encoder is
+  configured with the halved rate and stays on the existing bitrate rung) and
+  the MJPEG preview. 50 -> 25 rather than 50 -> 30: every second frame keeps
+  even 40 ms steps - the cadence a 25 fps program already delivers to the
+  30 Hz extension - where 50 -> 30 would need an uneven 20/40 ms pick. It also
+  halves the loopback load (1080p BGRA is 8.3 MB per frame). The gate is time
+  based (a publish at the earliest 1.5 frame intervals after the last one),
+  not tick parity, because with a 30 fps camera in a 60 fps program every
+  render can fall on an odd tick; a frame that was held back stays pending,
+  so the last picture is still published when the program goes static. Up to
+  30 fps the gate publishes exactly as before.
+- **A camera that cannot deliver the rate keeps its resolution.**
+  `selectCaptureFormat` (`capture_format_selection.{h,cpp}`) picks, in this
+  order: the requested rate at a size not below the requested one; above
+  30 fps, **half the rate** at such a size (60 -> 30, 50 -> 25, match
+  `half_rate`); the requested rate at a smaller size; the nearest rate. A
+  webcam with 1080p30 and 720p60 therefore stays at 1080p30 in a 60 fps
+  program and each camera frame is shown twice (a clean 2:1), while graphics,
+  screen and media run at the full rate. The program and the recording keep
+  the configured rate; nothing is refused. The helper reports what the
+  program camera delivers as `engine.camera_format` (see
+  `meeting-status-contract.md`), and the web app shows a hint when that rate
+  is below the program's.
+- **Graphics planes** run at the program rate; the pre-warm at engine start
+  uses the requested frame rate (it used a fixed 30 before, which configured
+  the planes twice for every other rate).
+- **Keyer:** no ladder or budget change. On macOS the fused CoreML keyer runs
+  once per new camera frame, so with a 60 fps camera it has 16.7 ms instead
+  of 33.3 ms per run; whether it holds is a device measurement. The dropout
+  holds of `stabilizeFusedMask` count keyer runs and are doubled when the
+  keyer runs above 30 times per second (`fusedKeyerHoldScale`), so they stay
+  1.5 s / 3 s; with a half-rate camera they are unchanged.
+
+Unmeasured so far (device test): the keyer at 16.7 ms, each codec at 1080p50
+and 1080p60 from the running engine (a codec that does not hold is lowered in
+`MEETING_RECORDER_CODEC_MAX_FPS`), and the program loop's 16.7 ms grid under
+load.
 
 ## WebApp
 
@@ -551,13 +712,18 @@ above (`~/Movies/Broadify` on macOS, `~/Videos/Broadify` on Windows) as
 `Broadify-Meeting-<stamp>.<ext>` — the same place and naming as the save-panel
 fallback.
 
-The REC key as the web app configures it today carries no codec, so its
-recording is **H.264 in `.mp4`**, whatever format the web app has selected.
-That is a property of the key configuration, not of the bridge: the Stream
-Deck manager hands a binding's payload to the command, and a payload with
-`codec` (and `mic_device_id`) is honoured and checked against the
-capabilities like a start. The payload is read only when the toggle starts a
-recording: on an active recording the toggle stops it whatever the binding
-carries. Before Oct 2026 the toggle wrote `~/Videos/Broadify Recordings/
+The key records the codec configured on the web app's recording-format page:
+the web app writes it as `codec` into the payload of every
+`meeting_recording_toggle` binding and pushes the mapping
+(`streamdeck_configure`); the bridge persists the mapping
+(`.bridge-data/streamdeck/mapping.json`) and the Stream Deck manager hands the
+binding's payload to the command on every press, without the web app. A
+binding without `codec` records H.264 (H.264 configured, or a web app older
+than the stamping). The codec is checked like every start; a refused press
+flashes the key red and publishes `streamdeck_error` with
+`error_code: "meeting_recording_codec_unsupported"`
+(see [Every recording is what is configured](#every-recording-is-what-is-configured)).
+The payload is read only when the toggle starts a recording: on an active
+recording the toggle stops it whatever the binding carries. Before Oct 2026 the toggle wrote `~/Videos/Broadify Recordings/
 meeting-<iso-stamp>.mp4` on every platform, i.e. a different folder than the
 other triggers and a Windows-style path on macOS.

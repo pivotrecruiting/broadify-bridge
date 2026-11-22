@@ -36,6 +36,11 @@ Rules (`src/capture/capture_format_selection.{h,cpp}`, unit-tested in
   30.00003 / 60.00024; 29.97 is a different rate and goes through the
   nearest fallback). Among matches the resolution is scored as before
   (absolute width/height delta, 1e6 penalty below the target).
+- Resolution wins over rate. Matches at a size not below the requested one
+  come first. Above 30 fps (50/60 fps program) the next choice is **half the
+  rate** at such a size (60 -> 30, 50 -> 25, `match:"half_rate"`): a webcam
+  with 1080p30 and 720p60 stays at 1080p30 and each of its frames is shown
+  twice. Only then a match at a smaller size is taken.
 - Without a match the closest supported rate across all formats wins
   (25/50-only device asked for 30 gets 25; equal distance prefers the higher
   rate), then the resolution score. `none` only when the device lists no

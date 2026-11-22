@@ -82,6 +82,7 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
     "bridge_running": true, // boolean, required, seit Bestand
     "camera_running": true, // boolean, required, seit Bestand
     "camera_stalled": false, // boolean, required, seit Bestand
+    "camera_format": { "width": 1920, "height": 1080, "fps": 30, "requested_fps": 60, "match": "half_rate" }, // object|null, optional fuer aeltere Clients, seit 50/60 fps (ADR-0010)
     "preview_running": true, // boolean, required, seit Bestand
     "active_camera_index": 0, // number|null, required, seit Bestand
     "pip_camera_index": null, // number|null, required, seit Bestand
@@ -340,9 +341,40 @@ Das Manager-Objekt traegt zusaetzlich seine historischen camelCase-Keys weiter.
   aus, die Groesse der Ebenen-Box vor der Layout-Transformation. Ohne `canvas`
   bleibt die Box `1920x1080`. Details: `graphics-commands.md`, ADR-0007.
 
+#### `engine.camera_format` (ADR-0010)
+
+Was die Programmkamera liefert, unveraendert aus dem Helper (`state.get`)
+durchgereicht:
+
+```jsonc
+{
+  "width": 1920, // number, aktive Breite des Geraets
+  "height": 1080, // number, aktive Hoehe des Geraets
+  "fps": 30.00003, // number, aktive Bildrate des Geraets (Geraete melden 30 als 30.00003)
+  "requested_fps": 60, // number, angeforderte Rate = Bildrate des Programms
+  "match": "half_rate" // "exact" | "tolerant" | "half_rate" | "nearest" | "none"
+}
+```
+
+- `null`, solange keine Kamera laeuft, und auf Plattformen, deren
+  Kamera-Backend das Format nicht meldet (heute Windows). Fehlt auf aelteren
+  Bridges.
+- Die Werte sind zurueckgelesen, nachdem die Kamera laeuft, nicht die
+  Anforderung. `match` sagt, wie das Format gewaehlt wurde: `exact` /
+  `tolerant` = angeforderte Rate, `half_rate` = halbe Rate in der
+  angeforderten Groesse (nur ueber 30 fps: 60 -> 30, 50 -> 25), `nearest` =
+  naechstliegende Rate, `none` = das Geraet hat die Auswahl nicht uebernommen
+  und laeuft mit dem Format der Session-Voreinstellung.
+- Liefert die Kamera weniger als das Programm
+  (`Math.round(camera_format.fps) < program_format.fps`), laeuft das Programm
+  trotzdem mit der eingestellten Rate; jedes Kamerabild wird wiederholt, bei
+  `half_rate` genau zweimal. Aufnahme, Grafik und Bildschirminhalte haben die
+  volle Rate. Das ist kein Fehler und keine Ablehnung; die Web-App zeigt
+  einen Hinweis.
+
 #### Programmformate und Aufnahme-Faehigkeiten (ADR-0010)
 
-`get_status.capabilities.meeting` traegt zwei weitere, optionale Felder
+`get_status.capabilities.meeting` traegt drei weitere, optionale Felder
 (`MeetingCapabilitiesT` in `packages/protocol`). Aeltere Bridges liefern sie
 nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
 
@@ -353,13 +385,14 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   "program_formats": { // object, optional, seit ADR-0010
     "max_width": 1920, // number, groesste Breite einer Querformat-Leinwand
     "max_height": 1080, // number, groesste Hoehe einer Querformat-Leinwand
-    "fps": [25, 30] // number[], zulaessige Bildraten
+    "fps": [25, 30, 50, 60] // number[], zulaessige Bildraten (macOS; sonst [25, 30])
   },
-  "recording": { // object, optional, seit ADR-0010; fehlt, wenn die Encoder-Probe scheitert
+  "recording_probe": "done", // "pending" | "done" | "failed", optional, Zustand der Encoder-Probe
+  "recording": { // object, optional, seit ADR-0010; steht genau bei recording_probe "done"
     "codecs": [ // leer: kein Hardware-Encoder gefunden
-      { "codec": "h264", "container": "mp4", "max_height": 1080, "max_fps": 30 },
-      { "codec": "hevc", "container": "mp4", "max_height": 1080, "max_fps": 30 },
-      { "codec": "prores_422", "container": "mov", "max_height": 1080, "max_fps": 30 }
+      { "codec": "h264", "container": "mp4", "max_height": 1080, "max_fps": 60 },
+      { "codec": "hevc", "container": "mp4", "max_height": 1080, "max_fps": 60 },
+      { "codec": "prores_422", "container": "mov", "max_height": 1080, "max_fps": 60 }
     ],
     "upload_copy": false // boolean, Bridge kann eine Kopie der Aufnahme hochladen
   }
@@ -370,10 +403,25 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   gelten fuer eine Querformat-Leinwand; eine Hochformat-Leinwand wird mit
   vertauschten Kanten gemessen (lange Kante gegen `max_width`, kurze gegen
   `max_height`) und braucht zusaetzlich `program_portrait`. Kleinere
-  Leinwaende bleiben erlaubt. Heute auf allen Plattformen `1920x1080` mit 25
-  und 30 fps (`MEETING_PROGRAM_FORMAT_LIMITS` in
-  `services/meeting/meeting-capabilities.ts`); 4K und 50/60 fps werden erst
-  nach einer Messung am Geraet gemeldet.
+  Leinwaende bleiben erlaubt. Heute `1920x1080` auf allen Plattformen, mit 25
+  und 30 fps; unter macOS zusaetzlich 50 und 60 fps
+  (`MEETING_PROGRAM_FORMAT_LIMITS` in
+  `services/meeting/meeting-capabilities.ts`). Windows bleibt bei 25/30, bis
+  50/60 fps dort am Geraet gemessen sind; 4K wird erst nach einer Messung
+  gemeldet. Ueber 30 fps bekommen virtuelle Kamera und Programm-Vorschauen
+  jedes zweite Programmbild (60 -> 30, 50 -> 25), die Aufnahme jedes; siehe
+  [meeting-recording.md](./meeting-recording.md), Abschnitt 50 and 60 fps.
+- `recording_probe` ist der Zustand der Encoder-Probe hinter `recording`:
+  `pending` = noch kein Ergebnis (nicht gestartet, laeuft, oder ein
+  voruebergehender Fehler mit verbleibenden Versuchen; spaetere `get_status`
+  stossen die Wiederholung an, die Web-App fragt also weiter), `done` =
+  Ergebnis liegt vor und `recording` steht (auch mit leerer Liste), `failed`
+  = fuer diesen Bridge-Lauf ohne Ergebnis entschieden (Helper fehlt,
+  unlesbare Ausgabe, Enumeration fehlgeschlagen oder dreimal voruebergehend
+  gescheitert), `recording` fehlt bis zum Neustart der Bridge. Eine Plattform
+  ohne Recorder meldet `done` mit leerer Liste, ohne zu proben. Das Feld
+  fehlt auf Bridges vor diesem Stand; dort hiess ein fehlendes `recording`
+  beides, "prueft noch" und "gescheitert".
 - `recording.codecs` nennt die Codecs, die der Recorder schreiben kann **und**
   fuer die dieser Rechner einen Hardware-Encoder hat, je mit Container und der
   groessten Programmgroesse/Bildrate (`max_height` wie bei `program_formats`
@@ -383,8 +431,11 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   alle fuenf, unter Windows nur `h264` (dort nie ProRes). Ein Mac ohne
   ProRes-Hardware meldet also `h264` und `hevc`, Windows meldet `h264` auch
   mit HEVC-Hardware. `container` folgt aus dem Codec (`h264`/`hevc`: `mp4`,
-  ProRes: `mov`; `MEETING_RECORDING_CODEC_FORMATS`), `max_height`/`max_fps`
-  sind heute fuer jeden Codec die Werte aus `program_formats`.
+  ProRes: `mov`; `MEETING_RECORDING_CODEC_FORMATS`). `max_height` ist der Wert
+  aus `program_formats`; `max_fps` ist das Minimum aus der hoechsten Bildrate
+  der Plattform und der Grenze des Codecs in `MEETING_RECORDER_CODEC_MAX_FPS`
+  (macOS: 60 fuer jeden Codec, Windows: 30 fuer `h264`) und kann damit fuer
+  einen einzelnen Codec unter `program_formats` liegen.
 - Die Encoder-Liste kommt aus `meeting-helper --probe-recording`
   (`services/meeting/meeting-recording-probe.ts`): die Bridge startet den
   Helper dafuer als eigenen, kurzlebigen Prozess (keine Engine, kein Geraet),
@@ -396,18 +447,30 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   Wiederholung an (hoechstens drei Laeufe insgesamt), ohne darauf zu warten,
   und das Feld erscheint in der Statusabfrage nach dem geglueckten Lauf. Die
   Web-App darf ein fehlendes `recording` deshalb nicht fuer den ganzen
-  Bridge-Lauf als endgueltig behandeln. Jeder gescheiterte Lauf schreibt eine
+  Bridge-Lauf als endgueltig behandeln; `recording_probe` sagt, welcher Fall
+  vorliegt (`pending` oder `failed`). Jeder gescheiterte Lauf schreibt eine
   Warnung mit dem Grund ins Log. `program_formats` haengt nicht an der Probe
   und wird immer gemeldet.
 - Der lokale Status (`GET /video/status`) startet die Probe nie selbst; er
-  traegt `recording` erst, nachdem ein `get_status` sie ausgefuehrt hat.
+  meldet `recording_probe: "pending"` und traegt `recording` erst, nachdem ein
+  `get_status` (oder die Codec-Pruefung eines Aufnahme-Starts) sie ausgefuehrt
+  hat.
 - `meeting_recording_start` und `meeting_recording_toggle` nehmen ein
   optionales `codec`. Ohne `codec` ist die Aufnahme `h264` in `mp4` wie bisher
   und wird nicht gegen die Faehigkeiten geprueft. Mit `codec` muss der Wert in
-  `recording.codecs` stehen, sonst kommt
-  `errorCode: "meeting_recording_codec_unsupported"` (auch solange `recording`
-  fehlt), ohne dass der Helper gefragt wird. Die Web-App sendet `codec` nur,
-  wenn `recording` gemeldet ist: das Start-Schema ist strikt, aeltere Bridges
+  `recording.codecs` stehen **und** das laufende Programm abdecken
+  (`min(width, height) <= max_height`, `fps <= max_fps`), sonst kommt
+  `errorCode: "meeting_recording_codec_unsupported"` mit
+  `data { codec, reason }`, ohne dass der Helper gefragt wird. `reason`:
+  `encoder_unavailable` (Probe fertig, Codec nicht in der Liste),
+  `program_format_exceeded` (Codec da, deckt Groesse oder Bildrate des
+  laufenden Programms nicht ab), `encoders_unknown` (Probe gescheitert oder
+  auch nach dem Warten ohne Ergebnis). Ist die Probe noch nicht entschieden,
+  wartet die Pruefung auf den laufenden Versuch (hoechstens 5 s). Die Aufnahme
+  weicht nie auf einen anderen Codec aus; das gilt fuer jeden Ausloeser, auch
+  die REC-Taste des Stream Decks, deren Belegung den eingestellten Codec
+  traegt. Die Web-App sendet `codec` nur,
+  wenn `recording_probe` gemeldet ist: das Start-Schema ist strikt, aeltere Bridges
   lehnen das unbekannte Feld ab. Die Endung von `file_path` muss zum Container
   des Codecs passen (`.mp4` bzw. `.mov`), sonst ist die Payload ungueltig.
   Ein Codec-Name, den die Bridge nicht kennt, ist keine ungueltige Payload,
@@ -415,8 +478,10 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
   `meeting_recording_pick_path` bekommt dasselbe `codec` wie der Start und
   prueft es genauso, bevor der Dialog aufgeht.
 - Fehlercodes eines abgelehnten Aufnahme-Starts (Start und Toggle):
-  `meeting_recording_codec_unsupported` (Codec nicht gemeldet, oder der Helper
-  hat keinen Hardware-Encoder dafuer; kein Software-Rueckfall) und
+  `meeting_recording_codec_unsupported` (Codec nicht gemeldet oder deckt das
+  laufende Programm nicht ab, mit `data { codec, reason }`; oder der Helper
+  hat keinen Hardware-Encoder dafuer; kein Software-Rueckfall, kein Ausweichen
+  auf einen anderen Codec) und
   `recording_disk_space_low` mit `data { required_bytes, free_bytes }` (weniger
   frei als fuenf Minuten zur Datenrate des Codecs; ersetzt `disk_full` als
   Code, die Meldung `error` dieser Ablehnung bleibt `disk_full`, damit

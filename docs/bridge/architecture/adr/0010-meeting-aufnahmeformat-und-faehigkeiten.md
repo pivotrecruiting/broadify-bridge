@@ -1,8 +1,8 @@
 # ADR-0010: Meeting: Aufnahmeformat und Fähigkeiten
 
-- Status: akzeptiert (Fähigkeitsmodell, Probe, Neustart-Regel und die Codecs des macOS-Recorders umgesetzt; HEVC unter
-  Windows, 4K und 50/60 fps folgen in eigenen Schritten; der Windows-Teil von Probe und Recorder ist nicht auf
-  Windows-Hardware geprüft)
+- Status: akzeptiert (Fähigkeitsmodell, Probe, Neustart-Regel, die Codecs des macOS-Recorders und 50/60 fps unter
+  macOS umgesetzt; HEVC unter Windows, 4K und 50/60 fps unter Windows folgen in eigenen Schritten; der Windows-Teil
+  von Probe und Recorder ist nicht auf Windows-Hardware geprüft, 50/60 fps sind am Gerät noch nicht gemessen)
 - Datum: 2026-11-22
 
 ## Kontext
@@ -118,9 +118,74 @@ Der macOS-Recorder schreibt jetzt alle Codecs des Vertrags; der Codec wird je Au
   anderen Codec mit `meeting_recording_codec_unsupported` ab. ProRes wird es dort nicht geben.
 
 Verworfen: **der Stream-Deck-Taste den zuletzt in der Web-App gewählten Codec geben** – die Wahl liegt in der Web-App
-und nicht in der Bridge; die Bridge müsste sie speichern oder erraten. **Jede Endung annehmen und den Container aus
+und nicht in der Bridge; die Bridge müsste sie speichern oder erraten. (Abgelöst durch den Nachtrag „Jede Aufnahme ist,
+was eingestellt ist": die Web-App schreibt den Codec in die Tastenbelegung, die die Bridge ohnehin speichert.) **Jede Endung annehmen und den Container aus
 der Endung ableiten** – dann hätten Endung und Codec zwei Quellen. **Software-ProRes auf Macs ohne ProRes-Hardware**
 – siehe Doktrin.
+
+## Nachtrag: Jede Aufnahme ist, was eingestellt ist; 50/60 fps unter macOS (2026-11-22)
+Vorgabe des Auftraggebers: Eine Aufnahme muss das sein, was eingestellt ist – egal, wie sie gestartet wird. Dazu 50 und
+60 fps für das Meeting-Programm (und damit die Aufnahme) unter macOS.
+
+- **Ablehnen, nie ausweichen.** Kann der eingestellte Codec in diesem Moment nicht aufgenommen werden, wird der Start
+  mit `meeting_recording_codec_unsupported` abgelehnt. Kein Auslöser nimmt je einen anderen Codec auf als den
+  eingestellten; es gibt keinen Rückfall auf H.264. Begründung: Ein Hinweis lässt sich am Stream Deck nicht
+  garantieren (die Taste hat keinen Text, die Web-App kann geschlossen sein) – ein Rückfall wäre dort still. Eine
+  Ablehnung ist mit dem Vorhandenen sofort sichtbar (Taste blinkt rot, REC geht nicht an, Fehlerzeile bzw. Meldung in
+  der Web-App). Eine Datei im falschen Codec fällt erst Stunden später auf und ist nicht reparierbar; ein abgelehnter
+  Start ist mit einem Klick auf der Format-Seite behoben.
+- **Eine Quelle, ein Schiedsrichter.** Quelle ist der auf der Format-Seite der Web-App gespeicherte Codec; die Bridge
+  speichert keine Aufnahme-Einstellung. Es gibt zwei Auslöser: den Aufnahme-Knopf der Web-App (`codec` in
+  `meeting_recording_pick_path` und `meeting_recording_start`) und die REC-Taste des Stream Decks
+  (`meeting_recording_toggle`, läuft in der Bridge ohne Web-App). Für die Taste schreibt die Web-App den Codec in die
+  Payload der Tastenbelegung und überträgt die Belegung (`streamdeck_configure`); die Bridge speichert die Belegung
+  ohnehin, die Taste nimmt also auch bei geschlossener Web-App und nach einem Bridge-Neustart den eingestellten Codec.
+  Kein neuer Befehl, keine neue Ablage. Schiedsrichter für alle drei Befehle ist die Codec-Prüfung der Bridge
+  (`gateRequestedRecordingCodec`): Der Codec muss gemeldet sein **und** das laufende Programm abdecken
+  (`max_height`, `max_fps`). Die Ablehnung trägt `data { codec, reason }` mit `encoder_unavailable`,
+  `program_format_exceeded` oder `encoders_unknown`. Ist die Probe noch nicht entschieden, wartet die Prüfung auf den
+  laufenden Versuch (höchstens 5 s) und stößt ihn an, wenn keiner läuft. Ohne `codec` bleibt es bei ungeprüftem
+  H.264. Bekannte Grenze: Die Kopie in der Tastenbelegung erneuert nur eine Web-Sitzung, die mit dieser Bridge
+  verbunden ist.
+- **Zustand der Probe im Vertrag.** `capabilities.meeting.recording_probe` ist `pending`, `done` oder `failed`; bisher
+  hieß ein fehlendes `recording` beides, „prüft noch" und „gescheitert". `recording` steht genau bei `done`. Eine
+  Plattform ohne Recorder meldet `done` mit leerer Liste. `streamdeck_error` trägt zusätzlich `error_code`.
+- **50 und 60 fps unter macOS, Windows bleibt bei 25/30.** `program_formats.fps` ist je Plattform
+  (`MEETING_PROGRAM_FORMAT_LIMITS`): macOS `[25, 30, 50, 60]`, sonst `[25, 30]`. `max_fps` je Codec ist das Minimum aus
+  Plattform-Höchstwert und einer eigenen Grenze je Codec (`MEETING_RECORDER_CODEC_MAX_FPS`, macOS überall 60, Windows
+  `h264` 30). Hält ein Codec eine Rate am Gerät nicht, wird genau dort ein Wert gesenkt. Die Ebenen-Renderer werden
+  beim Engine-Start mit der angeforderten Bildrate vorgewärmt statt fest mit 30.
+- **Die 40-Mbit/s-Grenze bleibt.** `recorderVideoBitrateBps` wird nicht angefasst (die PGM-Aufnahme nutzt sie und
+  darf sich nicht ändern). H.264 1080p50 liegt mit 36,3 Mbit/s darunter, 1080p60 wird auf 40 Mbit/s gehalten statt
+  43,5 (0,32 statt 0,35 bit/px); HEVC 21,8 / 24 Mbit/s; ProRes skaliert linear (HQ 1080p60 rund 440 Mbit/s, rund
+  198 GB je Stunde). Begründung: Die lineare Regel teilt bei hohen Bildraten zu viel zu, weil sich aufeinanderfolgende
+  Bilder weniger unterscheiden; 8 % unter dem Regelwert sind nicht sichtbar. Keyframe-Abstand bleibt 2 s, die
+  Speicherplatz-Regel bleibt fünf Minuten zur erwarteten Datenrate (ProRes HQ 1080p60: rund 16,5 GB).
+- **Virtuelle Kamera und Vorschauen bekommen über 30 fps jedes zweite Bild** (60 → 30, 50 → 25; `outputDivisor`). Die
+  macOS-Erweiterung gibt fest 30 Hz aus, Teams und Zoom begrenzen ohnehin auf 30. Ausgedünnt wird an der einen Stelle,
+  die `PreviewFrameStore` füllt – das trifft Rohbild-Strom der virtuellen Kamera, WebRTC-Programmstrom (Encoder mit
+  der halben Rate) und MJPEG-Vorschau; der Recorder bekommt jedes Bild. 50 → 25 statt 50 → 30, weil jedes zweite Bild
+  gleichmäßige 40-ms-Schritte ergibt (das, was ein 25-fps-Programm der Erweiterung heute schon liefert); 50 → 30
+  bräuchte ein ungleichmäßiges 20/40-ms-Muster, das der freilaufende Takt der Erweiterung noch einmal abtastet. Die
+  Regel ist zeitbasiert, nicht „jeder zweite Takt": Mit einer 30-fps-Kamera im 60-fps-Programm können alle neuen
+  Bilder auf ungerade Takte fallen.
+- **Auflösung vor Bildrate bei der Kamera; das Programm behält seine Rate.** Liefert die Kamera die Rate nicht in der
+  angeforderten Größe, nimmt die Auswahl über 30 fps die halbe Rate in dieser Größe (60 → 30, 50 → 25, `half_rate`),
+  bevor sie auf eine kleinere Größe mit voller Rate ausweicht. Jedes Kamerabild steht dann zweimal im Programm;
+  Grafik, Bildschirm und Medien laufen mit voller Rate. Nichts wird abgelehnt. Der Helper meldet das Format der
+  Programmkamera als `engine.camera_format`, die Web-App zeigt einen Hinweis.
+- **Keyer:** keine Änderung an Stufen oder Budget (die Regelung dazu gibt es nur unter Windows). Die Haltezeiten bei
+  Masken-Aussetzern zählen Keyer-Läufe und werden verdoppelt, wenn der Keyer öfter als 30-mal je Sekunde läuft, damit
+  sie gleich lang bleiben. Ob der Keyer 16,7 ms je Bild hält, ist eine Messung am Gerät.
+
+Verworfen: **H.264 mit Hinweis statt Ablehnung** – siehe oben. **Den Codec in der Bridge speichern** – zweite Quelle
+neben der Web-Datenbank. **Die Bitraten-Grenze für 1080p60 anheben** – ändert die gemeinsame Funktion und damit die
+PGM-Aufnahme. **50 → 30 für die virtuelle Kamera** – ungleichmäßiges Muster. **Bei einer Kamera ohne 50/60 fps das
+Programm ablehnen oder die Programmrate senken** – die Aufnahme soll die eingestellte Rate haben, Grafik und
+Bildschirminhalte profitieren auch ohne schnelle Kamera.
+
+Nur am Gerät prüfbar und noch offen: Keyer bei 60 fps, je Codec eine Aufnahme mit 1080p50 und 1080p60 aus der
+laufenden Engine, das 16,7-ms-Raster der Programmschleife unter Last, virtuelle Kamera in Teams/Zoom bei 50/60 fps.
 
 ## Alternativen
 - **Plattform-Weiche in der Web-App** („macOS kann ProRes, Windows nicht"): verworfen. Ob HEVC- oder ProRes-Hardware da
@@ -163,12 +228,13 @@ der Endung ableiten** – dann hätten Endung und Codec zwei Quellen. **Software
   Lauf. Der lokale Status (`GET /video/status`) startet die Probe nie und zeigt
   `recording` erst danach.
 - Mit jedem Codec, den ein Recorder lernt, wächst `MEETING_RECORDER_SUPPORTED_CODECS`; mit jeder Messung am Gerät wachsen
-  `MEETING_PROGRAM_FORMAT_LIMITS` – dann voraussichtlich je Plattform und je Codec verschieden (`max_height`/`max_fps`
-  je Eintrag sind dafür schon im Vertrag).
+  `MEETING_PROGRAM_FORMAT_LIMITS` – seit dem Nachtrag zu 50/60 fps je Plattform, mit `MEETING_RECORDER_CODEC_MAX_FPS`
+  auch je Codec verschieden (`max_height`/`max_fps` je Eintrag stehen dafür im Vertrag).
 - Auf Macs ohne ProRes-Hardware wird ProRes unter dieser Doktrin nicht angeboten. Das ist so entschieden (2026-11-22):
   ProRes gibt es nur, wo die Probe ProRes-Hardware meldet.
-- Die virtuelle Kamera unter macOS liefert fest 30 fps (`VCamDeviceSource.swift`); bei einem 25-fps-Programm
-  wiederholt sie Bilder ungleichmäßig. Die Aufnahme ist davon nicht betroffen.
+- Die virtuelle Kamera unter macOS liefert fest 30 fps (`VCamDeviceSource.swift`); bei einem 25-fps-Programm – und
+  bei einem 50-fps-Programm, das ihr 25 Bilder je Sekunde liefert – wiederholt sie Bilder ungleichmäßig. Die Aufnahme
+  ist davon nicht betroffen.
 - Nur am Gerät prüfbar: der gesamte Windows-Teil der Probe und des Recorders (`recording_probe_mediafoundation.cpp`
   und `meeting_recorder_mediafoundation.cpp` sind auf macOS nicht übersetzbar), ein 25-fps-Programm mit echter Kamera,
   virtueller Kamera und Aufnahme auf beiden Plattformen, und eine Aufnahme je Codec aus der laufenden Engine mit
