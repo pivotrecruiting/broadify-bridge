@@ -384,6 +384,10 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(recorder_encode_policy_test
     tests/recorder_encode_policy_test.cpp
   )
+  # Start claim of the platform recorders (header-only).
+  add_executable(recorder_start_claim_test
+    tests/recorder_start_claim_test.cpp
+  )
   # Codec -> container/audio table of the recorder (header-only).
   add_executable(recording_codec_test
     tests/recording_codec_test.cpp
@@ -623,6 +627,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     guided_mask_refine_test
     guided_work_size_test
     recorder_encode_policy_test
+    recorder_start_claim_test
     recording_codec_test
     recording_probe_test
     framebus_reader_log_gate_test

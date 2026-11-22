@@ -2,6 +2,7 @@
 
 #if defined(__APPLE__)
 #include "recorder/recorder_encode_policy.h"
+#include "recorder/recorder_start_claim.h"
 #include "recorder/recorder_video_worker.h"
 #include "recorder/recorder_writer_factory.h"
 #endif
@@ -198,7 +199,7 @@ std::vector<MicrophoneInfo> MeetingRecorder::listMicrophones() const {
   return result;
 }
 
-bool MeetingRecorder::start(const RecordingRequest &request) {
+RecordingStartOutcome MeetingRecorder::start(const RecordingRequest &request) {
   const std::string &filePath = request.filePath;
   const uint32_t width = request.width;
   const uint32_t height = request.height;
@@ -210,22 +211,18 @@ bool MeetingRecorder::start(const RecordingRequest &request) {
   // publish the finished pipeline.
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (impl_->active || impl_->starting) {
-      impl_->lastError = "already_recording";
-      return false;
+    const std::optional<RecordingStartOutcome> ended = claimRecordingStart(
+        impl_->active, impl_->starting, impl_->lastError, impl_->diskSpaceLow,
+        width != 0 && height != 0 && !filePath.empty());
+    if (ended) {
+      return *ended;
     }
-    impl_->diskSpaceLow.reset();
-    if (width == 0 || height == 0 || filePath.empty()) {
-      impl_->lastError = "invalid_arguments";
-      return false;
-    }
-    impl_->starting = true;
   }
   const auto fail = [this](const std::string &error) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->lastError = error;
     impl_->starting = false;
-    return false;
+    return RecordingStartOutcome::Failed;
   };
 
   @autoreleasepool {
@@ -359,7 +356,7 @@ bool MeetingRecorder::start(const RecordingRequest &request) {
     impl_->starting = false;
     impl_->active = true;
   }
-  return true;
+  return RecordingStartOutcome::Started;
 }
 
 void MeetingRecorder::appendVideoFrame(const uint8_t *rgba, uint32_t width,

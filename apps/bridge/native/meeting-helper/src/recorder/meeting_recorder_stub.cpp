@@ -15,7 +15,9 @@ std::vector<MicrophoneInfo> MeetingRecorder::listMicrophones() const {
   return {};
 }
 
-bool MeetingRecorder::start(const RecordingRequest &) { return false; }
+RecordingStartOutcome MeetingRecorder::start(const RecordingRequest &) {
+  return RecordingStartOutcome::Failed;
+}
 
 void MeetingRecorder::appendVideoFrame(const uint8_t *, uint32_t, uint32_t) {}
 

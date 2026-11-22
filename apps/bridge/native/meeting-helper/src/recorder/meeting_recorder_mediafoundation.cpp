@@ -1,6 +1,7 @@
 #include "recorder/meeting_recorder.h"
 
 #include "recorder/recorder_encode_policy.h"
+#include "recorder/recorder_start_claim.h"
 #include "util/helper_event_log.h"
 #include "util/path_utf8.h"
 #include "util/pixel_swizzle.h"
@@ -362,7 +363,7 @@ std::vector<MicrophoneInfo> MeetingRecorder::listMicrophones() const {
   return result;
 }
 
-bool MeetingRecorder::start(const RecordingRequest &request) {
+RecordingStartOutcome MeetingRecorder::start(const RecordingRequest &request) {
   const std::string &filePath = request.filePath;
   const std::string &micDeviceId = request.micDeviceId;
   const uint32_t width = request.width;
@@ -374,28 +375,23 @@ bool MeetingRecorder::start(const RecordingRequest &request) {
   // lock is only taken to claim the start and to publish the pipeline.
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (impl_->active || impl_->starting) {
-      impl_->lastError = "already_recording";
-      return false;
+    const std::optional<RecordingStartOutcome> ended = claimRecordingStart(
+        impl_->active, impl_->starting, impl_->lastError, impl_->diskSpaceLow,
+        width != 0 && height != 0 && !filePath.empty());
+    if (ended) {
+      return *ended;
     }
-    impl_->diskSpaceLow.reset();
-    if (width == 0 || height == 0 || filePath.empty()) {
-      impl_->lastError = "invalid_arguments";
-      return false;
-    }
-    // This recorder writes H.264 only (ADR-0010).
-    if (request.codec != RecordingCodec::H264) {
-      impl_->lastError = kRecordingCodecUnsupportedError;
-      return false;
-    }
-    impl_->starting = true;
   }
   const auto fail = [this](std::string error) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->lastError = std::move(error);
     impl_->starting = false;
-    return false;
+    return RecordingStartOutcome::Failed;
   };
+  // This recorder writes H.264 only (ADR-0010).
+  if (request.codec != RecordingCodec::H264) {
+    return fail(kRecordingCodecUnsupportedError);
+  }
 
   ComApartment com;
   const uint32_t safeFps = fps > 0 ? fps : 30;
@@ -669,7 +665,7 @@ bool MeetingRecorder::start(const RecordingRequest &request) {
   if (FAILED(hr) && impl_->audioDrained != nullptr) {
     SetEvent(impl_->audioDrained);  // nothing in flight to wait for
   }
-  return true;
+  return RecordingStartOutcome::Started;
 }
 
 void MeetingRecorder::appendVideoFrame(const uint8_t *rgba, uint32_t width,

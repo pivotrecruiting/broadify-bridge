@@ -811,11 +811,19 @@ std::string handleRpc(const std::string &line,
     request.height = options.height;
     request.fps = options.fps;
     request.codec = *codec;
-    if (!recorder.start(request)) {
-      return errorResponse(id, "recording_start_failed",
-                           recorder.status().lastError);
+    switch (recorder.start(request)) {
+      case RecordingStartOutcome::Started:
+        return okResponse(id, recordingStatusResponse(recorder));
+      case RecordingStartOutcome::AlreadyRecording:
+        // The status belongs to the recording that runs; the refusal is
+        // reported here only.
+        return errorResponse(id, "recording_start_failed",
+                             kRecordingAlreadyRecordingError);
+      case RecordingStartOutcome::Failed:
+        break;
     }
-    return okResponse(id, recordingStatusResponse(recorder));
+    return errorResponse(id, "recording_start_failed",
+                         recorder.status().lastError);
   }
 
   if (method == "recording.stop") {

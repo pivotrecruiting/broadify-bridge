@@ -42,6 +42,15 @@ inline constexpr char kRecordingCodecUnsupportedError[] =
 // RecordingStatus::diskSpaceLow carries the numbers.
 inline constexpr char kRecordingDiskSpaceLowError[] = "recording_disk_space_low";
 
+// A recording is running or starting. Reported for
+// RecordingStartOutcome::AlreadyRecording, which leaves the status untouched.
+inline constexpr char kRecordingAlreadyRecordingError[] = "already_recording";
+
+// How MeetingRecorder::start ended. Failed: RecordingStatus::lastError names
+// the reason. AlreadyRecording: the status still describes the recording
+// that is running or starting, the refused start changed nothing in it.
+enum class RecordingStartOutcome { Started, AlreadyRecording, Failed };
+
 struct RecordingDiskSpace {
   uint64_t requiredBytes = 0;
   uint64_t freeBytes = 0;
@@ -94,10 +103,11 @@ class MeetingRecorder {
   // or on platforms without capture support).
   std::vector<MicrophoneInfo> listMicrophones() const;
 
-  // Begin recording program frames plus the requested microphone. Returns
-  // false and sets the status error on failure (already recording,
-  // permission denied, unwritable path, unsupported codec, ...).
-  bool start(const RecordingRequest &request);
+  // Begin recording program frames plus the requested microphone. A failure
+  // (permission denied, unwritable path, unsupported codec, ...) sets the
+  // status error; a start while a recording runs is refused without
+  // touching the status (claimRecordingStart).
+  RecordingStartOutcome start(const RecordingRequest &request);
 
   // Append one composited program frame (RGBA8, width*height*4 bytes). No-op if
   // not recording or on a geometry mismatch. Safe to call from the pipeline.
