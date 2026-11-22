@@ -42,6 +42,38 @@ describe("JsonQueueStore", () => {
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, "queue.json"), "{ not json");
     expect(await createStore().load()).toEqual([]);
+    // Lost tasks are never silent, and the log line carries no file content.
+    expect(logger.warn.mock.calls).toEqual([
+      ["[QueueTest] Discarding the persisted upload queue (invalid JSON); starting with an empty queue"],
+    ]);
+  });
+
+  it("does not log on the first run, when there is no file yet", async () => {
+    await createStore().load();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("serialises overlapping writes: the file is always valid and ends with the last save", async () => {
+    const store = createStore();
+    const filePath = path.join(userDataDir, "queue-test", "queue.json");
+    for (let round = 0; round < 50; round += 1) {
+      // Different sizes: an interleaved write would leave a mix of both documents.
+      const large = Array.from({ length: 400 }, (_unused, index) => ({ id: `large-${round}-${index}`, attempts: index }));
+      const small = [{ id: `small-${round}`, attempts: round }];
+      await Promise.all([store.save(large), store.save(small)]);
+      expect(JSON.parse(await fs.readFile(filePath, "utf8"))).toEqual({ tasks: small });
+    }
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(await fs.readdir(path.join(userDataDir, "queue-test"))).toEqual(["queue.json"]);
+  });
+
+  it("writes the tasks as they were when save was called", async () => {
+    const store = createStore();
+    const tasks = [{ id: "a", attempts: 0 }];
+    const first = store.save(tasks);
+    tasks[0].attempts = 9;
+    await first;
+    expect(await createStore().load()).toEqual([{ id: "a", attempts: 0 }]);
   });
 
   it("discards a file with a task that does not match the schema", async () => {
@@ -52,6 +84,7 @@ describe("JsonQueueStore", () => {
       JSON.stringify({ tasks: [{ id: "a", attempts: 0 }, { id: "b", attempts: 0, extra: true }] }),
     );
     expect(await createStore().load()).toEqual([]);
+    expect(String(logger.warn.mock.calls[0][0])).toContain("(invalid tasks)");
   });
 
   it("logs a failed write with its tag instead of throwing", async () => {
