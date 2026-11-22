@@ -295,6 +295,13 @@ std::shared_ptr<const RgbaImage> getBackgroundImage(const std::string &path) {
   return cache.get(path);
 }
 
+// The background image of this program frame: nullptr while keying is off
+// (selectVisibleBackgroundImage). Shared by the GPU plan and the CPU path.
+std::shared_ptr<const RgbaImage> visibleBackgroundImage(const CompositorSnapshot &snapshot) {
+  return selectVisibleBackgroundImage(
+      snapshot.keyerEnabled, getBackgroundImage(snapshot.backgroundImagePath));
+}
+
 MediaPageCacheResult getMediaLayerImageResult(const MediaLayerState &mediaLayer) {
   if (mediaLayer.renderedPagePath.empty() || mediaLayer.renderStatus != "ready") {
     return {};
@@ -1280,7 +1287,7 @@ bool tryRenderProgramFrameGpu(const Options &options,
   plan.backgroundMode = backgroundModeCode(snapshot.backgroundMode);
   plan.frameIndex = frameIndex;
 
-  std::shared_ptr<const RgbaImage> backgroundImage = getBackgroundImage(snapshot.backgroundImagePath);
+  std::shared_ptr<const RgbaImage> backgroundImage = visibleBackgroundImage(snapshot);
   if (backgroundImage != nullptr) {
     plan.backgroundImage = backgroundImage->rgba.data();
     plan.backgroundImageWidth = backgroundImage->width;
@@ -1562,7 +1569,7 @@ void renderProgramFrame(const Options &options,
     cameraFrame = &keyedScratch;
   }
   fillBackground(output, options.width, options.height, snapshot.backgroundMode, frameIndex);
-  if (const auto backgroundImage = getBackgroundImage(snapshot.backgroundImagePath)) {
+  if (const auto backgroundImage = visibleBackgroundImage(snapshot)) {
     // Cover-fit the company background under all other layers.
     const SourceRect source = coverSourceRect(
         backgroundImage->width, backgroundImage->height,

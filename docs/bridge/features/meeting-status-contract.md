@@ -722,6 +722,47 @@ einmal pro Pfad, solange das Laden fehlschlaegt (Retry mit Backoff 400 ms *
 enthaelt den Windows-Benutzernamen. Details: `meeting-keyer-windows.md`, Abschnitt "Paths And
 Encoding".
 
+### Hintergrundbild nur mit Keying
+
+Regel (Klicktest 2026-11-22): Bei Keying aus ist das Hintergrundbild nie im
+Programm zu sehen, auch nicht fuer einzelne Bilder.
+
+Das Hintergrundbild ist die unterste Ebene des Compositors. Bisher wurde es
+immer gezeichnet; bei Keying aus verdeckte es nur die ungekeyte Kamera, die
+das ganze Bild fuellt. Ohne Kamerabild (erste Bilder nach einem Engine-Start,
+bevor die Kamera liefert; Kamerawechsel; Kamera-Ebene aus) war der Hintergrund
+deshalb das ganze Programmbild, in Vorschau, virtueller Kamera und Aufnahme.
+Die WebApp sendet die Auswahl mit jedem `keyer.configure`, auch mit
+`enabled: false` (Engine-up-Reassert nach jedem Neustart); seit Keying in der
+WebApp standardmaessig aus ist, ist das der Normalfall.
+
+Jetzt entscheidet der Compositor an einer Stelle
+(`selectVisibleBackgroundImage` in `compose/background_image_cache.h`,
+genutzt vom GPU-Plan und vom CPU-Pfad ueber `visibleBackgroundImage`): bei
+`keyerEnabled == false` wird kein Hintergrundbild gezeichnet. Unveraendert:
+
+- `keyer.configure` speichert `background_image_path` weiter unabhaengig von
+  `enabled`, und `keyer.get` meldet die Identitaet weiter zurueck. Keying
+  einschalten zeigt den Hintergrund ohne neues Configure.
+- Das Bild wird weiter beim ersten Composite nach dem Configure geladen, auch
+  bei Keying aus (kein Decode im ersten gekeyten Bild).
+  `background_image_loaded` heisst also "geladen", nicht "gezeigt".
+- Keying aus und kein Kamerabild zeigt die Fuellflaeche (`background_mode`)
+  statt des Hintergrundbilds.
+- Die hintere Grafik-Flaeche (`bfy-meet-gfx-back`) wird bei Keying aus NICHT
+  ausgeblendet. Sie traegt neben Hintergrund-Templates auch Inhalts-Templates
+  und Folien (`resolveMeetingGraphicsPlane`), die ohne Keying sichtbar sein
+  muessen (Folien ohne Kamera, Conference mit Kamera-PiP); der Helper kann die
+  Ebenen dieser Flaeche nicht unterscheiden. Ein Hintergrund-TEMPLATE kann bei
+  Keying aus und fehlendem Kamerabild also weiterhin kurz zu sehen sein; das
+  entscheidet die WebApp, die die Ebene sendet (offen, siehe
+  `docs/meeting/recording-format.md` der WebApp, "Ohne Keying kein
+  Hintergrund").
+
+Test: `background_image_cache_test` (Auswahl bei Keying aus/an, Cache-Slot
+bleibt unberuehrt). Einen Render-Test des Compositors gibt es nicht; der
+Klicktest steht in der WebApp-Doku (Punkt 28).
+
 ## Kompatibilitaet
 
 Aeltere WebApps ignorieren unbekannte Keys. Neuere WebApps muessen alle
