@@ -259,18 +259,25 @@ describe("command-router", () => {
         darwin: ["h264", "hevc"],
         win32: ["h264"],
       };
+      const fps = process.platform === "darwin" ? [25, 30, 50, 60] : [25, 30];
       expect(result.data).toMatchObject({
         capabilities: expect.objectContaining({
           meeting: {
             program_portrait: process.platform === "darwin",
             layer_canvas: true,
-            program_formats: { max_width: 1920, max_height: 1080, fps: [25, 30] },
+            program_formats: {
+              max_width: 1920,
+              max_height: 1080,
+              fps,
+              keyer_max_fps: 30,
+            },
+            recording_probe: "done",
             recording: {
               codecs: (recorderCodecs[process.platform] ?? []).map((codec) => ({
                 codec,
                 container: "mp4",
                 max_height: 1080,
-                max_fps: 30,
+                max_fps: Math.max(...fps),
               })),
               upload_copy: false,
             },
@@ -279,7 +286,7 @@ describe("command-router", () => {
       });
     });
 
-    it("get_status still answers, without the recording block, when the encoder probe throws", async () => {
+    it("get_status still answers, with the probe reported as pending and no recording block, when the encoder probe throws", async () => {
       // Own manager state: the shared one has already cached a probe result.
       await jest.isolateModulesAsync(async () => {
         mockRunMeetingRecordingProbe.mockRejectedValueOnce(new Error("EACCES"));
@@ -294,7 +301,33 @@ describe("command-router", () => {
           result.data as { capabilities: { meeting: Record<string, unknown> } }
         ).capabilities;
         expect(meeting).toMatchObject({ layer_canvas: true });
-        expect(meeting).not.toHaveProperty("recording");
+        if (process.platform === "darwin" || process.platform === "win32") {
+          // A launch failure is transient: the next get_status retries it.
+          expect(meeting.recording_probe).toBe("pending");
+          expect(meeting).not.toHaveProperty("recording");
+        }
+      });
+    });
+
+    it("get_status reports a probe that failed for good as failed, without the recording block", async () => {
+      await jest.isolateModulesAsync(async () => {
+        mockRunMeetingRecordingProbe.mockResolvedValueOnce({
+          ok: false,
+          reason: "enumeration_failed",
+        });
+        const { commandRouter: isolatedRouter } = await import(
+          "./command-router.js"
+        );
+
+        const result = await isolatedRouter.handleCommand("get_status", {});
+
+        const { meeting } = (
+          result.data as { capabilities: { meeting: Record<string, unknown> } }
+        ).capabilities;
+        if (process.platform === "darwin" || process.platform === "win32") {
+          expect(meeting.recording_probe).toBe("failed");
+          expect(meeting).not.toHaveProperty("recording");
+        }
       });
     });
 

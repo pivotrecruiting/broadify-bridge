@@ -118,12 +118,27 @@ describe("registerServerRoutes", () => {
     expect(capabilities.live_program).toEqual(
       expect.objectContaining({ supported: expect.any(Boolean) }),
     );
-    // No recording block: the local status never starts the encoder probe,
-    // it only reports a result the relay path has already obtained.
+    // The local status never starts the encoder probe, it only reports what
+    // the relay path has already obtained: nothing here, so the probe is
+    // pending and there is no recording block. A platform without a recorder
+    // needs no probe and reports an empty list.
+    const hasRecorder =
+      process.platform === "darwin" || process.platform === "win32";
     expect(capabilities.meeting).toEqual({
       program_portrait: process.platform === "darwin",
       layer_canvas: true,
-      program_formats: { max_width: 1920, max_height: 1080, fps: [25, 30] },
+      program_formats: {
+        max_width: 1920,
+        max_height: 1080,
+        fps: process.platform === "darwin" ? [25, 30, 50, 60] : [25, 30],
+        keyer_max_fps: 30,
+      },
+      ...(hasRecorder
+        ? { recording_probe: "pending" }
+        : {
+            recording_probe: "done",
+            recording: { codecs: [], upload_copy: false },
+          }),
     });
   });
 

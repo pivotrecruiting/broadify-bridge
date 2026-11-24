@@ -96,12 +96,14 @@ describe("meeting-helper-manager", () => {
       const second = manager.probeRecordingEncoders();
       // Not known yet: the synchronous read neither waits nor starts a run.
       expect(manager.getRecordingProbe()).toBeNull();
+      expect(manager.getRecordingProbeState()).toBe("pending");
       finish({ ok: true, probe: PROBE });
 
       expect(await first).toEqual(PROBE);
       expect(await second).toEqual(PROBE);
       expect(await manager.probeRecordingEncoders()).toEqual(PROBE);
       expect(manager.getRecordingProbe()).toEqual(PROBE);
+      expect(manager.getRecordingProbeState()).toBe("done");
       expect(mockRunProbe).toHaveBeenCalledTimes(1);
       expect(mockRunProbe).toHaveBeenCalledWith("/path/to/meeting-helper");
       expect(mockLogger.info).toHaveBeenCalledWith(
@@ -119,6 +121,7 @@ describe("meeting-helper-manager", () => {
         expect(await manager.probeRecordingEncoders()).toBeNull();
 
         expect(manager.getRecordingProbe()).toBeNull();
+        expect(manager.getRecordingProbeState()).toBe("failed");
         expect(mockRunProbe).toHaveBeenCalledTimes(1);
         expect(mockLogger.warn).toHaveBeenCalledTimes(1);
         expect(mockLogger.warn).toHaveBeenCalledWith(
@@ -146,10 +149,14 @@ describe("meeting-helper-manager", () => {
           `[Meeting] Recording encoder probe failed (${reason}), attempt 1/${MEETING_RECORDING_PROBE_MAX_ATTEMPTS}; retrying on the next status request.`,
         );
 
+        // A retry is left: not failed, the web app keeps asking.
+        expect(manager.getRecordingProbeState()).toBe("pending");
+
         // Later callers start one retry and get their answer while it runs.
         expect(await manager.probeRecordingEncoders()).toBeNull();
         expect(await manager.probeRecordingEncoders()).toBeNull();
         expect(mockRunProbe).toHaveBeenCalledTimes(2);
+        expect(manager.getRecordingProbeState()).toBe("pending");
 
         finishRetry({ ok: true, probe: PROBE });
         await Promise.resolve();
@@ -157,10 +164,74 @@ describe("meeting-helper-manager", () => {
 
         expect(await manager.probeRecordingEncoders()).toEqual(PROBE);
         expect(manager.getRecordingProbe()).toEqual(PROBE);
+        expect(manager.getRecordingProbeState()).toBe("done");
         expect(mockRunProbe).toHaveBeenCalledTimes(2);
         expect(mockLogger.warn).toHaveBeenCalledTimes(1);
       },
     );
+
+    describe("awaitRecordingProbe", () => {
+      it("starts the probe when nobody has asked for it yet and waits for the result", async () => {
+        // A REC key press with no web app connected: no get_status ran.
+        mockRunProbe.mockResolvedValue({ ok: true, probe: PROBE });
+        const manager = new MeetingHelperManager();
+
+        expect(await manager.awaitRecordingProbe()).toEqual(PROBE);
+        expect(manager.getRecordingProbeState()).toBe("done");
+        expect(mockRunProbe).toHaveBeenCalledTimes(1);
+      });
+
+      it("waits for a retry in flight, where probeRecordingEncoders answers at once", async () => {
+        let finishRetry!: (outcome: MeetingRecordingProbeOutcomeT) => void;
+        mockRunProbe
+          .mockResolvedValueOnce({ ok: false, reason: "timeout" })
+          .mockReturnValueOnce(
+            new Promise((resolve) => {
+              finishRetry = resolve;
+            }),
+          );
+        const manager = new MeetingHelperManager();
+        expect(await manager.probeRecordingEncoders()).toBeNull();
+        // Starts the retry and does not wait for it.
+        expect(await manager.probeRecordingEncoders()).toBeNull();
+
+        let waited: unknown = "waiting";
+        const waiting = manager.awaitRecordingProbe().then((probe) => {
+          waited = probe;
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(waited).toBe("waiting");
+
+        finishRetry({ ok: true, probe: PROBE });
+        await waiting;
+        expect(waited).toEqual(PROBE);
+        // Joined the retry in flight instead of starting a third run.
+        expect(mockRunProbe).toHaveBeenCalledTimes(2);
+      });
+
+      it("starts the next attempt after a transient failure and counts it against the bound", async () => {
+        mockRunProbe.mockResolvedValue({ ok: false, reason: "timeout" });
+        const manager = new MeetingHelperManager();
+
+        for (let call = 0; call < MEETING_RECORDING_PROBE_MAX_ATTEMPTS + 2; call += 1) {
+          expect(await manager.awaitRecordingProbe()).toBeNull();
+        }
+
+        expect(mockRunProbe).toHaveBeenCalledTimes(MEETING_RECORDING_PROBE_MAX_ATTEMPTS);
+        expect(manager.getRecordingProbeState()).toBe("failed");
+      });
+
+      it("answers from the settled state without another run", async () => {
+        mockRunProbe.mockResolvedValue({ ok: false, reason: "helper_missing" });
+        const manager = new MeetingHelperManager();
+
+        expect(await manager.awaitRecordingProbe()).toBeNull();
+        expect(await manager.awaitRecordingProbe()).toBeNull();
+
+        expect(mockRunProbe).toHaveBeenCalledTimes(1);
+        expect(manager.getRecordingProbeState()).toBe("failed");
+      });
+    });
 
     it("gives up after the bounded number of runs when the failure stays transient", async () => {
       mockRunProbe.mockResolvedValue({ ok: false, reason: "timeout" });
@@ -178,6 +249,7 @@ describe("meeting-helper-manager", () => {
         "[Meeting] Recording encoder probe failed (timeout); recording formats are not advertised.",
       );
       expect(manager.getRecordingProbe()).toBeNull();
+      expect(manager.getRecordingProbeState()).toBe("failed");
     });
 
     it("stops retrying once a retry fails definitively", async () => {
@@ -739,6 +811,69 @@ describe("meeting-helper-manager", () => {
       ]);
       expect(client.virtualCameraStart).toHaveBeenCalledWith({
         allowElevation: false,
+      });
+    });
+
+    describe("keyer replay after a crash restart", () => {
+      type InternalsT = {
+        client: { keyerConfigure: jest.Mock };
+        state: string;
+        lastStartOptions: { fps?: number };
+        restoreRuntimeConfig: () => Promise<void>;
+      };
+
+      const restartedAt = (fps: number) => {
+        const manager = new MeetingHelperManager();
+        const internals = manager as unknown as InternalsT;
+        internals.client = { keyerConfigure: jest.fn(async () => ({})) };
+        internals.state = "running";
+        internals.lastStartOptions = { fps };
+        return { manager, internals };
+      };
+
+      it.each([25, 30])("replays keying into a %i fps engine", async (fps) => {
+        const { manager, internals } = restartedAt(fps);
+        manager.noteKeyerConfigured({ enabled: true, background_mode: "gradient" });
+
+        await internals.restoreRuntimeConfig();
+
+        expect(internals.client.keyerConfigure).toHaveBeenCalledWith({
+          enabled: true,
+          background_mode: "gradient",
+        });
+      });
+
+      it.each([50, 60])(
+        "replays a config noted on a slower engine into a %i fps engine with keying off",
+        async (fps) => {
+          const { manager, internals } = restartedAt(fps);
+          manager.noteKeyerConfigured({ enabled: true, background_mode: "gradient" });
+
+          await internals.restoreRuntimeConfig();
+          await internals.restoreRuntimeConfig();
+
+          expect(internals.client.keyerConfigure.mock.calls).toEqual([
+            [{ enabled: false, background_mode: "gradient" }],
+            [{ enabled: false, background_mode: "gradient" }],
+          ]);
+          expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+          expect(mockLogger.warn).toHaveBeenCalledWith(
+            `[Meeting] Keying is not restored after the helper restart: the program runs at ${fps} fps, keying at up to 30 fps.`,
+          );
+        },
+      );
+
+      it("replays a config without keying into a 60 fps engine unchanged", async () => {
+        const { manager, internals } = restartedAt(60);
+        manager.noteKeyerConfigured({ enabled: false, background_mode: "gradient" });
+
+        await internals.restoreRuntimeConfig();
+
+        expect(internals.client.keyerConfigure).toHaveBeenCalledWith({
+          enabled: false,
+          background_mode: "gradient",
+        });
+        expect(mockLogger.warn).not.toHaveBeenCalled();
       });
     });
 

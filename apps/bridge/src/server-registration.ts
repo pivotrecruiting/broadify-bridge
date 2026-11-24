@@ -92,6 +92,7 @@ export async function registerServerRoutes(
           live_program: getLiveProgramCapabilities(),
           meeting: getMeetingCapabilities({
             recordingProbe: meetingHelperManager.getRecordingProbe(),
+            recordingProbeState: meetingHelperManager.getRecordingProbeState(),
           }),
         },
       };

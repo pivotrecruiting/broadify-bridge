@@ -42,8 +42,9 @@ export function isMeetingRecordingCodec(
 
 /**
  * Codec of a recording started without one: what the recorder wrote before
- * the format became selectable, and what older web apps and a Stream Deck key
- * without payload still get.
+ * the format became selectable. A request carries no `codec` when h264 is the
+ * configured codec, and when it comes from an older web app (which also
+ * leaves the Stream Deck REC key's binding without one).
  */
 export const DEFAULT_MEETING_RECORDING_CODEC: MeetingRecordingCodecT = "h264";
 

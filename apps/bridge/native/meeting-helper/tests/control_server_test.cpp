@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -32,6 +33,7 @@
 
 namespace {
 
+using broadify::meeting::CameraCaptureFormat;
 using broadify::meeting::CameraInfo;
 using broadify::meeting::CameraSource;
 using broadify::meeting::MeetingRecorder;
@@ -135,12 +137,16 @@ class StubCameraSource final : public CameraSource {
   int activeCameraIndex() const override { return activeIndex_; }
   bool copyLatestFrame(VideoFrame &) override { return false; }
   std::string lastError() const override { return liveError; }
+  std::optional<CameraCaptureFormat> programCaptureFormat() const override {
+    return captureFormat;
+  }
   std::string stickyLastError() const override { return stickyError; }
   uint64_t stickyLastErrorAtMs() const override { return stickyErrorAtMs; }
   std::string cameraPermissionStatus() const override { return "authorized"; }
   std::string requestCameraPermission() override { return "authorized"; }
 
   std::string liveError;
+  std::optional<CameraCaptureFormat> captureFormat;
   std::string stickyError;
   uint64_t stickyErrorAtMs = 0;
 
@@ -739,6 +745,29 @@ int main() {
   if (!contains(badProgram, "camera_program_select_failed")) {
     stopServer();
     fail("program_select accepted an unknown stable_key");
+  }
+
+  // state.get reports the program camera's capture format, and null while
+  // the backend has none to report (no camera running).
+  {
+    camera.captureFormat = std::nullopt;
+    const std::string withoutFormat =
+        rpc("{\"id\":\"7e\",\"method\":\"state.get\"}");
+    if (!contains(withoutFormat, "\"camera_format\":null,")) {
+      stopServer();
+      fail("state.get did not report camera_format null without a format");
+    }
+    camera.captureFormat = CameraCaptureFormat{1920u, 1080u, 30.00003, 60u, "half_rate"};
+    const std::string withFormat =
+        rpc("{\"id\":\"7f\",\"method\":\"state.get\"}");
+    if (!contains(withFormat,
+                  "\"camera_format\":{\"width\":1920,\"height\":1080,"
+                  "\"fps\":30.00003,\"requested_fps\":60,"
+                  "\"match\":\"half_rate\"},")) {
+      stopServer();
+      fail("state.get did not report the camera_format object");
+    }
+    camera.captureFormat = std::nullopt;
   }
 
   // state.get surfaces the STICKY camera error (survives a camera list),

@@ -1,5 +1,10 @@
 #include "pipeline/frame_pipeline_gating.h"
 
+#include "common/output_rate.h"
+
+#include <algorithm>
+#include <cmath>
+
 namespace broadify::meeting {
 
 bool shouldRunProgramWork(const PipelineWorkTriggers &triggers) {
@@ -84,6 +89,37 @@ std::chrono::steady_clock::time_point earlyCameraWakeRenderDeadline(
           std::chrono::duration<double>(frameInterval) * minIntervalFactor);
   const auto earliestRenderAt = lastRenderStartAt + minElapsed;
   return earliestRenderAt < nextFrameAt ? earliestRenderAt : nextFrameAt;
+}
+
+PreviewPublishGate::PreviewPublishGate(
+    std::chrono::steady_clock::duration frameInterval, uint32_t outputDivisor)
+    : minPublishInterval_(frameInterval * (2u * outputDivisor - 1u) / 2u),
+      decimate_(outputDivisor > 1u) {}
+
+bool PreviewPublishGate::shouldPublish(
+    bool programRendered, bool consumerActive,
+    std::chrono::steady_clock::time_point tickStart) {
+  if (!consumerActive) {
+    // Nobody to publish for: a frame rendered now is not owed to a consumer
+    // that connects later.
+    pending_ = false;
+    return false;
+  }
+  if (!decimate_) {
+    return programRendered;
+  }
+  pending_ = pending_ || programRendered;
+  if (!pending_ || tickStart - lastPublishAt_ < minPublishInterval_) {
+    return false;
+  }
+  pending_ = false;
+  lastPublishAt_ = tickStart;
+  return true;
+}
+
+uint32_t fusedKeyerHoldScale(uint32_t programFps, double cameraFps) {
+  return outputDivisor(
+      std::min(static_cast<double>(programFps), std::round(cameraFps)));
 }
 
 }  // namespace broadify::meeting

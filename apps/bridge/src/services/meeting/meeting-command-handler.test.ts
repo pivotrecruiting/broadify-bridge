@@ -10,6 +10,9 @@ const mockGetMeetingCapabilities = jest.fn(
   (): Record<string, unknown> => ({ program_portrait: true }),
 );
 const mockGetRecordingProbe = jest.fn();
+const mockGetRecordingProbeState = jest.fn();
+const mockAwaitRecordingProbe = jest.fn();
+const mockNoteKeyerConfigured = jest.fn();
 const mockNotifyRecordingChanged = jest.fn();
 const mockRequestStatusPublish = jest.fn();
 const mockMeetingBackGraphicsConfigureOutputs = jest.fn();
@@ -40,11 +43,15 @@ jest.mock("./meeting-helper-manager.js", () => ({
     getProgramFormat: (...args: unknown[]) => mockGetProgramFormat(...args),
     getPendingStart: (...args: unknown[]) => mockGetPendingStart(...args),
     getRecordingProbe: (...args: unknown[]) => mockGetRecordingProbe(...args),
+    getRecordingProbeState: (...args: unknown[]) =>
+      mockGetRecordingProbeState(...args),
+    awaitRecordingProbe: (...args: unknown[]) =>
+      mockAwaitRecordingProbe(...args),
     noteCameraCall: () => undefined,
     noteCameraStopped: () => undefined,
     noteVirtualCameraStarted: () => undefined,
     noteVirtualCameraStopped: () => undefined,
-    noteKeyerConfigured: () => undefined,
+    noteKeyerConfigured: (...args: unknown[]) => mockNoteKeyerConfigured(...args),
     notifyRecordingChanged: (...args: unknown[]) =>
       mockNotifyRecordingChanged(...args),
     requestStatusPublish: (...args: unknown[]) =>
@@ -176,6 +183,26 @@ const mockClient = {
   recordingStatus: jest.fn(),
 };
 
+/**
+ * The capability block of a platform on the base envelope (25/30 fps). The
+ * handler reads its limits from the block, so no test depends on the platform
+ * it runs on.
+ */
+const BASE_CAPABILITIES = {
+  program_portrait: true,
+  program_formats: { max_width: 1920, max_height: 1080, fps: [25, 30] },
+};
+/** The block of a platform that also runs the program at 50 and 60 fps. */
+const HIGH_FPS_CAPABILITIES = {
+  ...BASE_CAPABILITIES,
+  program_formats: { ...BASE_CAPABILITIES.program_formats, fps: [25, 30, 50, 60] },
+};
+/** The block of a platform whose keyer holds at most 30 fps of those. */
+const KEYER_LIMIT_CAPABILITIES = {
+  ...HIGH_FPS_CAPABILITIES,
+  program_formats: { ...HIGH_FPS_CAPABILITIES.program_formats, keyer_max_fps: 30 },
+};
+
 describe("meeting-command-handler", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -186,7 +213,10 @@ describe("meeting-command-handler", () => {
     mockIsRunning.mockReturnValue(true);
     mockGetProgramFormat.mockReturnValue(null);
     mockGetPendingStart.mockReturnValue(null);
-    mockGetMeetingCapabilities.mockReturnValue({ program_portrait: true });
+    mockGetMeetingCapabilities.mockReturnValue(BASE_CAPABILITIES);
+    mockGetRecordingProbe.mockReturnValue(null);
+    mockGetRecordingProbeState.mockReturnValue("pending");
+    mockAwaitRecordingProbe.mockResolvedValue(null);
     mockClient.getState.mockResolvedValue({ camera_permission_status: "authorized" });
     mockMeetingBackGraphicsConfigureOutputs.mockResolvedValue(undefined);
     mockMeetingFrontGraphicsConfigureOutputs.mockResolvedValue(undefined);
@@ -433,7 +463,10 @@ describe("meeting-command-handler", () => {
       it("refuses a portrait start on a platform without the capability", async () => {
         await primeGraphicsState();
         mockIsRunning.mockReturnValue(false);
-        mockGetMeetingCapabilities.mockReturnValue({ program_portrait: false });
+        mockGetMeetingCapabilities.mockReturnValue({
+          ...BASE_CAPABILITIES,
+          program_portrait: false,
+        });
 
         const result = await handleMeetingCommand("meeting_engine_start", PORTRAIT);
 
@@ -444,7 +477,10 @@ describe("meeting-command-handler", () => {
 
       it("refuses portrait on an incapable platform even while a landscape engine runs", async () => {
         await primeGraphicsState();
-        mockGetMeetingCapabilities.mockReturnValue({ program_portrait: false });
+        mockGetMeetingCapabilities.mockReturnValue({
+          ...BASE_CAPABILITIES,
+          program_portrait: false,
+        });
         mockGetProgramFormat.mockReturnValue(LANDSCAPE);
 
         const result = await handleMeetingCommand("meeting_engine_start", PORTRAIT);
@@ -456,7 +492,10 @@ describe("meeting-command-handler", () => {
 
       it("still starts landscape on a platform without the capability", async () => {
         mockIsRunning.mockReturnValueOnce(false);
-        mockGetMeetingCapabilities.mockReturnValue({ program_portrait: false });
+        mockGetMeetingCapabilities.mockReturnValue({
+          ...BASE_CAPABILITIES,
+          program_portrait: false,
+        });
         mockStart.mockResolvedValue({ state: "running", program_format: LANDSCAPE });
 
         const result = await handleMeetingCommand("meeting_engine_start", LANDSCAPE);
@@ -512,7 +551,10 @@ describe("meeting-command-handler", () => {
 
       it("reports the missing portrait capability before the format limits", async () => {
         mockIsRunning.mockReturnValue(false);
-        mockGetMeetingCapabilities.mockReturnValue({ program_portrait: false });
+        mockGetMeetingCapabilities.mockReturnValue({
+          ...BASE_CAPABILITIES,
+          program_portrait: false,
+        });
 
         const result = await handleMeetingCommand("meeting_engine_start", {
           ...PORTRAIT,
@@ -521,6 +563,30 @@ describe("meeting-command-handler", () => {
 
         expect(result.errorCode).toBe("meeting_program_portrait_unsupported");
       });
+
+      it.each([50, 60])(
+        "starts the engine at %i fps where the platform advertises it and pre-warms the planes at that rate",
+        async (fps) => {
+          const format = { ...LANDSCAPE, fps };
+          mockGetMeetingCapabilities.mockReturnValue(HIGH_FPS_CAPABILITIES);
+          mockIsRunning.mockReturnValueOnce(false);
+          mockStart.mockResolvedValue({ state: "running", program_format: format });
+
+          const result = await handleMeetingCommand("meeting_engine_start", format);
+          await settlePrewarm();
+
+          expect(result.success).toBe(true);
+          expect(mockStart).toHaveBeenCalledWith(format);
+          // The web app configures the planes at the program's frame rate: a
+          // pre-warm at any other rate would configure them twice.
+          expect(mockMeetingBackGraphicsConfigureOutputs).toHaveBeenCalledWith(
+            expect.objectContaining({ format }),
+          );
+          expect(mockMeetingFrontGraphicsConfigureOutputs).toHaveBeenCalledWith(
+            expect.objectContaining({ format }),
+          );
+        },
+      );
 
       it("starts the engine at every advertised frame rate", async () => {
         mockIsRunning.mockReturnValueOnce(false);
@@ -759,7 +825,7 @@ describe("meeting-command-handler", () => {
           expect(mockFrameBusCreateWriter).toHaveBeenCalledTimes(2);
           expect(mockMeetingBackGraphicsInvalidate).toHaveBeenCalledTimes(1);
           expect(mockMeetingFrontGraphicsInvalidate).toHaveBeenCalledTimes(1);
-          const planes = pending === PORTRAIT ? PORTRAIT : LANDSCAPE;
+          const planes = pending === PORTRAIT ? PORTRAIT : { ...LANDSCAPE, fps: pending.fps };
           expect(mockMeetingBackGraphicsConfigureOutputs).toHaveBeenCalledWith(
             expect.objectContaining({ format: planes }),
           );
@@ -854,18 +920,25 @@ describe("meeting-command-handler", () => {
         });
       });
 
-      it("pre-warms the graphics planes at 1920x1080@30 for a landscape engine", async () => {
+      it.each([
+        ["the default frame rate", {}, LANDSCAPE],
+        ["the requested frame rate", { fps: 25 }, LANDSCAPE_25],
+      ])("pre-warms the graphics planes at 1920x1080 and %s for a landscape engine", async (_name, rate, planes) => {
         mockIsRunning.mockReturnValueOnce(false);
         mockStart.mockResolvedValue({ state: "running" });
 
-        await handleMeetingCommand("meeting_engine_start", { width: 1280, height: 720 });
+        await handleMeetingCommand("meeting_engine_start", {
+          width: 1280,
+          height: 720,
+          ...rate,
+        });
         await settlePrewarm();
 
         expect(mockMeetingBackGraphicsConfigureOutputs).toHaveBeenCalledWith(
-          expect.objectContaining({ format: LANDSCAPE }),
+          expect.objectContaining({ format: planes }),
         );
         expect(mockMeetingFrontGraphicsConfigureOutputs).toHaveBeenCalledWith(
-          expect.objectContaining({ format: LANDSCAPE }),
+          expect.objectContaining({ format: planes }),
         );
       });
 
@@ -1107,6 +1180,72 @@ describe("meeting-command-handler", () => {
       });
       expect(result.success).toBe(true);
       expect(mockRequestStatusPublish).toHaveBeenCalledWith("keyer_configure");
+    });
+
+    describe("keying frame-rate limit", () => {
+      const programAt = (fps: number) => ({ width: 1920, height: 1080, fps });
+
+      beforeEach(() => {
+        mockGetMeetingCapabilities.mockReturnValue(KEYER_LIMIT_CAPABILITIES);
+        mockClient.keyerConfigure.mockResolvedValue({ settings: {} });
+      });
+
+      it.each([50, 60])(
+        "refuses to turn keying on while the program runs at %i fps, before anything is touched",
+        async (fps) => {
+          mockGetProgramFormat.mockReturnValue(programAt(fps));
+
+          const result = await handleMeetingCommand("meeting_keyer_configure", {
+            enabled: true,
+            background_mode: "transparent",
+          });
+
+          expect(result).toEqual({
+            success: false,
+            error: `Keying runs at up to 30 fps; the meeting program runs at ${fps} fps.`,
+            errorCode: "meeting_keyer_fps_unsupported",
+            data: { program_fps: fps, keyer_max_fps: 30 },
+          });
+          expect(mockClient.keyerConfigure).not.toHaveBeenCalled();
+          expect(mockNoteKeyerConfigured).not.toHaveBeenCalled();
+          expect(mockRequestStatusPublish).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([25, 30])("turns keying on at %i fps", async (fps) => {
+        mockGetProgramFormat.mockReturnValue(programAt(fps));
+
+        const result = await handleMeetingCommand("meeting_keyer_configure", {
+          enabled: true,
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.keyerConfigure).toHaveBeenCalledWith({ enabled: true });
+        expect(mockNoteKeyerConfigured).toHaveBeenCalledWith({ enabled: true });
+      });
+
+      it.each([
+        ["keying off", { enabled: false, background_mode: "transparent" }],
+        ["no keying switch", { background_asset_id: "asset-1", quality_mode: "fast" }],
+      ])("forwards a patch with %s at 60 fps", async (_label, patch) => {
+        mockGetProgramFormat.mockReturnValue(programAt(60));
+
+        const result = await handleMeetingCommand("meeting_keyer_configure", patch);
+
+        expect(result.success).toBe(true);
+        expect(mockClient.keyerConfigure).toHaveBeenCalledWith(patch);
+      });
+
+      it("knows no limit when the capability block carries none", async () => {
+        mockGetMeetingCapabilities.mockReturnValue(HIGH_FPS_CAPABILITIES);
+        mockGetProgramFormat.mockReturnValue(programAt(60));
+
+        const result = await handleMeetingCommand("meeting_keyer_configure", {
+          enabled: true,
+        });
+
+        expect(result.success).toBe(true);
+      });
     });
 
     it("forwards automatic keyer configuration without forcing a model", async () => {
@@ -1508,17 +1647,46 @@ describe("meeting-command-handler", () => {
 
     describe("recording codec", () => {
       const RECORDING_CAPABILITY = {
-        program_portrait: true,
+        ...HIGH_FPS_CAPABILITIES,
+        recording_probe: "done",
         recording: {
           codecs: [
-            { codec: "h264", container: "mp4", max_height: 1080, max_fps: 30 },
+            { codec: "h264", container: "mp4", max_height: 1080, max_fps: 60 },
             { codec: "hevc", container: "mp4", max_height: 1080, max_fps: 30 },
-            { codec: "prores_422", container: "mov", max_height: 1080, max_fps: 30 },
+            { codec: "prores_422", container: "mov", max_height: 1080, max_fps: 60 },
           ],
           upload_copy: false,
         },
       };
       const PROBE = { backend: "videotoolbox", encoders: [] };
+
+      /** One request per command that carries a codec. */
+      const codecRequests = (codec: string, extension: string) =>
+        [
+          ["meeting_recording_pick_path", { codec }],
+          ["meeting_recording_start", { file_path: `/Users/x/rec.${extension}`, codec }],
+          ["meeting_recording_toggle", { codec }],
+        ] as const;
+
+      const expectRefusedEverywhere = async (
+        codec: string,
+        extension: string,
+        refusal: { error: string; reason: string },
+      ) => {
+        for (const [command, payload] of codecRequests(codec, extension)) {
+          mockClient.recordingStatus.mockResolvedValue({ recording: { active: false } });
+          const result = await handleMeetingCommand(command, payload);
+          expect(result).toEqual({
+            success: false,
+            error: refusal.error,
+            errorCode: "meeting_recording_codec_unsupported",
+            data: { codec, reason: refusal.reason },
+          });
+        }
+        expect(mockPickRecordingSavePath).not.toHaveBeenCalled();
+        expect(mockClient.recordingStart).not.toHaveBeenCalled();
+        expect(mockNotifyRecordingChanged).not.toHaveBeenCalled();
+      };
 
       it("picks a path with the extension of an advertised codec's container", async () => {
         mockGetMeetingCapabilities.mockReturnValue(RECORDING_CAPABILITY);
@@ -1534,6 +1702,7 @@ describe("meeting-command-handler", () => {
       it("starts with an advertised codec and hands it to the helper", async () => {
         mockGetMeetingCapabilities.mockReturnValue(RECORDING_CAPABILITY);
         mockGetRecordingProbe.mockReturnValue(PROBE);
+        mockGetRecordingProbeState.mockReturnValue("done");
         mockClient.recordingStart.mockResolvedValue({ recording: { active: true } });
 
         const result = await handleMeetingCommand("meeting_recording_start", {
@@ -1542,9 +1711,10 @@ describe("meeting-command-handler", () => {
         });
 
         expect(result.success).toBe(true);
-        // The capability is derived from the cached probe of the manager.
+        // The capability is derived from the probe of the manager.
         expect(mockGetMeetingCapabilities).toHaveBeenCalledWith({
           recordingProbe: PROBE,
+          recordingProbeState: "done",
         });
         expect(mockClient.recordingStart).toHaveBeenCalledWith({
           file_path: "/Users/x/Movies/rec.mov",
@@ -1552,29 +1722,82 @@ describe("meeting-command-handler", () => {
         });
       });
 
-      it.each([
-        ["a codec this machine does not advertise", RECORDING_CAPABILITY, "prores_422_hq", "mov"],
-        ["any codec while the capability is unknown", { program_portrait: true }, "h264", "mp4"],
-        ["a codec name this bridge does not know", RECORDING_CAPABILITY, "av1", "mp4"],
-      ])("refuses %s before the helper is asked", async (_label, capabilities, codec, extension) => {
-        mockGetMeetingCapabilities.mockReturnValue(capabilities);
+      it("decides on the probe attempt in flight instead of the state before it", async () => {
+        // A key press right after the bridge started: the probe has no result
+        // yet. The gate waits for the attempt and reads the result after it.
+        let finishProbe!: () => void;
+        mockAwaitRecordingProbe.mockReturnValue(
+          new Promise<null>((resolve) => {
+            finishProbe = () => {
+              mockGetRecordingProbe.mockReturnValue(PROBE);
+              mockGetRecordingProbeState.mockReturnValue("done");
+              resolve(null);
+            };
+          }),
+        );
+        mockGetMeetingCapabilities.mockImplementation(
+          (deps?: { recordingProbe?: unknown }) =>
+            deps?.recordingProbe ? RECORDING_CAPABILITY : BASE_CAPABILITIES,
+        );
+        mockClient.recordingStatus.mockResolvedValue({ recording: { active: false } });
+        mockClient.recordingStart.mockResolvedValue({ recording: { active: true } });
 
-        for (const [command, payload] of [
-          ["meeting_recording_pick_path", { codec }],
-          ["meeting_recording_start", { file_path: `/Users/x/rec.${extension}`, codec }],
-          ["meeting_recording_toggle", { codec }],
-        ] as const) {
-          mockClient.recordingStatus.mockResolvedValue({ recording: { active: false } });
-          const result = await handleMeetingCommand(command, payload);
-          expect(result).toEqual({
-            success: false,
-            error: `The recording codec ${codec} is not supported on this machine.`,
-            errorCode: "meeting_recording_codec_unsupported",
-          });
-        }
-        expect(mockPickRecordingSavePath).not.toHaveBeenCalled();
+        const toggled = handleMeetingCommand("meeting_recording_toggle", {
+          codec: "prores_422",
+        });
+        await new Promise((resolve) => setImmediate(resolve));
         expect(mockClient.recordingStart).not.toHaveBeenCalled();
-        expect(mockNotifyRecordingChanged).not.toHaveBeenCalled();
+        finishProbe();
+
+        expect((await toggled).success).toBe(true);
+        expect(mockClient.recordingStart).toHaveBeenCalledWith(
+          expect.objectContaining({ codec: "prores_422" }),
+        );
+      });
+
+      it.each([
+        ["a codec this machine does not advertise", "prores_422_hq", "mov"],
+        ["a codec name this bridge does not know", "av1", "mp4"],
+      ])("refuses %s before the helper is asked", async (_label, codec, extension) => {
+        mockGetMeetingCapabilities.mockReturnValue(RECORDING_CAPABILITY);
+
+        await expectRefusedEverywhere(codec, extension, {
+          error: `The recording codec ${codec} is not supported on this machine.`,
+          reason: "encoder_unavailable",
+        });
+      });
+
+      it("refuses any codec while the encoders are unknown, after waiting for the probe", async () => {
+        // BASE_CAPABILITIES carries no recording block: probe pending or failed.
+        await expectRefusedEverywhere("hevc", "mp4", {
+          error:
+            "The recording codec hevc cannot be checked: the encoders of this machine are unknown.",
+          reason: "encoders_unknown",
+        });
+        expect(mockAwaitRecordingProbe).toHaveBeenCalledTimes(3);
+      });
+
+      it("refuses a codec that does not record the running program's frame rate", async () => {
+        mockGetMeetingCapabilities.mockReturnValue(RECORDING_CAPABILITY);
+        mockGetProgramFormat.mockReturnValue({ width: 1920, height: 1080, fps: 60 });
+
+        await expectRefusedEverywhere("hevc", "mp4", {
+          error: "The recording codec hevc does not record the running program format.",
+          reason: "program_format_exceeded",
+        });
+      });
+
+      it("records a 60 fps program with a codec that covers it", async () => {
+        mockGetMeetingCapabilities.mockReturnValue(RECORDING_CAPABILITY);
+        mockGetProgramFormat.mockReturnValue({ width: 1080, height: 1920, fps: 60 });
+        mockClient.recordingStart.mockResolvedValue({ recording: { active: true } });
+
+        const result = await handleMeetingCommand("meeting_recording_start", {
+          file_path: "/Users/x/Movies/rec.mov",
+          codec: "prores_422",
+        });
+
+        expect(result.success).toBe(true);
       });
 
       it("does not gate a start without codec (h264, as older clients send it)", async () => {
@@ -1586,6 +1809,7 @@ describe("meeting-command-handler", () => {
         });
 
         expect(result.success).toBe(true);
+        expect(mockAwaitRecordingProbe).not.toHaveBeenCalled();
         expect(mockGetRecordingProbe).not.toHaveBeenCalled();
       });
 

@@ -29,14 +29,30 @@ describe("extractCommandFailure", () => {
   it("extracts the error message of a failed result", () => {
     expect(
       extractCommandFailure({ success: false, error: "Engine not running" }),
-    ).toBe("Engine not running");
+    ).toEqual({ error: "Engine not running" });
   });
 
-  it("falls back to the error code, then a generic marker", () => {
-    expect(extractCommandFailure({ success: false, errorCode: "busy" })).toBe(
-      "busy",
-    );
-    expect(extractCommandFailure({ success: false })).toBe("command_failed");
+  it("carries the stable error code next to the message", () => {
+    expect(
+      extractCommandFailure({
+        success: false,
+        error: "The recording codec hevc is not supported on this machine.",
+        errorCode: "meeting_recording_codec_unsupported",
+      }),
+    ).toEqual({
+      error: "The recording codec hevc is not supported on this machine.",
+      errorCode: "meeting_recording_codec_unsupported",
+    });
+  });
+
+  it("falls back to the error code as the message, then a generic marker", () => {
+    expect(extractCommandFailure({ success: false, errorCode: "busy" })).toEqual({
+      error: "busy",
+      errorCode: "busy",
+    });
+    expect(extractCommandFailure({ success: false })).toEqual({
+      error: "command_failed",
+    });
   });
 
   it("surfaces a mapped Canon XC failure and ignores a mapped Canon success", () => {
@@ -59,7 +75,7 @@ describe("extractCommandFailure", () => {
           diagnostic: { code: "timeout", hint: "Check the network cable." },
         }),
       ),
-    ).toBe("ETIMEDOUT");
+    ).toEqual({ error: "ETIMEDOUT", errorCode: "timeout" });
 
     expect(
       extractCommandFailure(
@@ -136,6 +152,29 @@ describe("StreamDeckManager key failures", () => {
         key_index: 0,
         command: "meeting_recording_toggle",
         error: "Engine not running",
+      },
+    });
+  });
+
+  it("publishes the stable error code of a refused recording with the streamdeck_error event", async () => {
+    const executor = jest.fn(async () => ({
+      success: false,
+      error: "The recording codec prores_422_hq is not supported on this machine.",
+      errorCode: "meeting_recording_codec_unsupported",
+      data: { codec: "prores_422_hq", reason: "encoder_unavailable" },
+    }));
+    const { device } = await createManagerWithBinding(executor);
+
+    device.press(0);
+    await flushAsync();
+
+    expect(publishBridgeEvent).toHaveBeenCalledWith({
+      event: "streamdeck_error",
+      data: {
+        key_index: 0,
+        command: "meeting_recording_toggle",
+        error: "The recording codec prores_422_hq is not supported on this machine.",
+        error_code: "meeting_recording_codec_unsupported",
       },
     });
   });

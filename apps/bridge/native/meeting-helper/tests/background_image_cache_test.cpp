@@ -17,6 +17,7 @@
 using broadify::meeting::BackgroundImage;
 using broadify::meeting::BackgroundImageCache;
 using broadify::meeting::pathFromUtf8;
+using broadify::meeting::selectVisibleBackgroundImage;
 using broadify::meeting::setHelperEventLogPath;
 
 #define CHECK(expr)                                                     \
@@ -96,6 +97,15 @@ int main() {
   const auto loaded = cache.get(background);
   CHECK(loaded);
   CHECK(loaded->rgba[0] == 7u);
+  CHECK(cache.get(background) == loaded);
+  CHECK(countLinesContaining(eventLog, "background_image_loaded") == 1);
+
+  // Keying off: the loaded image is never handed to the compositor, so no
+  // program frame can show the background without a keyed camera. The slot
+  // is untouched, and keying on shows the same image without a new load.
+  CHECK(selectVisibleBackgroundImage(false, loaded) == nullptr);
+  CHECK(selectVisibleBackgroundImage(true, loaded) == loaded);
+  CHECK(selectVisibleBackgroundImage(true, nullptr) == nullptr);
   CHECK(cache.get(background) == loaded);
   CHECK(countLinesContaining(eventLog, "background_image_loaded") == 1);
   // Only the file name is logged: the directory (which stands in for the

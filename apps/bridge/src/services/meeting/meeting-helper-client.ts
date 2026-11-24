@@ -4,7 +4,10 @@ import {
   openVcamHelperApp,
 } from "../../modules/vcam/vcam-helper.js";
 import { HelperRequestError, LineRpcClient } from "../helpers/helper-rpc-client.js";
-import { MEETING_HELPER_RPC_TIMEOUTS_MS } from "./meeting-helper-timeouts.js";
+import {
+  MEETING_HELPER_DEFAULT_RPC_TIMEOUT_MS,
+  MEETING_HELPER_RPC_TIMEOUTS_MS,
+} from "./meeting-helper-timeouts.js";
 import { runVcamStartWithRegistrationSelfHeal } from "./vcam-registration-self-heal.js";
 
 const FRAMEBUS_NAME_ENV = "BRIDGE_MEETING_FRAMEBUS_NAME";
@@ -42,7 +45,7 @@ export type MeetingHelperClientOptionsT = {
 export class MeetingHelperClient extends LineRpcClient {
   constructor(
     socketPath: string,
-    timeoutMs: number = 5000,
+    timeoutMs: number = MEETING_HELPER_DEFAULT_RPC_TIMEOUT_MS,
     options: MeetingHelperClientOptionsT = {},
   ) {
     super(socketPath, {

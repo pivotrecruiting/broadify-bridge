@@ -78,13 +78,16 @@ import {
   MEETING_ENGINE_RESTART_REQUIRED_CODE,
   MEETING_PROGRAM_FORMAT_UNSUPPORTED_CODE,
   MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE,
+  MEETING_KEYER_FPS_UNSUPPORTED_CODE,
   MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
+  checkRequestedRecordingCodec,
+  findKeyerFpsExcess,
   getMeetingCapabilities,
-  isAdvertisedRecordingCodec,
   isPortraitGeometry,
   isSameProgramFormat,
   isSupportedProgramFormat,
   resolveMeetingProgramFormat,
+  type MeetingRecordingCodecRefusalReasonT,
 } from "./meeting-capabilities.js";
 
 /** Reads `recording.active` out of a recording.* RPC result, default false. */
@@ -446,32 +449,80 @@ type RecordingCodecGateT =
   | { refusal: null; codec: MeetingRecordingCodecT | undefined }
   | { refusal: MeetingCommandResultT };
 
+const RECORDING_CODEC_REFUSAL_TEXT: Record<
+  MeetingRecordingCodecRefusalReasonT,
+  (codec: string) => string
+> = {
+  encoder_unavailable: (codec) =>
+    `The recording codec ${codec} is not supported on this machine.`,
+  program_format_exceeded: (codec) =>
+    `The recording codec ${codec} does not record the running program format.`,
+  encoders_unknown: (codec) =>
+    `The recording codec ${codec} cannot be checked: the encoders of this machine are unknown.`,
+};
+
 /**
- * Checks the codec name of a recording request against what this machine
- * advertises (`capabilities.meeting.recording`): the codec to record with,
- * or the refusal for a name that is not advertised - one this bridge does
- * not know included. A request without a codec is the h264 recording older
- * clients always got and is not gated here; the helper holds every codec to
- * a hardware encoder itself.
+ * The arbiter for the codec of every recording request (save panel, start,
+ * toggle): the codec to record with, or the refusal. A recording is what was
+ * requested or it does not start - it never falls back to another codec.
+ * The codec must be advertised on this machine and cover the running program
+ * (`checkRequestedRecordingCodec`); the encoder probe is waited for when
+ * it has not settled, bounded by its own timeout, so a key press right after
+ * the bridge started is decided on a result. A request without a codec is the
+ * h264 recording older clients always got and is not gated here; the helper
+ * holds every codec to a hardware encoder itself.
  */
-function gateRequestedRecordingCodec(
+async function gateRequestedRecordingCodec(
   codec: string | undefined,
-): RecordingCodecGateT {
+): Promise<RecordingCodecGateT> {
   if (codec === undefined) {
     return { refusal: null, codec };
   }
-  const capabilities = getMeetingCapabilities({
-    recordingProbe: meetingHelperManager.getRecordingProbe(),
-  });
-  if (isAdvertisedRecordingCodec(capabilities, codec)) {
-    return { refusal: null, codec };
+  await meetingHelperManager.awaitRecordingProbe();
+  const check = checkRequestedRecordingCodec(
+    getMeetingCapabilities({
+      recordingProbe: meetingHelperManager.getRecordingProbe(),
+      recordingProbeState: meetingHelperManager.getRecordingProbeState(),
+    }),
+    codec,
+    meetingHelperManager.getProgramFormat(),
+  );
+  if (check.ok) {
+    return { refusal: null, codec: check.codec };
   }
   return {
     refusal: {
       success: false,
-      error: `The recording codec ${codec} is not supported on this machine.`,
+      error: RECORDING_CODEC_REFUSAL_TEXT[check.reason](codec),
       errorCode: MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
+      data: { codec, reason: check.reason },
     },
+  };
+}
+
+/**
+ * Refusal for a keyer patch that turns keying on while the running program
+ * is faster than keying runs (`findKeyerFpsExcess`), null otherwise. Every
+ * client reaches the keyer through `meeting_keyer_configure` - web app,
+ * Stream Deck key, another tab - so this is the one gate; lowering the
+ * frame rate needs an engine restart and stays with the web app.
+ */
+function gateKeyerEnable(patch: { enabled?: boolean }): MeetingCommandResultT | null {
+  if (patch.enabled !== true) {
+    return null;
+  }
+  const excess = findKeyerFpsExcess(
+    meetingHelperManager.getProgramFormat(),
+    getMeetingCapabilities().program_formats,
+  );
+  if (!excess) {
+    return null;
+  }
+  return {
+    success: false,
+    error: `Keying runs at up to ${excess.keyer_max_fps} fps; the meeting program runs at ${excess.program_fps} fps.`,
+    errorCode: MEETING_KEYER_FPS_UNSUPPORTED_CODE,
+    data: excess,
   };
 }
 
@@ -581,9 +632,10 @@ export async function handleMeetingCommand(
         "Invalid payload for meeting_engine_start",
       );
       const requestedFormat = resolveMeetingProgramFormat(options);
+      const capabilities = getMeetingCapabilities();
       if (
         isPortraitGeometry(requestedFormat) &&
-        !getMeetingCapabilities().program_portrait
+        !capabilities.program_portrait
       ) {
         return {
           success: false,
@@ -591,7 +643,9 @@ export async function handleMeetingCommand(
           errorCode: MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE,
         };
       }
-      if (!isSupportedProgramFormat(requestedFormat)) {
+      if (
+        !isSupportedProgramFormat(requestedFormat, capabilities.program_formats)
+      ) {
         // Outside capabilities.meeting.program_formats: refused like the
         // portrait gate, before anything is touched and whether or not an
         // engine runs.
@@ -710,9 +764,10 @@ export async function handleMeetingCommand(
       // Pre-warm the graphics renderers in the background: the Electron
       // processes take seconds to spawn, and doing it now means toggling a
       // background later only costs a layer send instead of a cold start.
-      // Format must match what the web app sends (MEETING_GRAPHICS_FORMAT,
-      // 1920x1080@30) so the later configure call is a cache hit. A portrait
-      // engine pre-warms the planes at its own canvas size instead.
+      // Format must match what the web app sends (the plane size of
+      // MEETING_GRAPHICS_FORMAT at the program's frame rate) so the later
+      // configure call is a cache hit. A portrait engine pre-warms the planes
+      // at its own canvas size instead.
       // Auto-arm the virtual camera with the engine so "Broadify Camera"
       // exists in Teams/Zoom without the live-test click. Fire-and-forget:
       // failures surface as meeting error events with the stable vcam codes
@@ -725,7 +780,7 @@ export async function handleMeetingCommand(
       configureMeetingGraphicsOutputs(
         prewarmPlane.width,
         prewarmPlane.height,
-        DEFAULT_MEETING_GRAPHICS_FORMAT.fps,
+        requestedFormat.fps,
       ).completion.catch((error: unknown) => {
         console.warn(
           `[meeting] graphics renderer pre-warm failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -910,7 +965,7 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_recording_pick_path",
       );
-      const gate = gateRequestedRecordingCodec(options.codec);
+      const gate = await gateRequestedRecordingCodec(options.codec);
       if (gate.refusal) {
         return gate.refusal;
       }
@@ -931,7 +986,7 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_recording_start",
       );
-      const gate = gateRequestedRecordingCodec(options.codec);
+      const gate = await gateRequestedRecordingCodec(options.codec);
       if (gate.refusal) {
         return gate.refusal;
       }
@@ -960,8 +1015,9 @@ export async function handleMeetingCommand(
       // Broadify-Meeting-<stamp>.<ext> name - the same place the save-panel
       // fallback and PGM recordings use. The payload (microphone, codec)
       // belongs to a start and is read only then: whatever a key binding
-      // carries, it can always stop a running recording. Without a codec
-      // (the REC key as the web app configures it) the recording is h264.
+      // carries, it can always stop a running recording. The web app stamps
+      // the configured codec into the key's binding; a binding without one
+      // (older web app, or h264 configured) records h264.
       const client = requireClient();
       const status = await runMeetingRpc(() => client.recordingStatus());
       const active = isRecordingActive(status.data);
@@ -977,7 +1033,7 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_recording_toggle",
       );
-      const gate = gateRequestedRecordingCodec(options.codec);
+      const gate = await gateRequestedRecordingCodec(options.codec);
       if (gate.refusal) {
         return gate.refusal;
       }
@@ -1304,6 +1360,10 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_keyer_configure",
       );
+      const refusal = gateKeyerEnable(patch);
+      if (refusal) {
+        return refusal;
+      }
       const data = await requireClient().keyerConfigure(patch);
       meetingHelperManager.noteKeyerConfigured(patch);
       meetingHelperManager.requestStatusPublish("keyer_configure");

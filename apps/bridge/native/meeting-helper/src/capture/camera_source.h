@@ -4,6 +4,7 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -23,6 +24,18 @@ struct CameraInfo {
   bool continuityCandidate = false;
   bool available = true;
   bool active = false;
+};
+
+// Capture format of the program camera: what the device reports as active
+// once it runs, next to the rate that was requested (the program's) and how
+// the format was chosen (captureFormatMatchName). A camera below the program
+// rate has each of its frames shown more than once.
+struct CameraCaptureFormat {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  double fps = 0.0;
+  uint32_t requestedFps = 0;
+  std::string match;
 };
 
 struct VideoFrame {
@@ -95,6 +108,12 @@ class CameraSource {
   // sticky notion, e.g. macOS, keep their current behavior).
   virtual std::string stickyLastError() const { return lastError(); }
   virtual uint64_t stickyLastErrorAtMs() const { return 0; }
+  // Capture format of the program camera, or nullopt while no camera runs
+  // (and on backends that do not report it). Surfaced as camera_format in
+  // state.get.
+  virtual std::optional<CameraCaptureFormat> programCaptureFormat() const {
+    return std::nullopt;
+  }
   virtual std::string cameraPermissionStatus() const = 0;
   virtual std::string requestCameraPermission() = 0;
 
@@ -143,5 +162,8 @@ class CameraSource {
 std::unique_ptr<CameraSource> createCameraSource();
 std::string camerasToJson(const std::vector<CameraInfo> &cameras);
 std::string cameraToJson(const CameraInfo &camera);
+// The camera_format value of state.get: the object, or null.
+std::string cameraCaptureFormatToJson(
+    const std::optional<CameraCaptureFormat> &format);
 
 }  // namespace broadify::meeting

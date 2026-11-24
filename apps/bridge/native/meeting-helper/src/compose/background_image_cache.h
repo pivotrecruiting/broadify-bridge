@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace broadify::meeting {
@@ -48,5 +49,18 @@ class BackgroundImageCache {
   bool failedLogged_ = false;
   std::chrono::steady_clock::time_point nextRetryAt_{};
 };
+
+// The background image the compositor may draw: the loaded image while keying
+// is on, nothing while it is off. The image is the bottom layer and is only
+// meant to show through the keyed camera. Without keying the un-keyed camera
+// covers the whole frame, and whenever no camera frame is composited (before
+// the first frame after an engine start, during a camera switch, camera layer
+// off) the background would otherwise be the whole program picture.
+// The caller still loads the selection through the cache while keying is off,
+// so turning keying on shows it without a decode on that frame.
+inline std::shared_ptr<const BackgroundImage> selectVisibleBackgroundImage(
+    bool keyerEnabled, std::shared_ptr<const BackgroundImage> loaded) {
+  return keyerEnabled ? std::move(loaded) : nullptr;
+}
 
 }  // namespace broadify::meeting

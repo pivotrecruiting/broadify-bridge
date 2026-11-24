@@ -1,3 +1,6 @@
+/** Timeout of every meeting-helper RPC without an entry in the table below. */
+export const MEETING_HELPER_DEFAULT_RPC_TIMEOUT_MS = 5_000;
+
 /**
  * Per-RPC timeouts for the native meeting-helper control channel.
  *

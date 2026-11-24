@@ -72,12 +72,16 @@ type PendingWebappActionT = {
   timer: NodeJS.Timeout;
 };
 
+/** A failed command: the text for people and, if there is one, its stable code. */
+export type CommandFailureT = { error: string; errorCode?: string };
+
 /**
  * The command router never throws - it returns `{success: false, error}`.
  * Extract that failure; `null` means the command succeeded (or the result
  * shape is unknown, which we treat as success rather than false-alarming).
+ * The text falls back to the error code, then to a generic marker.
  */
-export function extractCommandFailure(result: unknown): string | null {
+export function extractCommandFailure(result: unknown): CommandFailureT | null {
   if (
     typeof result === "object" &&
     result !== null &&
@@ -85,13 +89,15 @@ export function extractCommandFailure(result: unknown): string | null {
     (result as { success?: unknown }).success === false
   ) {
     const failure = result as { error?: unknown; errorCode?: unknown };
-    if (typeof failure.error === "string" && failure.error.length > 0) {
-      return failure.error;
-    }
-    if (typeof failure.errorCode === "string" && failure.errorCode.length > 0) {
-      return failure.errorCode;
-    }
-    return "command_failed";
+    const errorCode =
+      typeof failure.errorCode === "string" && failure.errorCode.length > 0
+        ? failure.errorCode
+        : undefined;
+    const error =
+      typeof failure.error === "string" && failure.error.length > 0
+        ? failure.error
+        : (errorCode ?? "command_failed");
+    return { error, ...(errorCode ? { errorCode } : {}) };
   }
   return null;
 }
@@ -276,7 +282,12 @@ export class StreamDeckManager {
       const result = await this.executor?.(binding.command, binding.payload);
       const failure = extractCommandFailure(result);
       if (failure !== null) {
-        this.reportKeyFailure(keyIndex, binding.command, failure);
+        this.reportKeyFailure(
+          keyIndex,
+          binding.command,
+          failure.error,
+          failure.errorCode,
+        );
       }
     } catch (error) {
       // Defensive: the router returns {success:false} instead of throwing, but
@@ -292,12 +303,15 @@ export class StreamDeckManager {
    * A silently failing key is the worst live failure mode: the operator
    * presses again and again with no idea why nothing happens. Persist the
    * error for the config UI (`status().last_error`), log it, tell the webapp
-   * (streamdeck_error event) and flash the key itself.
+   * (streamdeck_error event) and flash the key itself. The event carries the
+   * command's stable `error_code` when it has one, so the webapp can show its
+   * own text for it instead of the bridge's English one.
    */
   private reportKeyFailure(
     keyIndex: number,
     command: string,
     failure: string,
+    errorCode?: string,
   ): void {
     this.lastError = `${command}: ${failure}`;
     try {
@@ -306,7 +320,12 @@ export class StreamDeckManager {
       );
       getBridgeContext().publishBridgeEvent?.({
         event: "streamdeck_error",
-        data: { key_index: keyIndex, command, error: failure },
+        data: {
+          key_index: keyIndex,
+          command,
+          error: failure,
+          ...(errorCode ? { error_code: errorCode } : {}),
+        },
       });
     } catch {
       // Context not initialized (standalone tests) - lastError is still set.

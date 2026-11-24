@@ -384,6 +384,10 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(recorder_encode_policy_test
     tests/recorder_encode_policy_test.cpp
   )
+  # Start claim of the platform recorders (header-only).
+  add_executable(recorder_start_claim_test
+    tests/recorder_start_claim_test.cpp
+  )
   # Codec -> container/audio table of the recorder (header-only).
   add_executable(recording_codec_test
     tests/recording_codec_test.cpp
@@ -623,6 +627,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     guided_mask_refine_test
     guided_work_size_test
     recorder_encode_policy_test
+    recorder_start_claim_test
     recording_codec_test
     recording_probe_test
     framebus_reader_log_gate_test
@@ -740,6 +745,31 @@ if(MEETING_HELPER_BUILD_TESTS)
       "-framework VideoToolbox"
     )
     add_test(NAME meeting_recorder_writer_test COMMAND meeting_recorder_writer_test)
+    # Renders program frames through the production compositor: the background
+    # image is in the picture while keying is on and never while it is off.
+    # Runs twice, once per call site: GPU plan (Metal, when available) and the
+    # CPU path (GPU compositor disabled through its environment switch).
+    add_executable(compositor_background_render_test
+      tests/compositor_background_render_test.cpp
+      src/compose/background_image_cache.cpp
+      src/compose/compositor.cpp
+      src/compose/media_page_cache.cpp
+      src/compose/metal_compositor.mm
+      src/compose/metal_device.mm
+    )
+    target_include_directories(compositor_background_render_test PRIVATE src)
+    target_link_libraries(compositor_background_render_test PRIVATE helper_common
+      "-framework CoreGraphics"
+      "-framework CoreVideo"
+      "-framework Foundation"
+      "-framework ImageIO"
+      "-framework Metal"
+    )
+    add_test(NAME compositor_background_render_test COMMAND compositor_background_render_test)
+    add_test(NAME compositor_background_render_cpu_test COMMAND compositor_background_render_test)
+    set_tests_properties(compositor_background_render_cpu_test PROPERTIES
+      ENVIRONMENT "BROADIFY_MEETING_GPU_COMPOSITOR=0"
+    )
     # Regression for the program-stream pixel buffer overflow: drives the
     # production pool + RGBA->BGRA copy without WebRTC (run it under
     # -fsanitize=address to see the pre-fix write past the buffer).

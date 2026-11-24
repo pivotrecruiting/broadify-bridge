@@ -178,13 +178,22 @@ aus (Größe der Ebenen-Box, siehe `docs/bridge/features/graphics-commands.md`).
 `true` auf allen Plattformen und unabhängig von `program_portrait`; ohne das
 Flag ist die Box immer 1920×1080.
 `program_formats` (optional) – größte Leinwand und zulässige Bildraten für
-`meeting_engine_start`; außerhalb davon antwortet die Bridge mit
-`meeting_program_format_unsupported`. `recording` (optional) – Codecs, die der
-Meeting-Recorder auf diesem Rechner mit Hardware-Encoder schreiben kann; fehlt,
-wenn die Encoder-Probe des Helpers scheitert. `meeting_recording_start` und
+`meeting_engine_start` (25 und 30 fps überall, unter macOS auch 50 und 60);
+außerhalb davon antwortet die Bridge mit
+`meeting_program_format_unsupported`. Darin `keyer_max_fps` (optional) – die
+höchste Programm-Bildrate, bei der Keying läuft (heute 30);
+`meeting_keyer_configure` mit `enabled: true` auf einem schnelleren Programm
+wird mit `meeting_keyer_fps_unsupported` und
+`data { program_fps, keyer_max_fps }` abgelehnt. `recording_probe` (optional) – Zustand
+der Encoder-Probe des Helpers: `pending`, `done` oder `failed`. `recording`
+(optional) – Codecs, die der Meeting-Recorder auf diesem Rechner mit
+Hardware-Encoder schreiben kann; steht genau bei `recording_probe: "done"`.
+`meeting_recording_pick_path`, `meeting_recording_start` und
 `meeting_recording_toggle` nehmen ein optionales `codec` aus dieser Liste
-(ohne: `h264`); ein nicht gemeldeter Codec wird mit
-`meeting_recording_codec_unsupported` abgelehnt. Beide Felder:
+(ohne: `h264`); ein Codec, der nicht gemeldet ist oder das laufende Programm
+nicht abdeckt, wird mit `meeting_recording_codec_unsupported` und
+`data { codec, reason }` abgelehnt – die Aufnahme weicht nie auf einen anderen
+Codec aus. Alle drei Felder:
 `docs/bridge/features/meeting-status-contract.md`, Entscheidung: ADR-0010.
 
 #### mode_activate
@@ -309,6 +318,14 @@ Wichtige Bridge-Events:
 - `graphics_status`: Graphics-Live-Zustand inklusive `source` (`studio`, `meeting-back`, `meeting-front`).
 - `graphics_meeting_snapshot`: Resync-Snapshot der Meeting-Graphics-Planes nach `bridge_auth_ok`.
 - `meeting_status_snapshot`: Resync-Snapshot von `meeting_get_state` nach `bridge_auth_ok`; Payload `{ reason, snapshot, at }`.
+- `streamdeck_error`: Ein Tastendruck am Stream Deck ist gescheitert; Payload
+  `{ key_index, command, error, error_code? }`. `error` ist der englische Text
+  der Bridge, `error_code` der stabile Fehlercode des Befehls, wenn er einen
+  hat (z. B. `meeting_recording_codec_unsupported` bei einer REC-Taste, deren
+  eingestellter Codec gerade nicht aufgenommen werden kann, oder
+  `meeting_keyer_fps_unsupported` bei einer Taste, die Keying bei 50/60 fps
+  einschaltet). Die Web-App
+  übersetzt nach `error_code`, wo sie ihn kennt. Fehlt auf älteren Bridges.
 
 ## Ablauf (Mermaid)
 ```mermaid

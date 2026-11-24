@@ -23,15 +23,19 @@ constexpr int kReadyPollStepUs = 500;
 // Minimum spacing of the "mailbox_replaced" recorder event.
 constexpr auto kReplacedReportInterval = std::chrono::seconds(5);
 
+RecorderVideoWorker::Config withDefaultFps(RecorderVideoWorker::Config config) {
+  if (config.fps == 0) {
+    config.fps = 30;
+  }
+  return config;
+}
+
 }  // namespace
 
 RecorderVideoWorker::RecorderVideoWorker(Config config)
-    : config_(std::move(config)),
-      frameClock_(config_.fps > 0 ? config_.fps : 30) {
-  if (config_.fps == 0) {
-    config_.fps = 30;
-  }
-}
+    : config_(withDefaultFps(std::move(config))),
+      mailbox_(RecorderFrameMailbox::capacityForFps(config_.fps)),
+      frameClock_(config_.fps) {}
 
 RecorderVideoWorker::~RecorderVideoWorker() { stop(); }
 

@@ -501,6 +501,9 @@ std::string handleRpc(const std::string &line,
     result << "{\"bridge_running\":true,"
            << "\"camera_running\":" << (state.cameraRunning ? "true" : "false") << ","
            << "\"camera_stalled\":" << (state.cameraStalled ? "true" : "false") << ","
+           // What the program camera delivers; below the program rate each
+           // of its frames is shown more than once (the web app says so).
+           << "\"camera_format\":" << cameraCaptureFormatToJson(camera.programCaptureFormat()) << ","
            << "\"preview_running\":true,"
            << "\"active_camera_index\":" << (state.activeCameraIndex >= 0 ? std::to_string(state.activeCameraIndex) : "null") << ","
            << "\"pip_camera_index\":" << (state.pipCameraIndex >= 0 ? std::to_string(state.pipCameraIndex) : "null") << ","
@@ -808,11 +811,19 @@ std::string handleRpc(const std::string &line,
     request.height = options.height;
     request.fps = options.fps;
     request.codec = *codec;
-    if (!recorder.start(request)) {
-      return errorResponse(id, "recording_start_failed",
-                           recorder.status().lastError);
+    switch (recorder.start(request)) {
+      case RecordingStartOutcome::Started:
+        return okResponse(id, recordingStatusResponse(recorder));
+      case RecordingStartOutcome::AlreadyRecording:
+        // The status belongs to the recording that runs; the refusal is
+        // reported here only.
+        return errorResponse(id, "recording_start_failed",
+                             kRecordingAlreadyRecordingError);
+      case RecordingStartOutcome::Failed:
+        break;
     }
-    return okResponse(id, recordingStatusResponse(recorder));
+    return errorResponse(id, "recording_start_failed",
+                         recorder.status().lastError);
   }
 
   if (method == "recording.stop") {
