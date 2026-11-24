@@ -34,6 +34,24 @@ jest.mock("./mode/mode-activation-service.js", () => ({
   },
 }));
 
+// The helper's encoder probe is its own process; get_status must not spawn
+// one from a unit test.
+const mockRunMeetingRecordingProbe = jest.fn(async (_helperPath: string) => ({
+  ok: true,
+  probe: {
+    backend: "videotoolbox",
+    encoders: [
+      { codec: "h264", name: "Apple H.264 (HW)" },
+      { codec: "hevc", name: "Apple HEVC (HW)" },
+    ],
+  },
+}));
+jest.mock("./meeting/meeting-recording-probe.js", () => ({
+  ...jest.requireActual("./meeting/meeting-recording-probe.js"),
+  runMeetingRecordingProbe: (helperPath: string) =>
+    mockRunMeetingRecordingProbe(helperPath),
+}));
+
 jest.mock("./device-cache.js", () => ({
   deviceCache: {
     getDevices: jest.fn().mockResolvedValue([]),
@@ -240,8 +258,63 @@ describe("command-router", () => {
           meeting: {
             program_portrait: process.platform === "darwin",
             layer_canvas: true,
+            program_formats: { max_width: 1920, max_height: 1080, fps: [25, 30] },
+            // From the encoder probe: the machine also has HEVC hardware, the
+            // recorder writes H.264 only.
+            recording: {
+              codecs: [
+                { codec: "h264", container: "mp4", max_height: 1080, max_fps: 30 },
+              ],
+              upload_copy: false,
+            },
           },
         }),
+      });
+    });
+
+    it("get_status still answers, without the recording block, when the encoder probe throws", async () => {
+      // Own manager state: the shared one has already cached a probe result.
+      await jest.isolateModulesAsync(async () => {
+        mockRunMeetingRecordingProbe.mockRejectedValueOnce(new Error("EACCES"));
+        const { commandRouter: isolatedRouter } = await import(
+          "./command-router.js"
+        );
+
+        const result = await isolatedRouter.handleCommand("get_status", {});
+
+        expect(result.success).toBe(true);
+        const { meeting } = (
+          result.data as { capabilities: { meeting: Record<string, unknown> } }
+        ).capabilities;
+        expect(meeting).toMatchObject({ layer_canvas: true });
+        expect(meeting).not.toHaveProperty("recording");
+      });
+    });
+
+    it("get_status reads the bridge state only after the encoder probe, so a slow probe does not age the reply", async () => {
+      await jest.isolateModulesAsync(async () => {
+        let finishProbe!: () => void;
+        mockRunMeetingRecordingProbe.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishProbe = () =>
+                resolve({ ok: true, probe: { backend: "none", encoders: [] } });
+            }),
+        );
+        const { commandRouter: isolatedRouter } = await import(
+          "./command-router.js"
+        );
+        const { engineAdapter } = await import("./engine-adapter.js");
+        const getState = jest.mocked(engineAdapter.getState);
+        getState.mockClear();
+
+        const pending = isolatedRouter.handleCommand("get_status", {});
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(getState).not.toHaveBeenCalled();
+
+        finishProbe();
+        expect((await pending).success).toBe(true);
+        expect(getState).toHaveBeenCalledTimes(1);
       });
     });
 

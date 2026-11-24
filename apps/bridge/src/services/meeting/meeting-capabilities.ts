@@ -1,7 +1,11 @@
 import type {
   MeetingCapabilitiesT,
   MeetingProgramFormatT,
+  MeetingRecordingCodecT,
+  MeetingRecordingContainerT,
 } from "@broadify/protocol";
+
+import type { MeetingRecordingProbeT } from "./meeting-recording-probe.js";
 
 /** Engine geometry used when `meeting_engine_start` omits a field. */
 export const DEFAULT_MEETING_PROGRAM_FORMAT: MeetingProgramFormatT = {
@@ -12,12 +16,70 @@ export const DEFAULT_MEETING_PROGRAM_FORMAT: MeetingProgramFormatT = {
 
 export const MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE =
   "meeting_program_portrait_unsupported";
+export const MEETING_PROGRAM_FORMAT_UNSUPPORTED_CODE =
+  "meeting_program_format_unsupported";
 export const MEETING_ENGINE_RESTART_REQUIRED_CODE =
   "meeting_engine_restart_required";
 
-type MeetingCapabilityDepsT = { platform: NodeJS.Platform };
+type MeetingProgramFormatLimitsT = NonNullable<
+  MeetingCapabilitiesT["program_formats"]
+>;
 
-const defaultDeps: MeetingCapabilityDepsT = { platform: process.platform };
+/**
+ * Program formats `meeting_engine_start` accepts (ADR-0010), the same on
+ * every platform for now. Deliberately the verified envelope, not what the
+ * helper would technically start with: 1080p is the size the Windows camera
+ * is capped at and the virtual camera is built for, and both rates stay
+ * within the Windows camera's 30 fps cap. 4K and 50/60 fps are added here
+ * once they have been measured on a device.
+ */
+export const MEETING_PROGRAM_FORMAT_LIMITS: MeetingProgramFormatLimitsT = {
+  max_width: 1920,
+  max_height: 1080,
+  fps: [25, 30],
+};
+
+/**
+ * Codecs the meeting recorder can write, with the container each one goes
+ * into. The single list to extend when the recorder learns a codec: a codec
+ * is advertised only if it is listed here AND the machine has a hardware
+ * encoder for it.
+ */
+export const MEETING_RECORDER_SUPPORTED_CODECS: ReadonlyArray<{
+  codec: MeetingRecordingCodecT;
+  container: MeetingRecordingContainerT;
+}> = [{ codec: "h264", container: "mp4" }];
+
+type MeetingCapabilityDepsT = {
+  platform?: NodeJS.Platform;
+  /**
+   * Result of the helper's encoder probe
+   * (`MeetingHelperManager.getRecordingProbe`); null while it is unknown.
+   */
+  recordingProbe?: MeetingRecordingProbeT | null;
+};
+
+/**
+ * Recording capability for a probe result: the recorder's codecs for which
+ * the machine has a hardware encoder (hardware only, no software fallback -
+ * ADR-0010), each up to the largest program format.
+ */
+function resolveRecordingCapability(
+  probe: MeetingRecordingProbeT,
+): NonNullable<MeetingCapabilitiesT["recording"]> {
+  const hardwareCodecs = new Set(probe.encoders.map((encoder) => encoder.codec));
+  return {
+    codecs: MEETING_RECORDER_SUPPORTED_CODECS.filter(({ codec }) =>
+      hardwareCodecs.has(codec),
+    ).map(({ codec, container }) => ({
+      codec,
+      container,
+      max_height: MEETING_PROGRAM_FORMAT_LIMITS.max_height,
+      max_fps: Math.max(...MEETING_PROGRAM_FORMAT_LIMITS.fps),
+    })),
+    upload_copy: false,
+  };
+}
 
 /**
  * Capability block for `get_status.capabilities.meeting`.
@@ -30,11 +92,28 @@ const defaultDeps: MeetingCapabilityDepsT = { platform: process.platform };
  * `layer_canvas` says that `graphics_send` honours the per-layer `canvas`
  * (ADR-0007). It is a feature of the graphics renderer, which is the same on
  * every platform, so it does not depend on `program_portrait`.
+ *
+ * `program_formats` bounds what `meeting_engine_start` accepts (ADR-0010).
+ *
+ * `recording` is derived from the helper's hardware-encoder probe and is
+ * left out while that result is unknown (probe not finished, failed or timed
+ * out): the web app treats the missing field as "no recording format choice".
  */
 export function getMeetingCapabilities(
-  deps: MeetingCapabilityDepsT = defaultDeps,
+  deps: MeetingCapabilityDepsT = {},
 ): MeetingCapabilitiesT {
-  return { program_portrait: deps.platform === "darwin", layer_canvas: true };
+  const { platform = process.platform, recordingProbe = null } = deps;
+  return {
+    program_portrait: platform === "darwin",
+    layer_canvas: true,
+    program_formats: {
+      ...MEETING_PROGRAM_FORMAT_LIMITS,
+      fps: [...MEETING_PROGRAM_FORMAT_LIMITS.fps],
+    },
+    ...(recordingProbe
+      ? { recording: resolveRecordingCapability(recordingProbe) }
+      : {}),
+  };
 }
 
 /** Fills the engine defaults into a (partial) start payload. */
@@ -57,9 +136,30 @@ export function isPortraitGeometry(size: {
   return size.height > size.width;
 }
 
-export function isSameProgramGeometry(
-  a: { width: number; height: number },
-  b: { width: number; height: number },
+/**
+ * Whether a program format is within the advertised limits. The limits bound
+ * a landscape canvas; a portrait canvas is measured with its edges swapped
+ * (whether portrait is allowed at all is `program_portrait`).
+ */
+export function isSupportedProgramFormat(
+  format: MeetingProgramFormatT,
+  limits: MeetingProgramFormatLimitsT = MEETING_PROGRAM_FORMAT_LIMITS,
 ): boolean {
-  return a.width === b.width && a.height === b.height;
+  return (
+    Math.max(format.width, format.height) <= limits.max_width &&
+    Math.min(format.width, format.height) <= limits.max_height &&
+    limits.fps.includes(format.fps)
+  );
+}
+
+/**
+ * Whether two program formats are the same engine: size and frame rate are
+ * all fixed for the lifetime of the helper process, so a difference in any of
+ * them needs a restart (ADR-0010).
+ */
+export function isSameProgramFormat(
+  a: MeetingProgramFormatT,
+  b: MeetingProgramFormatT,
+): boolean {
+  return a.width === b.width && a.height === b.height && a.fps === b.fps;
 }

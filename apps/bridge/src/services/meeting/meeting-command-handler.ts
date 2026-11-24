@@ -67,12 +67,15 @@ import {
   meetingFrontGraphicsManager,
 } from "./meeting-graphics-manager.js";
 import { loadFrameBusModule } from "../graphics/framebus/framebus-client.js";
+import type { MeetingProgramFormatT } from "@broadify/protocol";
 import {
   MEETING_ENGINE_RESTART_REQUIRED_CODE,
+  MEETING_PROGRAM_FORMAT_UNSUPPORTED_CODE,
   MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE,
   getMeetingCapabilities,
   isPortraitGeometry,
-  isSameProgramGeometry,
+  isSameProgramFormat,
+  isSupportedProgramFormat,
   resolveMeetingProgramFormat,
 } from "./meeting-capabilities.js";
 
@@ -88,12 +91,16 @@ function isRecordingActive(data: unknown): boolean {
   return (recording as Record<string, unknown>).active === true;
 }
 
-/** Error text of a start refused because the engine has another geometry. */
-function describeProgramGeometryConflict(
-  running: { width: number; height: number },
-  requested: { width: number; height: number },
+function describeProgramFormat(format: MeetingProgramFormatT): string {
+  return `${format.width}x${format.height}@${format.fps}`;
+}
+
+/** Error text of a start refused because the engine has another format. */
+function describeProgramFormatConflict(
+  running: MeetingProgramFormatT,
+  requested: MeetingProgramFormatT,
 ): string {
-  return `The meeting engine is running at ${running.width}x${running.height}; stop it before starting ${requested.width}x${requested.height}.`;
+  return `The meeting engine is running at ${describeProgramFormat(running)}; stop it before starting ${describeProgramFormat(requested)}.`;
 }
 
 export type MeetingCommandResultT = {
@@ -482,10 +489,21 @@ export async function handleMeetingCommand(
           errorCode: MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE,
         };
       }
+      if (!isSupportedProgramFormat(requestedFormat)) {
+        // Outside capabilities.meeting.program_formats: refused like the
+        // portrait gate, before anything is touched and whether or not an
+        // engine runs.
+        return {
+          success: false,
+          error: `The meeting program format ${describeProgramFormat(requestedFormat)} is not supported by this bridge.`,
+          errorCode: MEETING_PROGRAM_FORMAT_UNSUPPORTED_CODE,
+        };
+      }
       if (meetingHelperManager.isRunning()) {
         const runningFormat = meetingHelperManager.getProgramFormat();
-        if (runningFormat && !isSameProgramGeometry(runningFormat, requestedFormat)) {
-          // The canvas size is fixed for the lifetime of the helper process.
+        if (runningFormat && !isSameProgramFormat(runningFormat, requestedFormat)) {
+          // Canvas size and frame rate are fixed for the lifetime of the
+          // helper process.
           // Never restart from here: a stop finalizes a running recording and
           // drops camera and virtual camera, so that decision stays with the
           // web app (explicit meeting_engine_stop + meeting_engine_start).
@@ -497,7 +515,7 @@ export async function handleMeetingCommand(
             success: false,
             error: isRecordingActive(recording)
               ? "The meeting engine is recording; stop the recording before changing the program format."
-              : describeProgramGeometryConflict(runningFormat, requestedFormat),
+              : describeProgramFormatConflict(runningFormat, requestedFormat),
             errorCode: MEETING_ENGINE_RESTART_REQUIRED_CODE,
             data: meetingHelperManager.getStatus(),
           };
@@ -510,7 +528,7 @@ export async function handleMeetingCommand(
       }
       // A start issued now would only join the start that is already in
       // flight (another client's autostart, a crash-recovery restart). With
-      // another geometry that is a refusal, and it is decided here, before
+      // another format that is a refusal, and it is decided here, before
       // the first mutation: the FrameBus regions, the renderer attachments
       // and the plane state below belong to the start in flight. The answer
       // still waits for that start, as the join did - "restart required"
@@ -518,7 +536,7 @@ export async function handleMeetingCommand(
       const pendingStart = meetingHelperManager.getPendingStart();
       if (
         pendingStart &&
-        !isSameProgramGeometry(pendingStart.format, requestedFormat)
+        !isSameProgramFormat(pendingStart.format, requestedFormat)
       ) {
         const pendingStatus = await pendingStart.settled;
         if (pendingStatus.state !== "running") {
@@ -530,7 +548,7 @@ export async function handleMeetingCommand(
         }
         return {
           success: false,
-          error: describeProgramGeometryConflict(
+          error: describeProgramFormatConflict(
             pendingStatus.program_format ?? pendingStart.format,
             requestedFormat,
           ),
@@ -541,7 +559,7 @@ export async function handleMeetingCommand(
       // From the isRunning() check down to the start() call this path has no
       // await, and the manager claims the start synchronously inside start():
       // no other start can slip in between the decision and the claim and
-      // turn this one into a join of another geometry after the fact.
+      // turn this one into a join of another format after the fact.
       clearMeetingGraphicsFrameBus(options, "engine_start");
       // The clear force-recreated the bus regions. Any already-running
       // renderer still maps the unlinked old regions - without an explicit
@@ -568,18 +586,18 @@ export async function handleMeetingCommand(
       }
       if (
         status.program_format &&
-        !isSameProgramGeometry(status.program_format, requestedFormat)
+        !isSameProgramFormat(status.program_format, requestedFormat)
       ) {
         // Guard only: the decision before the clear rules this out as long as
         // that path and MeetingHelperManager.start() stay free of awaits. If
         // it happens anyway, say so instead of reporting a start that did not
-        // get its geometry.
+        // get its format.
         console.warn(
-          `[meeting] engine start joined a start with another geometry after the graphics FrameBus was cleared (running ${status.program_format.width}x${status.program_format.height}, requested ${requestedFormat.width}x${requestedFormat.height})`,
+          `[meeting] engine start joined a start with another format after the graphics FrameBus was cleared (running ${describeProgramFormat(status.program_format)}, requested ${describeProgramFormat(requestedFormat)})`,
         );
         return {
           success: false,
-          error: describeProgramGeometryConflict(
+          error: describeProgramFormatConflict(
             status.program_format,
             requestedFormat,
           ),

@@ -19,6 +19,7 @@
 #include "preview/vcam_shm_retry_state.h"
 #include "preview/vcam_writer_generation.h"
 #include "recorder/meeting_recorder.h"
+#include "recorder/recording_probe.h"
 #include "output/vcam_controller.h"
 #include "state/meeting_state.h"
 #include "util/frame_fit.h"
@@ -695,6 +696,12 @@ int main(int argc, char **argv) {
 
   Options options = parseOptions(argc, argv);
   setHelperEventLogPath(options.eventLogPath);
+  if (options.probeRecording) {
+    // Capability probe for the bridge: no --run / --control-socket required,
+    // and neither the engine nor a device is started.
+    std::cout << recordingProbeJson(probeRecordingEncoders()) << std::endl;
+    return 0;
+  }
   if (options.vcamShmReaderSelfTest) {
     return runVcamShmReaderSelfTest(options);
   }

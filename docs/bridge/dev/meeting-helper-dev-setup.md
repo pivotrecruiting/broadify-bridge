@@ -569,6 +569,17 @@ Direktaufruf:
   --keyer-self-test --models-dir apps/bridge/native/meeting-helper/models
 ```
 
+`--probe-recording` gibt die Hardware-Video-Encoder des Rechners als eine
+JSON-Zeile aus (`recording_probe`, siehe
+`docs/bridge/features/meeting-recording.md`, Abschnitt "Recording
+capabilities") und beendet sich; weder Engine noch Geraete werden gestartet,
+`--run` und `--control-socket` sind nicht noetig:
+
+```bash
+"apps/bridge/native/meeting-helper/Broadify Bridge Meeting Helper.app/Contents/MacOS/BroadifyMeetingHelper" \
+  --probe-recording
+```
+
 `BROADIFY_MEETING_KEYER_SELF_TEST_PROVIDER=cpu` erzwingt dabei den reinen
 CPU-Provider (CI-Timings ohne GPU); die `-hardware`-Varianten lassen die
 Variable weg.

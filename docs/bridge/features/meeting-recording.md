@@ -270,11 +270,55 @@ keeping the RGB input range full-range.
 The file has the size of the program canvas. A portrait program (engine
 started with `height > width`, e.g. 1080x1920, see ADR-0007) is recorded as a
 1080x1920 track without a rotation transform; the bitrate policy above applies
-unchanged, since it only depends on the pixel count. The canvas cannot change
-while the engine runs, so a recording never switches geometry mid-file:
-`meeting_engine_start` with another geometry is refused with
-`meeting_engine_restart_required`, and the web app locks the program-format
-switch while a recording is active.
+unchanged, since it only depends on the pixel count. Canvas and frame rate
+cannot change while the engine runs, so a recording never switches format
+mid-file: `meeting_engine_start` with another width, height or frame rate is
+refused with `meeting_engine_restart_required` (the frame rate is part of that
+comparison since ADR-0010), and the web app locks the program-format switch
+while a recording is active.
+
+### Recording capabilities (ADR-0010)
+
+`get_status.capabilities.meeting.recording` tells the web app which codecs the
+recorder can write on this machine: `codecs[]` with `codec`, `container`,
+`max_height` and `max_fps`, plus `upload_copy`. A codec is listed only if both
+hold:
+
+1. the recorder implements it (`MEETING_RECORDER_SUPPORTED_CODECS` in
+   `services/meeting/meeting-capabilities.ts`; today only `h264` in `mp4`), and
+2. the machine has a **hardware** encoder for it.
+
+The hardware encoders come from the helper's probe mode,
+`meeting-helper --probe-recording`
+(`native/meeting-helper/src/recorder/recording_probe.*`). It prints one JSON
+line and exits without starting the engine or opening a device:
+
+```json
+{"type":"recording_probe","backend":"videotoolbox","ok":true,"encoders":[{"codec":"h264","name":"Apple H.264 (HW)"},{"codec":"hevc","name":"Apple HEVC (HW)"}]}
+```
+
+- macOS reads the VideoToolbox encoder list and keeps the hardware-accelerated
+  encoders for H.264, HEVC and ProRes 422 LT / 422 / HQ.
+- Windows enumerates hardware encoder MFTs with `MFTEnumEx` for H.264 and
+  HEVC, in the order the program-stream encoder ranks them
+  (`live_stream/mf_encoder_policy.h`), each with its `vendor`. ProRes is never
+  reported on Windows.
+- `ok: false` means the enumeration itself failed (encoder list unknown); an
+  empty `encoders` list with `ok: true` means the machine has no hardware
+  encoder. Windows enumerates H.264 and HEVC independently: a codec whose
+  enumeration fails is left out, and `ok` is false only when both fail.
+
+`MeetingHelperManager.probeRecordingEncoders()` runs the probe on the first
+`get_status` (5 s timeout) and keeps a result, or a definitive failure, for
+the bridge run. A transient failure (timeout, launch error) is retried by
+later `get_status` calls in the background, at most three runs in total; those
+calls do not wait and answer without `recording` until a run has succeeded.
+While there is no result the `recording` field is omitted and each failed run
+logs one warning with the reason; the recorder itself is unaffected. Software encoders are never listed: a codec
+without hardware support is not offered rather than encoded on the CPU.
+
+The recorder does not consume these capabilities yet: `meeting_recording_start`
+still writes H.264 into `.mp4` exactly as described above.
 
 Quick probe after recording:
 
