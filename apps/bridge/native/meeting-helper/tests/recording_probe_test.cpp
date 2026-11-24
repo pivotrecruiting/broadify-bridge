@@ -9,6 +9,7 @@
 using broadify::meeting::RecordingCodec;
 using broadify::meeting::recordingCodecName;
 using broadify::meeting::RecordingEncoderInfo;
+using broadify::meeting::recordingProbeHasEncoder;
 using broadify::meeting::recordingProbeJson;
 using broadify::meeting::RecordingProbeResult;
 
@@ -72,6 +73,15 @@ int main() {
             R"({"codec":"h264","name":"NVIDIA H.264 Encoder MFT","vendor":"nvidia"},)"
             R"json({"codec":"hevc","name":"Apple HEVC (HW)"}]})json",
         "encoders serialise in order, vendor only when set");
+    // The recorder's hardware gate: a codec counts only if it was enumerated.
+    ok &= expect(recordingProbeHasEncoder(result, RecordingCodec::H264) &&
+                     recordingProbeHasEncoder(result, RecordingCodec::Hevc),
+                 "enumerated codecs have an encoder");
+    ok &= expect(!recordingProbeHasEncoder(result, RecordingCodec::ProRes422),
+                 "a codec that was not enumerated has none");
+    ok &= expect(!recordingProbeHasEncoder(RecordingProbeResult{},
+                                           RecordingCodec::H264),
+                 "a failed enumeration has no encoder");
   }
 
   // Encoder names come from the driver: quotes, backslashes and line breaks

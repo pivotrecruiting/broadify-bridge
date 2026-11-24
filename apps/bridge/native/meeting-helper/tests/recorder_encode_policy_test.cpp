@@ -7,8 +7,11 @@
 using broadify::meeting::kRecorderFinalizeTimeoutMs;
 using broadify::meeting::RecorderAudioRebase;
 using broadify::meeting::RecorderFrameClock;
+using broadify::meeting::RecordingCodec;
 using broadify::meeting::recorderKeyframeInterval;
+using broadify::meeting::recorderMinFreeDiskBytes;
 using broadify::meeting::recorderVideoBitrateBps;
+using broadify::meeting::recorderVideoDataRateBps;
 
 // The bridge gives recording.stop 20 s (meeting-helper-timeouts.ts); the
 // helper-side finalize bound must leave headroom below it, otherwise the
@@ -50,6 +53,19 @@ int main() {
                "tiny bitrate clamps to min");
   ok &= expect(recorderKeyframeInterval(30) == 60,
                "keyframe interval is two seconds");
+  // The per-codec policy is re-exported from helper-common, where its values
+  // are pinned (recording_encode_policy_test).
+  ok &= expect(recorderVideoDataRateBps(RecordingCodec::H264, 1920, 1080, 30) ==
+                   bitrate1080,
+               "H.264 data rate is the H.264 bitrate");
+  ok &= expect(recorderVideoDataRateBps(RecordingCodec::Hevc, 1920, 1080, 30) <
+                   bitrate1080,
+               "HEVC needs less than H.264");
+  ok &= expect(recorderMinFreeDiskBytes(RecordingCodec::ProRes422Hq, 1920,
+                                        1080, 30) >
+                   recorderMinFreeDiskBytes(RecordingCodec::H264, 1920, 1080,
+                                            30),
+               "the free-disk floor grows with the codec's data rate");
 
   {
     RecorderFrameClock clock(30);

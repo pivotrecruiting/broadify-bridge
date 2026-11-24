@@ -156,6 +156,10 @@ std::string jsonEscape(const std::string &value) {
   return out.str();
 }
 
+bool hasField(const std::string &body, const std::string &field) {
+  return findValueStart(body, field) != std::string::npos;
+}
+
 std::string extractStringField(const std::string &body, const std::string &field) {
   size_t pos = findValueStart(body, field);
   if (pos == std::string::npos || pos >= body.size() || body[pos] != '"') {

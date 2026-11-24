@@ -7,8 +7,9 @@
 
 // Windows Media Foundation recorder. Mirrors the macOS AVAssetWriter
 // implementation in meeting_recorder.mm: composited program frames (RGBA8)
-// plus one microphone are written to an .mp4 (H.264 + AAC). Video and audio
-// are timestamped on the shared MF system clock (QPC) so they stay in sync.
+// plus one microphone are written to an .mp4 (H.264 + AAC; every other codec
+// of the request is refused). Video and audio are timestamped on the shared
+// MF system clock (QPC) so they stay in sync.
 // All public methods are thread-safe: start/stop run on the control thread,
 // appendVideoFrame on the pipeline thread, audio capture on its own thread.
 
@@ -47,10 +48,6 @@ namespace broadify::meeting {
 namespace {
 
 constexpr uint64_t kHnsPerSecond = 10'000'000ull;
-
-// Minimum free disk space to start a recording (REC-02): well above what a
-// few minutes of 1080p H.264 needs, far below any realistic working drive.
-constexpr uint64_t kMinFreeDiskBytes = 500ull * 1024ull * 1024ull;
 
 double secondsSince(std::chrono::steady_clock::time_point start) {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
@@ -130,6 +127,7 @@ struct MeetingRecorder::Impl {
   // recording is never deleted before the new one is complete.
   std::string partPath;
   std::string lastError;
+  std::optional<RecordingDiskSpace> diskSpaceLow;
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t fps = 30;
@@ -364,9 +362,12 @@ std::vector<MicrophoneInfo> MeetingRecorder::listMicrophones() const {
   return result;
 }
 
-bool MeetingRecorder::start(const std::string &filePath,
-                            const std::string &micDeviceId, uint32_t width,
-                            uint32_t height, uint32_t fps) {
+bool MeetingRecorder::start(const RecordingRequest &request) {
+  const std::string &filePath = request.filePath;
+  const std::string &micDeviceId = request.micDeviceId;
+  const uint32_t width = request.width;
+  const uint32_t height = request.height;
+  const uint32_t fps = request.fps;
   // K-04: setup runs WITHOUT the mutex. appendVideoFrame is called from the
   // program loop every tick on this same mutex - holding it across device
   // source creation froze VCam/FrameBus/SDI/preview for the whole init. The
@@ -377,8 +378,14 @@ bool MeetingRecorder::start(const std::string &filePath,
       impl_->lastError = "already_recording";
       return false;
     }
+    impl_->diskSpaceLow.reset();
     if (width == 0 || height == 0 || filePath.empty()) {
       impl_->lastError = "invalid_arguments";
+      return false;
+    }
+    // This recorder writes H.264 only (ADR-0010).
+    if (request.codec != RecordingCodec::H264) {
+      impl_->lastError = kRecordingCodecUnsupportedError;
       return false;
     }
     impl_->starting = true;
@@ -404,16 +411,24 @@ bool MeetingRecorder::start(const std::string &filePath,
   }
 
   // REC-02: refuse to start on a nearly full disk instead of failing
-  // opaquely minutes into the recording.
+  // opaquely minutes into the recording. The floor follows the expected
+  // data rate of the codec (recorderMinFreeDiskBytes).
   {
     const size_t slash = filePath.find_last_of("/\\");
     const std::wstring wideDir = utf8ToWide(
         slash == std::string::npos ? std::string(".") : filePath.substr(0, slash));
+    const uint64_t requiredBytes =
+        recorderMinFreeDiskBytes(request.codec, width, height, safeFps);
     ULARGE_INTEGER freeBytes{};
     if (!wideDir.empty() &&
         GetDiskFreeSpaceExW(wideDir.c_str(), &freeBytes, nullptr, nullptr) &&
-        freeBytes.QuadPart < kMinFreeDiskBytes) {
-      return fail("disk_full");
+        freeBytes.QuadPart < requiredBytes) {
+      {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->diskSpaceLow =
+            RecordingDiskSpace{requiredBytes, freeBytes.QuadPart};
+      }
+      return fail(kRecordingDiskSpaceLowError);
     }
   }
 
@@ -884,6 +899,11 @@ RecordingStatus MeetingRecorder::status() const {
   RecordingStatus status;
   status.active = impl_->active;
   status.filePath = impl_->filePath;
+  // Set once a recording has been started; this recorder writes H.264 only.
+  if (!impl_->filePath.empty()) {
+    status.codec = RecordingCodec::H264;
+  }
+  status.diskSpaceLow = impl_->diskSpaceLow;
   status.videoFrames = impl_->videoFrames;
   status.droppedFrames = impl_->droppedFrames;
   status.elapsedSeconds = impl_->active ? secondsSince(impl_->startedAt) : 0.0;

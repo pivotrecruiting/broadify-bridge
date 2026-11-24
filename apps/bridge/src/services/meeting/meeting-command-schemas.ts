@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+import {
+  RECORDING_FILE_EXTENSIONS,
+  isSafeRecordingPath,
+} from "../shared/recording-paths.js";
+import {
+  isMeetingRecordingCodec,
+  meetingRecordingContainer,
+} from "./meeting-recording-codecs.js";
+
 /**
  * Zod schemas for meeting_* relay command payloads.
  *
@@ -118,35 +127,63 @@ export const MeetingGraphicsConfigureOutputsSchema = z
   })
   .strict();
 
-// An absolute path (POSIX "/..." or Windows "X:\...") ending in .mp4, with no
-// parent-directory traversal or NUL bytes. The native recorder deletes the
-// target before writing, so this guards the relay boundary against a
-// compromised client deleting/clobbering arbitrary files: only the honest
-// meeting_recording_pick_path flow (or an equally well-formed path) is allowed.
-const isSafeRecordingPath = (filePath: string): boolean => {
-  if (filePath.includes("\0") || filePath.includes("..")) {
-    return false;
-  }
-  if (!/\.mp4$/i.test(filePath)) {
-    return false;
-  }
-  const isPosixAbsolute = filePath.startsWith("/");
-  const isWindowsAbsolute = /^[A-Za-z]:[\\/]/.test(filePath);
-  return isPosixAbsolute || isWindowsAbsolute;
-};
+// A codec name, deliberately not the enum of this bridge's contract: a name
+// it does not know (a newer web app) passes the boundary and is refused by
+// the handler with `meeting_recording_codec_unsupported`, like a codec the
+// machine cannot encode, instead of as a generic invalid payload.
+const MeetingRecordingCodecNameSchema = z.string().min(1).max(64);
 
+// `codec` is optional (absent = h264) and the object is strict: the web app
+// sends it only to a bridge that reports `capabilities.meeting.recording`.
+// file_path must pass the shared recording path guard with the container of
+// the requested codec as its extension; with a codec name outside the
+// contract (which the handler refuses before the path is used) any recording
+// extension passes.
 export const MeetingRecordingStartSchema = z
   .object({
-    file_path: z
-      .string()
-      .min(1)
-      .refine(isSafeRecordingPath, {
-        message:
-          "file_path must be an absolute .mp4 path without parent traversal",
-      }),
+    file_path: z.string().min(1),
     mic_device_id: z.string().optional(),
+    codec: MeetingRecordingCodecNameSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const extensions =
+      value.codec === undefined || isMeetingRecordingCodec(value.codec)
+        ? [meetingRecordingContainer(value.codec)]
+        : RECORDING_FILE_EXTENSIONS;
+    if (
+      !extensions.some((extension) =>
+        isSafeRecordingPath(value.file_path, extension),
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["file_path"],
+        message: `file_path must be an absolute .${extensions.join(" or .")} path without parent traversal`,
+      });
+    }
+  });
+
+// The save panel proposes and enforces the extension of the codec's
+// container. default_name and locale stay lenient (a wrong type falls back to
+// the default), as before the codec was added.
+export const MeetingRecordingPickPathSchema = z
+  .object({
+    default_name: z.string().optional().catch(undefined),
+    locale: z.string().optional().catch(undefined),
+    codec: MeetingRecordingCodecNameSchema.optional(),
+  })
+  .strip();
+
+// One-key start/stop. The payload only matters when the toggle starts a
+// recording (the handler does not read it for a stop); without a codec the
+// recording is h264. mic_device_id stays lenient like before.
+export const MeetingRecordingToggleSchema = z
+  .object({
+    mic_device_id: z.string().optional().catch(undefined),
+    codec: MeetingRecordingCodecNameSchema.optional(),
+  })
+  .strip();
 
 // Cloud-hosted asset fetches: the bridge downloads the file itself because
 // HTTPS webapps cannot POST to http://127.0.0.1 in every browser (Safari

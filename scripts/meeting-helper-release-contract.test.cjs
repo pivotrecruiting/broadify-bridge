@@ -333,7 +333,7 @@ for (const [label, plistPath] of [
   });
 }
 
-test("recorder finalize timeout stays below the recording.stop RPC timeout", () => {
+test("recorder finalize timeout stays below the recording.stop RPC timeout and its relay SLA", () => {
   // stop() blocks in finishWriting (macOS) / Finalize (Windows) for at most
   // kRecorderFinalizeTimeoutMs, then reports finalize_timeout. The bridge
   // aborts the recording.stop RPC after MEETING_HELPER_RPC_TIMEOUTS_MS - if
@@ -367,6 +367,31 @@ test("recorder finalize timeout stays below the recording.stop RPC timeout", () 
     finalizeTimeoutMs < stopTimeoutMs,
     `finalize timeout ${finalizeTimeoutMs} ms must be below recording.stop ${stopTimeoutMs} ms`,
   );
+
+  // The same ordering one level up: the relay commands that stop a recording
+  // (meeting_recording_stop, and meeting_recording_toggle on an active
+  // recording) must outlast the recording.stop RPC, or the web app sees a
+  // timeout while the helper is still finalizing. This pins the order of
+  // the numbers the bridge declares; the relay timeout itself is enforced by
+  // the relay service and the web app, in their own repositories.
+  // Relay policy: sideEffect("<command>", <class>, <relay timeout>, <bridge-local SLA>, ...)
+  const relayPolicy = read("apps/bridge/src/services/relay-command-policy.ts");
+  for (const command of ["meeting_recording_stop", "meeting_recording_toggle"]) {
+    const slaMatch = relayPolicy.match(
+      new RegExp(`sideEffect\\("${command}", "[a-z_]+", ([0-9_]+), ([0-9_]+),`),
+    );
+    assert.ok(slaMatch, `${command} relay policy must be defined`);
+    const relayTimeoutMs = Number(slaMatch[1].replace(/_/g, ""));
+    const localSlaMs = Number(slaMatch[2].replace(/_/g, ""));
+    assert.ok(
+      stopTimeoutMs < localSlaMs,
+      `recording.stop ${stopTimeoutMs} ms must be below the bridge-local SLA ${localSlaMs} ms of ${command}`,
+    );
+    assert.ok(
+      localSlaMs < relayTimeoutMs,
+      `bridge-local SLA ${localSlaMs} ms of ${command} must be below its relay timeout ${relayTimeoutMs} ms`,
+    );
+  }
 
   // Both platform recorders must use the shared constant (no literal
   // drift) and report the same event name on timeout. On macOS the bounded

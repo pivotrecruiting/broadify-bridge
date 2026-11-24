@@ -2,9 +2,9 @@ import type {
   MeetingCapabilitiesT,
   MeetingProgramFormatT,
   MeetingRecordingCodecT,
-  MeetingRecordingContainerT,
 } from "@broadify/protocol";
 
+import { meetingRecordingContainer } from "./meeting-recording-codecs.js";
 import type { MeetingRecordingProbeT } from "./meeting-recording-probe.js";
 
 /** Engine geometry used when `meeting_engine_start` omits a field. */
@@ -20,6 +20,8 @@ export const MEETING_PROGRAM_FORMAT_UNSUPPORTED_CODE =
   "meeting_program_format_unsupported";
 export const MEETING_ENGINE_RESTART_REQUIRED_CODE =
   "meeting_engine_restart_required";
+export const MEETING_RECORDING_CODEC_UNSUPPORTED_CODE =
+  "meeting_recording_codec_unsupported";
 
 type MeetingProgramFormatLimitsT = NonNullable<
   MeetingCapabilitiesT["program_formats"]
@@ -40,15 +42,22 @@ export const MEETING_PROGRAM_FORMAT_LIMITS: MeetingProgramFormatLimitsT = {
 };
 
 /**
- * Codecs the meeting recorder can write, with the container each one goes
- * into. The single list to extend when the recorder learns a codec: a codec
- * is advertised only if it is listed here AND the machine has a hardware
- * encoder for it.
+ * Codecs the meeting recorder of each platform can write (a platform without
+ * an entry has no recorder). The single list to extend when a recorder
+ * learns a codec: a codec is advertised only if it is listed here AND the
+ * machine has a hardware encoder for it. Each platform spells its codecs
+ * out, so a codec added to the contract is advertised nowhere until its
+ * writer exists. macOS writes H.264, HEVC and ProRes 422 LT / 422 / HQ
+ * (AVAssetWriter); Windows writes H.264 only, and never ProRes - there is no
+ * licensed encoder for it. The container follows from the codec
+ * (`MEETING_RECORDING_CODEC_FORMATS`).
  */
-export const MEETING_RECORDER_SUPPORTED_CODECS: ReadonlyArray<{
-  codec: MeetingRecordingCodecT;
-  container: MeetingRecordingContainerT;
-}> = [{ codec: "h264", container: "mp4" }];
+export const MEETING_RECORDER_SUPPORTED_CODECS: Readonly<
+  Partial<Record<NodeJS.Platform, readonly MeetingRecordingCodecT[]>>
+> = {
+  darwin: ["h264", "hevc", "prores_422_lt", "prores_422", "prores_422_hq"],
+  win32: ["h264"],
+};
 
 type MeetingCapabilityDepsT = {
   platform?: NodeJS.Platform;
@@ -60,23 +69,26 @@ type MeetingCapabilityDepsT = {
 };
 
 /**
- * Recording capability for a probe result: the recorder's codecs for which
- * the machine has a hardware encoder (hardware only, no software fallback -
- * ADR-0010), each up to the largest program format.
+ * Recording capability for a probe result: the platform recorder's codecs
+ * for which the machine has a hardware encoder (hardware only, no software
+ * fallback - ADR-0010), each up to the largest program format. No codec has
+ * a limit of its own yet: every one records whatever `program_formats`
+ * allows.
  */
 function resolveRecordingCapability(
   probe: MeetingRecordingProbeT,
+  platform: NodeJS.Platform,
 ): NonNullable<MeetingCapabilitiesT["recording"]> {
   const hardwareCodecs = new Set(probe.encoders.map((encoder) => encoder.codec));
   return {
-    codecs: MEETING_RECORDER_SUPPORTED_CODECS.filter(({ codec }) =>
-      hardwareCodecs.has(codec),
-    ).map(({ codec, container }) => ({
-      codec,
-      container,
-      max_height: MEETING_PROGRAM_FORMAT_LIMITS.max_height,
-      max_fps: Math.max(...MEETING_PROGRAM_FORMAT_LIMITS.fps),
-    })),
+    codecs: (MEETING_RECORDER_SUPPORTED_CODECS[platform] ?? [])
+      .filter((codec) => hardwareCodecs.has(codec))
+      .map((codec) => ({
+        codec,
+        container: meetingRecordingContainer(codec),
+        max_height: MEETING_PROGRAM_FORMAT_LIMITS.max_height,
+        max_fps: Math.max(...MEETING_PROGRAM_FORMAT_LIMITS.fps),
+      })),
     upload_copy: false,
   };
 }
@@ -111,9 +123,25 @@ export function getMeetingCapabilities(
       fps: [...MEETING_PROGRAM_FORMAT_LIMITS.fps],
     },
     ...(recordingProbe
-      ? { recording: resolveRecordingCapability(recordingProbe) }
+      ? { recording: resolveRecordingCapability(recordingProbe, platform) }
       : {}),
   };
+}
+
+/**
+ * Whether a recording may be started with an explicitly requested codec: only
+ * with one the capability block advertises, which excludes every name outside
+ * the contract. Without the block (probe unknown) no codec may be requested -
+ * the web app sends one only when it is reported.
+ */
+export function isAdvertisedRecordingCodec(
+  capabilities: MeetingCapabilitiesT,
+  codec: string,
+): codec is MeetingRecordingCodecT {
+  return (
+    capabilities.recording?.codecs.some((entry) => entry.codec === codec) ??
+    false
+  );
 }
 
 /** Fills the engine defaults into a (partial) start payload. */

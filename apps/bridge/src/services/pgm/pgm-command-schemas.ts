@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isSafeRecordingPath } from "../shared/recording-paths.js";
+
 /**
  * Zod schemas for the `pgm_*` relay commands (live program preview).
  * Strict by default: the web app never sends unknown keys, and the command
@@ -85,23 +87,13 @@ export type PgmSourceSelectT = z.infer<typeof PgmSourceSelectSchema>;
 export type PgmWebrtcOfferT = z.infer<typeof PgmWebrtcOfferSchema>;
 export type PgmWebrtcCloseT = z.infer<typeof PgmWebrtcCloseSchema>;
 
-const isSafeRecordingPath = (filePath: string): boolean => {
-  if (filePath.includes("\0") || filePath.includes("..")) {
-    return false;
-  }
-  if (!/\.mp4$/i.test(filePath)) {
-    return false;
-  }
-  return filePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(filePath);
-};
-
 export const PgmSnapshotSchema = z.object({ quality: z.number().min(0.3).max(0.95).optional() }).strict();
 
 export const PgmRecordingPickPathSchema = z.object({ default_name: z.string().trim().min(1).max(120).optional(), locale: z.string().max(8).optional() }).strict();
 
 /** file_path optional: the bridge falls back to a timestamped file in the user's Movies folder. */
 export const PgmRecordingStartSchema = z
-  .object({ file_path: z.string().trim().min(1).max(1024).refine(isSafeRecordingPath, { message: "file_path must be an absolute .mp4 path without parent traversal" }).optional() })
+  .object({ file_path: z.string().trim().min(1).max(1024).refine((filePath) => isSafeRecordingPath(filePath, "mp4"), { message: "file_path must be an absolute .mp4 path without parent traversal" }).optional() })
   .strict();
 
 export type PgmSnapshotT = z.infer<typeof PgmSnapshotSchema>;

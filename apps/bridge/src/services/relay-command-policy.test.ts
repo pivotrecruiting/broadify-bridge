@@ -74,6 +74,22 @@ describe("relay-command-policy", () => {
     );
   });
 
+  it("gives a meeting recording stop the time to finalize the file", () => {
+    // The helper may finalize for 15 s inside a 20 s recording.stop RPC; the
+    // fast class (12 s relay / 8 s local) timed out while it was still writing.
+    // meeting_recording_toggle stops through the same RPC.
+    for (const command of ["meeting_recording_stop", "meeting_recording_toggle"] as const) {
+      expect(getRelayCommandPolicy(command)).toEqual(
+        expect.objectContaining({
+          timeoutClass: "helper_start",
+          relayTimeoutMs: 35_000,
+          bridgeLocalSlaMs: 30_000,
+          replayPolicy: "after_state_check",
+        }),
+      );
+    }
+  });
+
   it("treats mode_activate as a replay-safe side effect in the engine_connect timeout class", () => {
     expect(getRelayCommandPolicy("mode_activate")).toEqual(
       expect.objectContaining({

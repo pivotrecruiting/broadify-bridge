@@ -7,6 +7,10 @@
 namespace broadify::helper {
 
 std::string jsonEscape(const std::string &value);
+// Whether the body has the field as a key, whatever its value. Lets a caller
+// tell an absent optional field from one that is present with a value the
+// typed extractors read as their fallback (wrong type, null, empty string).
+bool hasField(const std::string &body, const std::string &field);
 std::string extractStringField(const std::string &body, const std::string &field);
 // Parses a flat JSON string array ("field":["a","b",...]) into its unescaped
 // elements. Quote- and escape-aware, so array elements may contain commas,

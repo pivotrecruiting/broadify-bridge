@@ -38,6 +38,8 @@ using broadify::meeting::MeetingRecorder;
 using broadify::meeting::MeetingState;
 using broadify::meeting::Options;
 using broadify::meeting::PreviewFrameStore;
+using broadify::meeting::RecordingCodec;
+using broadify::meeting::RecordingDiskSpace;
 using broadify::meeting::RecordingStatus;
 using broadify::meeting::StubScreenCaptureSource;
 using broadify::meeting::VideoFrame;
@@ -282,6 +284,28 @@ int main() {
         !contains(noAudioJson, "\"audio_samples_dropped\":null")) {
       fail("recording status without audio counters did not serialize null");
     }
+    // Codec and container (ADR-0010) are null before the first recording and
+    // follow the codec table afterwards.
+    if (!contains(noAudioJson, "\"codec\":null") ||
+        !contains(noAudioJson, "\"container\":null") ||
+        !contains(noAudioJson, "\"disk_space_low\":null")) {
+      fail("recording status without a recording did not serialize null codec fields");
+    }
+    RecordingStatus proRes;
+    proRes.codec = RecordingCodec::ProRes422Hq;
+    const std::string proResJson = recordingStatusJson(proRes);
+    if (!contains(proResJson, "\"codec\":\"prores_422_hq\"") ||
+        !contains(proResJson, "\"container\":\"mov\"")) {
+      fail("recording status did not serialize codec and container");
+    }
+    RecordingStatus diskLow;
+    diskLow.lastError = "recording_disk_space_low";
+    diskLow.diskSpaceLow = RecordingDiskSpace{8'250'000'000ull, 1'000ull};
+    if (!contains(recordingStatusJson(diskLow),
+                  "\"disk_space_low\":{\"required_bytes\":8250000000,"
+                  "\"free_bytes\":1000}")) {
+      fail("recording status did not serialize the disk space shortfall");
+    }
   }
 
   StubCameraSource camera;
@@ -396,6 +420,38 @@ int main() {
       camera.startedIndices.back() != 1) {
     stopServer();
     fail("camera.start after select did not open the switched-to camera");
+  }
+
+  // recording.start parses the codec of the recording format (ADR-0010). A
+  // name this helper does not know is refused with the stable token before
+  // the recorder is touched; the bridge promotes it to the errorCode.
+  // The same holds for a codec that is present but not a name (empty, not a
+  // string): it must never fall back to H.264.
+  for (const char *codecValue : {"\"av1\"", "\"\"", "5", "null"}) {
+    const std::string refused =
+        rpc(std::string("{\"id\":\"4r1\",\"method\":\"recording.start\","
+                        "\"params\":{\"file_path\":\"/tmp/a.mp4\",\"codec\":") +
+            codecValue + "}}");
+    if (!contains(refused, "\"code\":\"recording_start_failed\"") ||
+        !contains(refused,
+                  "\"message\":\"meeting_recording_codec_unsupported\"")) {
+      stopServer();
+      fail("recording.start with an unknown codec was not refused with the codec token");
+    }
+  }
+  // A known codec and an absent one (= h264) both reach the recorder; the
+  // stub recorder of this test refuses every start without a token.
+  for (const char *request :
+       {"{\"id\":\"4r2\",\"method\":\"recording.start\","
+        "\"params\":{\"file_path\":\"/tmp/a.mov\",\"codec\":\"prores_422\"}}",
+        "{\"id\":\"4r3\",\"method\":\"recording.start\","
+        "\"params\":{\"file_path\":\"/tmp/a.mp4\"}}"}) {
+    const std::string response = rpc(request);
+    if (!contains(response, "\"code\":\"recording_start_failed\"") ||
+        contains(response, "meeting_recording_codec_unsupported")) {
+      stopServer();
+      fail("recording.start with a valid codec did not reach the recorder");
+    }
   }
 
   // Defensive: an index-less camera.start (fresh machine, setup page starting

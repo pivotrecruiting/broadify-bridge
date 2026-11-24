@@ -1,5 +1,7 @@
 #pragma once
 
+#include "recorder/recording_codec.h"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -14,9 +16,42 @@ struct MicrophoneInfo {
   bool isDefault = false;
 };
 
+// One recording to start. A struct so that a further output of the same
+// recording becomes a field here instead of another start() signature.
+struct RecordingRequest {
+  // Final path of the file; its extension is the container of `codec`.
+  std::string filePath;
+  // Microphone to record (empty = system default input).
+  std::string micDeviceId;
+  // Program geometry the frames arrive in.
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t fps = 0;
+  RecordingCodec codec = RecordingCodec::H264;
+};
+
+// start() failure tokens with a meaning beyond the message. They reach the
+// bridge as the message of `recording_start_failed` and become the errorCode
+// of the relay command (RECORDING_ERROR_TOKENS, meeting-command-handler.ts).
+//
+// The platform recorder cannot write the codec, or the machine has no
+// hardware encoder for it (hardware only, no software fallback: ADR-0010).
+inline constexpr char kRecordingCodecUnsupportedError[] =
+    "meeting_recording_codec_unsupported";
+// The target volume has less free space than recorderMinFreeDiskBytes;
+// RecordingStatus::diskSpaceLow carries the numbers.
+inline constexpr char kRecordingDiskSpaceLowError[] = "recording_disk_space_low";
+
+struct RecordingDiskSpace {
+  uint64_t requiredBytes = 0;
+  uint64_t freeBytes = 0;
+};
+
 struct RecordingStatus {
   bool active = false;
   std::string filePath;
+  // Codec of the current or last recording; empty before the first start.
+  std::optional<RecordingCodec> codec;
   double elapsedSeconds = 0.0;
   uint64_t videoFrames = 0;
   // Program frames the recorder could not encode (encoder backpressure, and
@@ -25,6 +60,9 @@ struct RecordingStatus {
   uint64_t droppedFrames = 0;
   uint64_t queuedFrames = 0;
   std::string lastError;
+  // Set while lastError is kRecordingDiskSpaceLowError: what the refused
+  // start needed and what the volume had.
+  std::optional<RecordingDiskSpace> diskSpaceLow;
   // Microphone sample counters (RecorderAudioRebase): samples handed to the
   // writer at/after the session start vs. samples dropped because they were
   // captured before it. Optional and additive: filled by the Windows recorder,
@@ -33,8 +71,9 @@ struct RecordingStatus {
   std::optional<uint64_t> audioSamplesDroppedBeforeStart;
 };
 
-// Records the composited program video plus a chosen microphone to an .mp4
-// (H.264 video + AAC audio) using AVAssetWriter. Video frames are pushed in
+// Records the composited program video plus a chosen microphone in the
+// requested codec (kRecordingCodecFormats: H.264/HEVC + AAC in .mp4, ProRes +
+// PCM in .mov) using AVAssetWriter. Video frames are pushed in
 // from the frame pipeline; audio is captured from an internal AVCaptureSession
 // on the selected device. Video and audio are timestamped on the shared macOS
 // host clock so they stay in sync. All public methods are thread-safe:
@@ -55,12 +94,10 @@ class MeetingRecorder {
   // or on platforms without capture support).
   std::vector<MicrophoneInfo> listMicrophones() const;
 
-  // Begin recording program frames of the given geometry plus the microphone
-  // identified by micDeviceId (empty = system default input) to filePath.
-  // Returns false and sets the status error on failure (already recording,
-  // permission denied, unwritable path, ...).
-  bool start(const std::string &filePath, const std::string &micDeviceId,
-             uint32_t width, uint32_t height, uint32_t fps);
+  // Begin recording program frames plus the requested microphone. Returns
+  // false and sets the status error on failure (already recording,
+  // permission denied, unwritable path, unsupported codec, ...).
+  bool start(const RecordingRequest &request);
 
   // Append one composited program frame (RGBA8, width*height*4 bytes). No-op if
   // not recording or on a geometry mismatch. Safe to call from the pipeline.

@@ -384,6 +384,10 @@ if(MEETING_HELPER_BUILD_TESTS)
   add_executable(recorder_encode_policy_test
     tests/recorder_encode_policy_test.cpp
   )
+  # Codec -> container/audio table of the recorder (header-only).
+  add_executable(recording_codec_test
+    tests/recording_codec_test.cpp
+  )
   # JSON line of `meeting-helper --probe-recording` (platform-neutral part).
   add_executable(recording_probe_test
     tests/recording_probe_test.cpp
@@ -619,6 +623,7 @@ if(MEETING_HELPER_BUILD_TESTS)
     guided_mask_refine_test
     guided_work_size_test
     recorder_encode_policy_test
+    recording_codec_test
     recording_probe_test
     framebus_reader_log_gate_test
     staging_readback_ring_test
@@ -710,13 +715,16 @@ if(MEETING_HELPER_BUILD_TESTS)
 
   if(APPLE)
     # Exercises the production AVAssetWriter configuration across fragment
-    # boundaries with accelerated media timestamps; needs no camera or
-    # microphone access, so it runs headless under ctest.
+    # boundaries with accelerated media timestamps, and writes a clip per
+    # codec; needs no camera or microphone access, so it runs headless under
+    # ctest.
     add_executable(meeting_recorder_writer_test
       tests/meeting_recorder_writer_test.mm
       src/recorder/recorder_frame_mailbox.cpp
       src/recorder/recorder_video_worker.mm
       src/recorder/recorder_writer_factory.mm
+      src/recorder/recording_probe.cpp
+      src/recorder/recording_probe_videotoolbox.mm
     )
     set_source_files_properties(tests/meeting_recorder_writer_test.mm PROPERTIES
       COMPILE_FLAGS "-fobjc-arc"
@@ -729,6 +737,7 @@ if(MEETING_HELPER_BUILD_TESTS)
       "-framework CoreMedia"
       "-framework CoreVideo"
       "-framework Foundation"
+      "-framework VideoToolbox"
     )
     add_test(NAME meeting_recorder_writer_test COMMAND meeting_recorder_writer_test)
     # Regression for the program-stream pixel buffer overflow: drives the

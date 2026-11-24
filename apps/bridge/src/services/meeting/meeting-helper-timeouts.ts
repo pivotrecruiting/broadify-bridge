@@ -7,7 +7,13 @@
  * - recording.start waits up to 10 s for the OS microphone permission prompt
  *   before the writer is even built.
  * - recording.stop blocks in AVAssetWriter finishWriting / IMFSinkWriter
- *   Finalize for up to ~15 s on long recordings.
+ *   Finalize for up to 15 s (kRecorderFinalizeTimeoutMs). The chain is
+ *   finalize 15 s < this RPC 20 s < bridge-local SLA 30 s < relay timeout
+ *   35 s of meeting_recording_stop / meeting_recording_toggle as declared in
+ *   relay-command-policy.ts; scripts/meeting-helper-release-contract.test.cjs
+ *   guards the order of these numbers. The relay timeout itself is enforced
+ *   by the relay service and the web app, whose tables must follow it
+ *   (docs/bridge/features/meeting-recording.md, "Finalize timeout").
  * - control.shutdown finalizes an in-flight recording before it returns.
  * - keyer.configure may compile/load the segmentation model on first use.
  * - camera.start first joins a possibly sleeping reopen-backoff thread and

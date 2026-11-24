@@ -4,6 +4,8 @@
 
 #import <AVFoundation/AVFoundation.h>
 
+#include "recorder/recording_codec.h"
+
 #include <cstdint>
 #include <string>
 
@@ -24,13 +26,30 @@ struct RecorderWriterBundle {
 // the final path never names a half-written file.
 std::string recorderSidecarPath(const std::string &finalPath);
 
-// Builds the H.264+AAC writer pipeline for the given output file. Extracted
-// from MeetingRecorder::start so the exact production configuration (file
-// type, fragmenting, bitrate, color tags, input settings) is exercisable by
-// ctest without microphone access.
+// Builds the writer pipeline of one codec for the given output file: H.264
+// High or HEVC Main ('hvc1') with AAC in an MPEG-4 file, ProRes 422 LT/422/HQ
+// with PCM in a QuickTime movie (kRecordingCodecFormats). Extracted from
+// MeetingRecorder::start so the exact production configuration (file type,
+// fragmenting, bitrate, color tags, input settings) is exercisable by ctest
+// without microphone access.
+//
+// Hardware only (ADR-0010): without a hardware encoder for the codec the
+// bundle fails with kRecordingCodecUnsupportedError, and the video settings
+// carry recorderEncoderSpecification so the writer cannot fall back to a
+// software encoder either.
 RecorderWriterBundle makeRecorderWriter(const std::string &outputPath,
                                         uint32_t width, uint32_t height,
-                                        uint32_t fps);
+                                        uint32_t fps, RecordingCodec codec);
+
+// The VideoToolbox encoder specification of every recorder video input:
+// requires a hardware-accelerated encoder. AVAssetWriter evaluates it in
+// startWriting, which then fails instead of choosing a software encoder.
+NSDictionary *recorderEncoderSpecification();
+
+// Error token of a failed startWriting: kRecordingCodecUnsupportedError when
+// no encoder satisfied recorderEncoderSpecification, otherwise the NSError
+// description.
+std::string recorderStartWritingError(NSError *error);
 
 // Outcome of finalizeRecorderWriter. The machine token in
 // RecorderFinalizeResult::error is what recording.status.last_error carries.

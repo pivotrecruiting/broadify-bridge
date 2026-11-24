@@ -17,7 +17,9 @@ import {
   MeetingOutputConfigureSchema,
   MeetingPassthroughSchema,
   MeetingProgramUpdateSchema,
+  MeetingRecordingPickPathSchema,
   MeetingRecordingStartSchema,
+  MeetingRecordingToggleSchema,
   MeetingScreenPickSchema,
   MeetingScreenStartSchema,
 } from "./meeting-command-schemas.js";
@@ -67,12 +69,18 @@ import {
   meetingFrontGraphicsManager,
 } from "./meeting-graphics-manager.js";
 import { loadFrameBusModule } from "../graphics/framebus/framebus-client.js";
-import type { MeetingProgramFormatT } from "@broadify/protocol";
+import type {
+  MeetingProgramFormatT,
+  MeetingRecordingCodecT,
+} from "@broadify/protocol";
+import { meetingRecordingContainer } from "./meeting-recording-codecs.js";
 import {
   MEETING_ENGINE_RESTART_REQUIRED_CODE,
   MEETING_PROGRAM_FORMAT_UNSUPPORTED_CODE,
   MEETING_PROGRAM_PORTRAIT_UNSUPPORTED_CODE,
+  MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
   getMeetingCapabilities,
+  isAdvertisedRecordingCodec,
   isPortraitGeometry,
   isSameProgramFormat,
   isSupportedProgramFormat,
@@ -349,12 +357,24 @@ async function runMeetingRpc<T>(operation: () => Promise<T>): Promise<MeetingCom
  * `recording_start_failed`; promoting a known token to the errorCode gives the
  * webapp a stable machine-readable code without a helper rebuild.
  */
+const RECORDING_DISK_SPACE_LOW_CODE = "recording_disk_space_low";
+
+/**
+ * Token the recorders reported for a full disk before the check became
+ * proportional to the codec's data rate. Web apps released before
+ * `recording_disk_space_low` map only this token, and they also look for it
+ * in the error message: a low-disk refusal therefore keeps it as its message,
+ * so those versions still show their disk message instead of a generic error.
+ */
+const LEGACY_RECORDING_DISK_FULL_TOKEN = "disk_full";
+
 const RECORDING_ERROR_TOKENS = new Set([
   "microphone_permission_denied",
   "microphone_not_found",
   "microphone_input_failed",
   "microphone_input_rejected",
-  "disk_full",
+  RECORDING_DISK_SPACE_LOW_CODE,
+  MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
   "writer_create_failed",
   "already_recording",
   "invalid_arguments",
@@ -371,6 +391,88 @@ function normalizeRecordingErrorCode(
     return { ...result, errorCode: result.error };
   }
   return result;
+}
+
+/**
+ * Reads `recording.disk_space_low` out of a recording.status result: what a
+ * start refused with `recording_disk_space_low` needed and what the volume
+ * had, in bytes.
+ */
+function readRecordingDiskSpaceLow(
+  status: Record<string, unknown> | null,
+): { required_bytes: number; free_bytes: number } | null {
+  const recording = status?.recording as
+    | { disk_space_low?: { required_bytes?: unknown; free_bytes?: unknown } | null }
+    | undefined;
+  const diskSpace = recording?.disk_space_low;
+  if (
+    typeof diskSpace?.required_bytes !== "number" ||
+    typeof diskSpace.free_bytes !== "number"
+  ) {
+    return null;
+  }
+  return {
+    required_bytes: diskSpace.required_bytes,
+    free_bytes: diskSpace.free_bytes,
+  };
+}
+
+/**
+ * Result of a recording.start RPC for the relay: a known failure token
+ * becomes the errorCode, and `recording_disk_space_low` additionally carries
+ * the legacy `disk_full` token as its message and
+ * `data { required_bytes, free_bytes }`. The numbers come from the helper's
+ * recording status (best effort: without them the errorCode stands alone).
+ */
+async function finishRecordingStart(
+  client: MeetingHelperClient,
+  started: MeetingCommandResultT,
+): Promise<MeetingCommandResultT> {
+  const result = normalizeRecordingErrorCode(started);
+  if (result.errorCode !== RECORDING_DISK_SPACE_LOW_CODE) {
+    return result;
+  }
+  const diskSpace = readRecordingDiskSpaceLow(
+    await client.recordingStatus().catch(() => null),
+  );
+  return {
+    ...result,
+    error: LEGACY_RECORDING_DISK_FULL_TOKEN,
+    ...(diskSpace ? { data: diskSpace } : {}),
+  };
+}
+
+type RecordingCodecGateT =
+  | { refusal: null; codec: MeetingRecordingCodecT | undefined }
+  | { refusal: MeetingCommandResultT };
+
+/**
+ * Checks the codec name of a recording request against what this machine
+ * advertises (`capabilities.meeting.recording`): the codec to record with,
+ * or the refusal for a name that is not advertised - one this bridge does
+ * not know included. A request without a codec is the h264 recording older
+ * clients always got and is not gated here; the helper holds every codec to
+ * a hardware encoder itself.
+ */
+function gateRequestedRecordingCodec(
+  codec: string | undefined,
+): RecordingCodecGateT {
+  if (codec === undefined) {
+    return { refusal: null, codec };
+  }
+  const capabilities = getMeetingCapabilities({
+    recordingProbe: meetingHelperManager.getRecordingProbe(),
+  });
+  if (isAdvertisedRecordingCodec(capabilities, codec)) {
+    return { refusal: null, codec };
+  }
+  return {
+    refusal: {
+      success: false,
+      error: `The recording codec ${codec} is not supported on this machine.`,
+      errorCode: MEETING_RECORDING_CODEC_UNSUPPORTED_CODE,
+    },
+  };
 }
 
 async function listCamerasWithPermissionGate(): Promise<unknown> {
@@ -801,13 +903,22 @@ export async function handleMeetingCommand(
       // Bridge-local: the file is written on this machine by the helper, so the
       // save location is chosen here via the native macOS panel, not in the
       // browser. Returns { cancelled: true } when the user dismisses the panel.
-      const defaultName =
-        typeof payload?.default_name === "string"
-          ? payload.default_name
-          : "meeting.mp4";
-      const locale =
-        typeof payload?.locale === "string" ? payload.locale : "de";
-      const filePath = await pickRecordingSavePath(defaultName, locale);
+      // The path gets the extension of the codec's container (default h264);
+      // a codec the start would refuse is refused here, before the panel opens.
+      const options = parseRelayPayload(
+        MeetingRecordingPickPathSchema,
+        payload ?? {},
+        "Invalid payload for meeting_recording_pick_path",
+      );
+      const gate = gateRequestedRecordingCodec(options.codec);
+      if (gate.refusal) {
+        return gate.refusal;
+      }
+      const filePath = await pickRecordingSavePath(
+        options.default_name ?? "meeting.mp4",
+        options.locale ?? "de",
+        meetingRecordingContainer(gate.codec),
+      );
       if (filePath === null) {
         return { success: true, data: { cancelled: true } };
       }
@@ -820,15 +931,18 @@ export async function handleMeetingCommand(
         payload ?? {},
         "Invalid payload for meeting_recording_start",
       );
-      const result = await runMeetingRpc(() =>
-        requireClient().recordingStart(options),
-      );
+      const gate = gateRequestedRecordingCodec(options.codec);
+      if (gate.refusal) {
+        return gate.refusal;
+      }
+      const client = requireClient();
+      const result = await runMeetingRpc(() => client.recordingStart(options));
       if (result.success) {
         // The status publisher is the single writer of the deck's REC mirror
         // and of the pushed meeting_status snapshot (audit SD-04/WP-2.4).
         meetingHelperManager.notifyRecordingChanged();
       }
-      return normalizeRecordingErrorCode(result);
+      return finishRecordingStart(client, result);
     }
 
     case "meeting_recording_stop": {
@@ -843,8 +957,11 @@ export async function handleMeetingCommand(
       // One-key start/stop (Stream Deck). Unlike meeting_recording_start there
       // is no save dialog: the file goes to the shared default recordings
       // folder (~/Movies/Broadify or ~/Videos/Broadify) with a timestamped
-      // Broadify-Meeting-<stamp>.mp4 name - the same place the save-panel
-      // fallback and PGM recordings use.
+      // Broadify-Meeting-<stamp>.<ext> name - the same place the save-panel
+      // fallback and PGM recordings use. The payload (microphone, codec)
+      // belongs to a start and is read only then: whatever a key binding
+      // carries, it can always stop a running recording. Without a codec
+      // (the REC key as the web app configures it) the recording is h264.
       const client = requireClient();
       const status = await runMeetingRpc(() => client.recordingStatus());
       const active = isRecordingActive(status.data);
@@ -855,19 +972,29 @@ export async function handleMeetingCommand(
         }
         return stopped;
       }
-      const filePath = buildDefaultRecordingPath("meeting");
-      const micDeviceId =
-        typeof payload?.mic_device_id === "string" ? payload.mic_device_id : "";
+      const options = parseRelayPayload(
+        MeetingRecordingToggleSchema,
+        payload ?? {},
+        "Invalid payload for meeting_recording_toggle",
+      );
+      const gate = gateRequestedRecordingCodec(options.codec);
+      if (gate.refusal) {
+        return gate.refusal;
+      }
+      const filePath = buildDefaultRecordingPath("meeting", new Date(), {
+        extension: meetingRecordingContainer(gate.codec),
+      });
       const started = await runMeetingRpc(() =>
         client.recordingStart({
           file_path: filePath,
-          mic_device_id: micDeviceId,
+          mic_device_id: options.mic_device_id ?? "",
+          ...(gate.codec ? { codec: gate.codec } : {}),
         }),
       );
       if (started.success) {
         meetingHelperManager.notifyRecordingChanged();
       }
-      return normalizeRecordingErrorCode(started);
+      return finishRecordingStart(client, started);
     }
 
     case "meeting_recording_status": {

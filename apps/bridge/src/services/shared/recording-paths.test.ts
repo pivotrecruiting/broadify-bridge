@@ -2,6 +2,9 @@ import path from "node:path";
 import {
   DEFAULT_RECORDINGS_SUBDIR,
   buildDefaultRecordingPath,
+  hasRecordingExtension,
+  isSafeRecordingPath,
+  withRecordingExtension,
   formatRecordingTimestamp,
   resolveDefaultRecordingsDir,
 } from "./recording-paths.js";
@@ -119,6 +122,23 @@ describe("recording-paths", () => {
       );
     });
 
+    it("uses the requested recording extension", () => {
+      const result = buildDefaultRecordingPath("meeting", fixedNow, {
+        extension: "mov",
+        platform: "darwin",
+        home: "/Users/op",
+        mkdir: () => undefined,
+      });
+      expect(result).toBe(
+        path.join(
+          "/Users/op",
+          "Movies",
+          "Broadify",
+          "Broadify-Meeting-2026-10-26_14-05-09.mov",
+        ),
+      );
+    });
+
     it("yields an absolute .mp4 path without parent traversal (relay guard compatible)", () => {
       const result = buildDefaultRecordingPath("meeting", fixedNow, {
         platform: "darwin",
@@ -128,6 +148,44 @@ describe("recording-paths", () => {
       expect(path.isAbsolute(result)).toBe(true);
       expect(result).toMatch(/\.mp4$/);
       expect(result).not.toContain("..");
+    });
+  });
+
+  describe("recording extensions", () => {
+    it("recognises an extension regardless of case", () => {
+      expect(hasRecordingExtension("/a/take.mp4", "mp4")).toBe(true);
+      expect(hasRecordingExtension("/a/take.MOV", "mov")).toBe(true);
+      expect(hasRecordingExtension("/a/take.mp4", "mov")).toBe(false);
+      expect(hasRecordingExtension("/a/take.mp4.txt", "mp4")).toBe(false);
+      expect(hasRecordingExtension("/a/takemp4", "mp4")).toBe(false);
+    });
+
+    it("accepts only an absolute path with the extension as a recording target", () => {
+      expect(isSafeRecordingPath("/Users/x/Movies/rec.mp4", "mp4")).toBe(true);
+      expect(isSafeRecordingPath("C:\\rec\\a.MOV", "mov")).toBe(true);
+      expect(isSafeRecordingPath("D:/rec/a.mp4", "mp4")).toBe(true);
+      for (const filePath of [
+        "/Users/x/Movies/rec.mov", // another container
+        "relative.mp4",
+        "/Users/x/../../etc/hosts.mp4",
+        "/Users/x/rec.mp4\0",
+        "/Users/x/.zshrc",
+      ]) {
+        expect(isSafeRecordingPath(filePath, "mp4")).toBe(false);
+      }
+    });
+
+    it("keeps a path that already has the extension", () => {
+      expect(withRecordingExtension("/a/take.mp4", "mp4")).toBe("/a/take.mp4");
+      expect(withRecordingExtension("/a/take.MP4", "mp4")).toBe("/a/take.MP4");
+    });
+
+    it("appends the extension or replaces another recording extension", () => {
+      expect(withRecordingExtension("/a/take", "mov")).toBe("/a/take.mov");
+      expect(withRecordingExtension("/a/take.mp4", "mov")).toBe("/a/take.mov");
+      expect(withRecordingExtension("/a/take.MOV", "mp4")).toBe("/a/take.mp4");
+      // Only a recording extension is replaced; anything else is part of the name.
+      expect(withRecordingExtension("/a/take.v2", "mov")).toBe("/a/take.v2.mov");
     });
   });
 });

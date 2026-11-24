@@ -1,7 +1,9 @@
 # Meeting Recording
 
 Records the composited meeting program (the same frames that go to the virtual
-camera) plus a selected microphone into an `.mp4` on the bridge machine.
+camera) plus a selected microphone into a file on the bridge machine: H.264 or
+HEVC in `.mp4`, ProRes 422 LT / 422 / HQ in `.mov` (see
+[Recording format](#recording-format-codec-and-container-adr-0010)).
 
 ## Architecture
 
@@ -9,9 +11,13 @@ camera) plus a selected microphone into an `.mp4` on the bridge machine.
   frame (`recorder.appendVideoFrame`) after rendering, before the FrameBus
   write. The tap is a no-op while no recording is active.
 - Encoder: `apps/bridge/native/meeting-helper/src/recorder/`
-  - macOS: AVFoundation (`meeting_recorder.mm`), H.264 + AAC.
-  - Windows: Media Foundation (`meeting_recorder_mediafoundation.cpp`).
+  - macOS: AVFoundation (`meeting_recorder.mm`), every codec of the recording
+    format.
+  - Windows: Media Foundation (`meeting_recorder_mediafoundation.cpp`), H.264 +
+    AAC only; every other codec is refused.
   - Other platforms: stub (`meeting_recorder_stub.cpp`), recording unsupported.
+  - `MeetingRecorder::start` takes one `RecordingRequest` (file path,
+    microphone, program geometry, codec) on every platform.
 - Control plane: helper JSON-RPC methods `recording.microphones`,
   `recording.start`, `recording.stop`, `recording.status`
   (`src/control/control_server.cpp`), forwarded by
@@ -25,14 +31,31 @@ Allowlisted in `relay-command-allowlist.ts`, policies in
 | Command | Kind | Payload | Result data |
 | --- | --- | --- | --- |
 | `meeting_recording_microphones` | read only | none | `{ microphones: [{ device_id, label, is_default }] }` |
-| `meeting_recording_pick_path` | side effect | `{ default_name? }` | `{ cancelled, file_path? }` |
-| `meeting_recording_start` | side effect | `{ file_path, mic_device_id? }` | `{ recording: {...} }` |
+| `meeting_recording_pick_path` | side effect | `{ default_name?, locale?, codec? }` | `{ cancelled, file_path? }` |
+| `meeting_recording_start` | side effect | `{ file_path, mic_device_id?, codec? }` | `{ recording: {...} }` |
 | `meeting_recording_stop` | side effect | none | `{ recording: {...} }` |
+| `meeting_recording_toggle` | side effect | `{ mic_device_id?, codec? }` | `{ recording: {...} }` |
 | `meeting_recording_status` | read only | none | `{ recording: {...} }` |
 
-`recording` status shape: `{ active, file_path, elapsed_seconds, video_frames,
-dropped_frames, queued_frames, audio_samples_written, audio_samples_dropped,
-last_error }` (snake_case, as produced by the helper). The two
+`codec` is a `MeetingRecordingCodecT` and optional everywhere; without it the
+recording is `h264`. The start schema is strict, so the web app sends `codec`
+only to a bridge that reports `capabilities.meeting.recording`. The extension
+of `file_path` must be the container of the codec (`.mp4` or `.mov`),
+otherwise the payload is invalid. `codec` is validated as a name, not against
+this bridge's list: a name it does not know (a newer web app) is refused with
+`meeting_recording_codec_unsupported` like any codec that is not advertised.
+A client that records with a codec sends the same `codec` to
+`meeting_recording_pick_path` and to `meeting_recording_start`: without it the
+panel enforces `.mp4`, and a ProRes start with that path is an invalid
+payload.
+
+`recording` status shape: `{ active, file_path, codec, container,
+elapsed_seconds, video_frames, dropped_frames, queued_frames,
+audio_samples_written, audio_samples_dropped, disk_space_low, last_error }`
+(snake_case, as produced by the helper). `codec` / `container` name the format
+of the current or last recording and are `null` before the first start.
+`disk_space_low` is `null`, or `{ required_bytes, free_bytes }` after a start
+that was refused with `recording_disk_space_low`. The two
 `audio_samples_*` counters are additive diagnostics (Oct 2026): numbers on
 Windows, `null` on macOS and the stub — see
 [Audio diagnostics](#audio-diagnostics-mute-recordings) below.
@@ -46,7 +69,11 @@ audio counters are volatile for the bridge's status-publish policy
 
 `meeting_recording_pick_path` opens the native macOS save panel on the bridge
 machine via osascript (`meeting-recording-dialog.ts`); the file is written
-locally by the helper, so the location cannot be chosen in the browser. On
+locally by the helper, so the location cannot be chosen in the browser. The
+panel proposes and enforces the extension of the codec's container: a name
+without it gets it appended, a name with the other recording extension gets
+it replaced (`take.mp4` becomes `take.mov` for ProRes). A `codec` the start
+would refuse is refused here already, before the panel opens. On
 non-macOS platforms (no native save panel wired up) it falls back to
 `buildDefaultRecordingPath()` — a timestamped file in the shared default
 recordings folder — instead of returning `null`, which the webapp would
@@ -61,13 +88,33 @@ an explicit `file_path`) writes into the same folder:
 
 | Platform | Folder | Meeting file | PGM file |
 | --- | --- | --- | --- |
-| macOS, Linux | `~/Movies/Broadify` | `Broadify-Meeting-<YYYY-MM-DD_HH-mm-ss>.mp4` | `Broadify-PGM-<stamp>.mp4` |
+| macOS, Linux | `~/Movies/Broadify` | `Broadify-Meeting-<YYYY-MM-DD_HH-mm-ss>.<ext>` | `Broadify-PGM-<stamp>.mp4` |
 | Windows | `~/Videos/Broadify` | same | same |
 
-The folder is created best effort (sync `mkdir -p`) before the path is handed
-to the helper; the recorders do not create directories themselves. The result
-is always an absolute `.mp4` path without parent traversal, so it passes the
-relay boundary's `isSafeRecordingPath` guard.
+`<ext>` is the container of the meeting recording's codec (`mp4` or `mov`); a
+PGM recording is always `.mp4`. The folder is created best effort (sync
+`mkdir -p`) before the path is handed to the helper; the recorders do not
+create directories themselves. The result is always an absolute path with
+that extension and without parent traversal, so it passes the relay
+boundary's `isSafeRecordingPath` guard.
+
+### Error codes of a recording start
+
+`meeting_recording_start` and `meeting_recording_toggle` answer a refused
+start with `success: false` and one of these `errorCode`s (the native
+recorder reports a token as the message of `recording_start_failed`;
+`RECORDING_ERROR_TOKENS` in `meeting-command-handler.ts` promotes it):
+
+| `errorCode` | Meaning | `data` |
+| --- | --- | --- |
+| `meeting_recording_codec_unsupported` | The requested codec is not in `capabilities.meeting.recording.codecs` (refused by the bridge before the helper is asked), or the helper has no hardware encoder for it. | none |
+| `recording_disk_space_low` | The target volume has less free space than the codec needs for five minutes (see [Free disk space](#free-disk-space)). Replaces `disk_full` as the code; the `error` message of this refusal is still the token `disk_full`, because web apps released before this code map only that token and read it from the message too. | `{ required_bytes, free_bytes }` |
+| `microphone_permission_denied`, `microphone_not_found`, `microphone_input_failed`, `microphone_input_rejected`, `writer_create_failed`, `already_recording`, `invalid_arguments` | unchanged | none |
+
+Any other failure keeps `errorCode: "recording_start_failed"` with the
+platform's message. A `codec` that is not a name (empty, not a string) is an
+invalid payload, like any other schema violation; on the helper RPC it is
+refused with the codec token, never recorded as H.264.
 
 ### macOS folder consent (Info.plist)
 
@@ -85,8 +132,9 @@ fails closed when any of them is missing from the packaged bundle, and
 
 ## File lifecycle (macOS)
 
-The writer targets `<final>.mp4.part` and the sidecar is renamed to the final
-path only after `finishWriting` reports Completed (REC-03) — a crash or
+The writer targets `<final>.part` (`take.mp4.part`, `take.mov.part`) and the
+sidecar is renamed to the final path only after `finishWriting` reports
+Completed (REC-03) — a crash or
 finalize failure never leaves a half-written file under the chosen name. The
 writer is built by `recorder_writer_factory.mm` (shared with
 `meeting_recorder_writer_test` so ctest exercises the exact shipped
@@ -194,6 +242,29 @@ waits on the same constant), which must stay below the RPC timeout;
 `scripts/pgm-helper-release-contract.test.cjs` parse the values and fail when
 they drift.
 
+The relay commands that stop a recording sit above that RPC: finalize 15 s <
+`recording.stop` RPC 20 s < bridge-local SLA 30 s < relay timeout 35 s, for
+`meeting_recording_stop` and `meeting_recording_toggle`
+(`relay-command-policy.ts`, the same budget as `pgm_recording_stop`). Until
+Nov 2026 `meeting_recording_stop` was declared in the fast class (12 s relay /
+8 s local). The contract test covers the ordering of these numbers too.
+
+What the bridge policy does and does not do: the bridge never aborts a
+command. It reads only the bridge-local SLA, and only to log
+`command_sla_exceeded` when a command runs longer (`relay-client.ts`); the
+relay timeout in the policy is the budget the bridge declares, not a timeout
+it enforces. The timeouts that actually cut off a stop live in two other
+repositories and have to follow this declaration:
+
+| Where | Table | Needed for `meeting_recording_stop` and `meeting_recording_toggle` |
+| --- | --- | --- |
+| Relay service | `src/command-timeouts.ts` | an entry with at least 20 s execution (like `pgm_recording_stop`, 35 s); without an entry a command is in the fast class with 12 s |
+| Web app | `lib/bridge-command-timeouts.ts` | a client timeout above the relay timeout (the table's pattern is relay timeout + 8 s, i.e. 43 s); without an entry a command gets 22 s |
+
+Until both are in place a finalize that outlasts the shorter of the two still
+shows as a timeout in the web app, although the bridge completes the stop and
+reports the result through the recording status.
+
 - macOS: `finishWritingWithCompletionHandler` signals a semaphore; the control
   thread waits at most `kRecorderFinalizeTimeoutMs`.
 - Windows: `IMFSinkWriter::Finalize()` runs on a detached worker thread that
@@ -242,16 +313,128 @@ shows which case occurs in the field. macOS does not fill the counters (its
 capture delegate does the same before-start drop; adding counters there is a
 separate change).
 
+## Recording format: codec and container (ADR-0010)
+
+The codec is chosen per recording (`codec` in `meeting_recording_start` /
+`meeting_recording_toggle`); size and frame rate always follow the running
+program. The container and the audio codec follow from the codec:
+
+| `codec` | Video | Container | Audio | Platforms |
+| --- | --- | --- | --- | --- |
+| `h264` (default) | H.264 High, `avc1` | `.mp4` | AAC 128 kbit/s | macOS, Windows |
+| `hevc` | HEVC Main 8 bit, `hvc1` sample entry (opens in QuickTime and Apple players) | `.mp4` | AAC 128 kbit/s | macOS |
+| `prores_422_lt` | ProRes 422 LT, 10 bit 4:2:2 | `.mov` | PCM 24 bit | macOS with ProRes hardware |
+| `prores_422` | ProRes 422 | `.mov` | PCM 24 bit | macOS with ProRes hardware |
+| `prores_422_hq` | ProRes 422 HQ | `.mov` | PCM 24 bit | macOS with ProRes hardware |
+
+Audio is mono 48 kHz in every case. Windows writes H.264 only; it never gets
+ProRes (there is no licensed encoder).
+
+One table per side holds this mapping, and nothing else decides an extension:
+
+- Bridge: `MEETING_RECORDING_CODEC_FORMATS` in
+  `services/meeting/meeting-recording-codecs.ts`, read by the path guard of
+  `MeetingRecordingStartSchema`, the default path builder, the save panel and
+  the capability block.
+- Helper: `kRecordingCodecFormats` in
+  `native/meeting-helper/src/recorder/recording_codec.h`, read by
+  `recording.start`, the writer factory and the recording status.
+- `meeting-recording-codecs.test.ts` parses the native table and compares it
+  with the bridge table row by row; `recording_codec_test` (ctest) pins the
+  names on the native side.
+
+### Data rates and file sizes
+
+H.264 and HEVC are bitrate driven, ProRes is quality driven (the encoder takes
+no bitrate; the values are Apple's published target rates, real files of a
+calm picture are smaller). All values from `recorderVideoDataRateBps` in
+`helper_common/recording_encode_policy.h`, video only; audio adds 0.06 GB/h
+(AAC) or 0.5 GB/h (PCM).
+
+| `codec` | 1080p30 | per hour | 1080p25 | per hour |
+| --- | --- | --- | --- | --- |
+| `h264` | 21.8 Mbit/s | 9.8 GB | 18.1 Mbit/s | 8.2 GB |
+| `hevc` | 13.1 Mbit/s | 5.9 GB | 10.9 Mbit/s | 4.9 GB |
+| `prores_422_lt` | 102 Mbit/s | 46 GB | 85 Mbit/s | 38 GB |
+| `prores_422` | 147 Mbit/s | 66 GB | 122 Mbit/s | 55 GB |
+| `prores_422_hq` | 220 Mbit/s | 99 GB | 183 Mbit/s | 83 GB |
+
+- H.264: 0.35 bit/px, clamped to 2-40 Mbit/s (`recorderVideoBitrateBps`,
+  shared with the PGM recording since ADR-0006 and unchanged by the codecs:
+  `recording_encode_policy_test` pins that the H.264 rate by codec equals that
+  function value for value).
+- HEVC: 60 % of the H.264 bitrate (`kRecorderHevcBitrateFactor`). The HEVC
+  verification tests measured about half the bitrate at equal quality, for
+  offline encoders with B-frames and look-ahead; the recorder runs a
+  real-time hardware encoder without frame reordering, so the policy keeps a
+  margin instead of the full 50 %. It inherits the H.264 clamp (no higher
+  resolution cap yet; that comes with 4K).
+- ProRes: Apple's targets at 1920x1080 29.97 fps (102 / 147 / 220 Mbit/s),
+  scaled with pixels and frame rate.
+
+### Free disk space
+
+A start is refused with `recording_disk_space_low` when the target volume has
+less free space than **five minutes** of the codec's expected video data rate
+(`recorderMinFreeDiskBytes`, `kRecorderMinFreeDiskMinutes`), instead of the
+fixed 500 MB before. Five minutes is enough to notice the warning and finish
+a take; the floor is a start check, not a forecast for the whole recording.
+
+| `codec` | Required at 1080p30 | at 1080p25 |
+| --- | --- | --- |
+| `h264` | 0.82 GB | 0.68 GB |
+| `hevc` | 0.49 GB | 0.41 GB |
+| `prores_422_lt` | 3.8 GB | 3.2 GB |
+| `prores_422` | 5.5 GB | 4.6 GB |
+| `prores_422_hq` | 8.3 GB | 6.9 GB |
+
+The refusal carries `data { required_bytes, free_bytes }`. The helper reports
+the numbers in `recording.disk_space_low`; the bridge reads them from
+`recording.status` after the refused start (best effort: if that read fails,
+the `errorCode` comes without `data`). A disk that fills up during a
+recording still surfaces through `recording.last_error` (REC-02).
+
+### Hardware encoders only
+
+A recording never runs on a software encoder (ADR-0010, the doctrine of
+ADR-0002/0006/0009). On macOS two things hold that:
+
+1. `makeRecorderWriter` asks the VideoToolbox encoder list (the same
+   enumeration as `--probe-recording`) and refuses a codec without a hardware
+   encoder with `meeting_recording_codec_unsupported` before a file exists.
+2. Every video input carries
+   `kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder` in
+   `AVVideoEncoderSpecificationKey`. AVAssetWriter evaluates it in
+   `startWriting`: measured on an M1 Pro (macOS 26), a writer whose
+   specification additionally forbids hardware fails there with
+   `AVFoundationErrorDomain -11834`, underlying `-12908`
+   (`kVTCouldNotFindVideoEncoderErr`), for H.264, HEVC and all three ProRes
+   flavours, instead of falling back. `recorderStartWritingError` maps that
+   to the same token. `meeting_recorder_writer_test` repeats the measurement
+   on every run.
+
+This holds for the default as well: a start without `codec` (older web app,
+REC key) is an H.264 recording and needs the hardware H.264 encoder. On a Mac
+without one (in practice a virtual machine) it is refused with
+`meeting_recording_codec_unsupported`, where the writer before ADR-0010 would
+have encoded in software. The web app therefore maps that code for every
+start, not only for one that named a codec.
+
+Limit of that proof: AVAssetWriter does not say which encoder it used, so the
+test shows that the requirement is enforced, not the encoder's name. On a
+machine without a hardware encoder for a codec (hosted CI runners) the test
+verifies the refusal and skips the cases that need a writer.
+
+Windows keeps `MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS` for its H.264 writer
+and does not select its encoder explicitly yet (package A3).
+
 ## Encoding
 
-Meeting recordings use H.264 High Profile plus AAC audio. Video bitrate is set
-from a shared native policy at 0.35 bit/px and clamped to 2-40 Mbit/s
-(`recorderVideoBitrateBps` / `recorderKeyframeInterval` in
-`apps/bridge/native/helper-common/include/helper_common/recording_encode_policy.h`,
-shared with the PGM recording since ADR-0006): 1080p30
-lands at about 21.8 Mbit/s, which is roughly 10 GB/h including audio and
-container overhead. GOP/keyframes are targeted at two seconds (`fps * 2`),
-frame reordering is disabled, and macOS requests CABAC.
+H.264 and HEVC target a two-second GOP (`fps * 2`,
+`recorderKeyframeInterval`) with frame reordering disabled; macOS requests
+CABAC for H.264 and the Main profile for HEVC. ProRes is all-intra and takes
+none of these. The rates are in
+[Data rates and file sizes](#data-rates-and-file-sizes).
 
 Video timestamps are written on a constant-frame-rate grid relative to the
 writer session start. If the program frame source arrives late, the recorder
@@ -262,8 +445,9 @@ written, so unfilled slots are retried on the next program frame. Set
 `BROADIFY_MEETING_RECORDER_CFR=0` to restore the legacy host-clock video PTS
 path for diagnosis.
 
-Both platform writers tag video as BT.709. macOS sets AVFoundation color
-properties on the video settings and pixel buffers; Windows sets BT.709
+Both platform writers tag video as BT.709, for every codec. macOS sets
+AVFoundation color properties on the video settings and pixel buffers; Windows
+sets BT.709
 matrix, transfer function, primaries and limited-range output media type while
 keeping the RGB input range full-range.
 
@@ -284,9 +468,27 @@ recorder can write on this machine: `codecs[]` with `codec`, `container`,
 `max_height` and `max_fps`, plus `upload_copy`. A codec is listed only if both
 hold:
 
-1. the recorder implements it (`MEETING_RECORDER_SUPPORTED_CODECS` in
-   `services/meeting/meeting-capabilities.ts`; today only `h264` in `mp4`), and
+1. the platform's recorder implements it (`MEETING_RECORDER_SUPPORTED_CODECS`
+   in `services/meeting/meeting-capabilities.ts`, spelled out per platform:
+   H.264, HEVC and ProRes 422 LT / 422 / HQ on macOS, `h264` on Windows, none
+   elsewhere; a codec added to the contract is advertised nowhere until it is
+   added to a platform there), and
 2. the machine has a **hardware** encoder for it.
+
+So a Mac without ProRes hardware reports `h264` and `hevc` only, and Windows
+reports `h264` even with an HEVC encoder. `container` comes from the codec
+table; `max_height` / `max_fps` are those of `program_formats` for every codec
+(1080 and 30 today).
+
+`meeting_recording_pick_path`, `meeting_recording_start` and
+`meeting_recording_toggle` check a requested `codec` against this list and
+refuse anything else - a name this bridge does not know included - with
+`meeting_recording_codec_unsupported`, before the panel opens or the helper
+is asked. While the
+capability is unknown (probe not finished or failed) no codec may be
+requested. A start **without** `codec` is not gated: it is the H.264
+recording every older client gets, and the helper holds it to a hardware
+encoder itself.
 
 The hardware encoders come from the helper's probe mode,
 `meeting-helper --probe-recording`
@@ -317,23 +519,28 @@ While there is no result the `recording` field is omitted and each failed run
 logs one warning with the reason; the recorder itself is unaffected. Software encoders are never listed: a codec
 without hardware support is not offered rather than encoded on the CPU.
 
-The recorder does not consume these capabilities yet: `meeting_recording_start`
-still writes H.264 into `.mp4` exactly as described above.
-
 Quick probe after recording:
 
 ```bash
-ffprobe -hide_banner -select_streams v:0 -show_entries stream=codec_name,profile,bit_rate,avg_frame_rate,r_frame_rate,color_space,color_transfer,color_primaries -of default=noprint_wrappers=1 recording.mp4
+ffprobe -hide_banner -show_entries stream=codec_name,profile,codec_tag_string,bit_rate,avg_frame_rate,r_frame_rate,color_space,color_transfer,color_primaries,bits_per_sample:format_tags=major_brand -of default=noprint_wrappers=1 recording.mov
 ```
+
+Expected: `h264` High `avc1` / `hevc` Main `hvc1` with `major_brand=mp42`;
+`prores` LT / Standard / HQ (`apcs` / `apcn` / `apch`, `yuv422p10le`) with
+`pcm_s24le` audio and `major_brand=qt`. `meeting_recorder_writer_test` writes
+a 1080p25 clip per codec through the production writer and worker and reads
+these properties back; `BROADIFY_RECORDER_TEST_KEEP=1` keeps the clips for a
+manual look.
 
 ## WebApp
 
 `MeetingRecordingControl` (meeting builder, below the preview panel) drives the
 flow through `stores/meeting-engine-store.ts`: pick path -> start -> poll
 `meeting_recording_status` every second while active -> stop. Client timeouts
-live in `lib/bridge-command-timeouts.ts` (pick_path 135 s for the user-facing
-dialog, start 40 s) and must stay above the bridge policy timeouts (130 s /
-35 s).
+live in `lib/bridge-command-timeouts.ts`; the rule is that each is above the
+relay timeout of its command in the bridge policy (130 s for pick_path, 35 s
+for start, stop and toggle), see
+[Finalize timeout](#finalize-timeout-both-platforms) for stop and toggle.
 
 ## Stream Deck
 
@@ -341,7 +548,16 @@ dialog, start 40 s) and must stay above the bridge policy timeouts (130 s /
 no save dialog) exists for the Stream Deck REC key and shares the same helper
 recorder. The file goes to the shared default recordings folder described
 above (`~/Movies/Broadify` on macOS, `~/Videos/Broadify` on Windows) as
-`Broadify-Meeting-<stamp>.mp4` — the same place and naming as the save-panel
-fallback. Before Oct 2026 the toggle wrote `~/Videos/Broadify Recordings/
+`Broadify-Meeting-<stamp>.<ext>` — the same place and naming as the save-panel
+fallback.
+
+The REC key as the web app configures it today carries no codec, so its
+recording is **H.264 in `.mp4`**, whatever format the web app has selected.
+That is a property of the key configuration, not of the bridge: the Stream
+Deck manager hands a binding's payload to the command, and a payload with
+`codec` (and `mic_device_id`) is honoured and checked against the
+capabilities like a start. The payload is read only when the toggle starts a
+recording: on an active recording the toggle stops it whatever the binding
+carries. Before Oct 2026 the toggle wrote `~/Videos/Broadify Recordings/
 meeting-<iso-stamp>.mp4` on every platform, i.e. a different folder than the
 other triggers and a Windows-style path on macOS.

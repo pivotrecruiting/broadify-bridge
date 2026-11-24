@@ -4,6 +4,8 @@ import { z } from "zod";
 
 import type { MeetingRecordingCodecT } from "@broadify/protocol";
 
+import { MEETING_RECORDING_CODECS } from "./meeting-recording-codecs.js";
+
 /** Helper mode that prints the hardware video encoders as one JSON line. */
 export const MEETING_RECORDING_PROBE_ARG = "--probe-recording";
 /**
@@ -21,14 +23,6 @@ const MEETING_RECORDING_PROBE_MAX_OUTPUT_BYTES = 64 * 1024;
 export const MEETING_RECORDING_PROBE_MAX_ATTEMPTS = 3;
 /** `error.code` of an `execFile` child that printed more than `maxBuffer`. */
 const EXEC_MAX_BUFFER_ERROR_CODE = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
-
-const MEETING_RECORDING_CODECS = [
-  "h264",
-  "hevc",
-  "prores_422_lt",
-  "prores_422",
-  "prores_422_hq",
-] as const satisfies readonly MeetingRecordingCodecT[];
 
 /**
  * The `recording_probe` line of `meeting-helper --probe-recording`
