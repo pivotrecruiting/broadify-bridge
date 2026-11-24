@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseGuardedUrl } from "./services/meeting/media-download.js";
 
 /**
  * Bridge configuration schema
@@ -16,6 +17,16 @@ const ConfigSchema = z.object({
   userDataDir: z.string().min(1).optional(),
   /** Web-app base URL for post-production uploads (session logs); unset = keep logs local only. */
   postproApiUrl: z.string().url().optional(),
+  /**
+   * Platform (web app) base URL the recording upload talks to (ADR-0011);
+   * see `resolvePlatformApiUrl`. Unset = no recording upload on this bridge.
+   */
+  platformApiUrl: z.string().url().optional(),
+  /**
+   * True when `platformApiUrl` came from the release-managed key: requests to
+   * it then go through the URL guard (https, port 443, public address).
+   */
+  platformApiUrlGuarded: z.boolean().optional(),
 });
 
 export type BridgeConfigT = z.infer<typeof ConfigSchema>;
@@ -48,6 +59,48 @@ export function normalizePostproApiUrl(raw: string | undefined): string | undefi
 }
 
 /**
+ * Release-managed key that carries the web app address of the release
+ * channel (written into the packaged `.env`, wins over `userData/.env`; see
+ * `RELEASE_MANAGED_ENV_KEYS` in the desktop app's env loader).
+ */
+export const RELEASE_PLATFORM_URL_ENV_KEY = "PRODUCTION_STUDIO_CONTROL_WEBAPP_URL";
+
+export type PlatformApiUrlT = { url: string; guarded: boolean };
+
+/**
+ * Address of the platform for the recording upload (ADR-0011). Two sources
+ * and no other: the operator override (`--postpro-api-url` /
+ * `POSTPRO_API_URL`, already normalized; may be http or loopback for a local
+ * web app) and, without it, the release-managed web app address of the
+ * channel. The release value must pass the URL guard and is dropped with a
+ * fixed warning otherwise. Never taken from a relay command.
+ *
+ * @param postproApiUrl Normalized operator override, if any.
+ * @param releaseUrl Raw value of the release-managed key.
+ * @returns The address and whether requests to it must be guarded.
+ */
+export function resolvePlatformApiUrl(
+  postproApiUrl: string | undefined,
+  releaseUrl: string | undefined = process.env[RELEASE_PLATFORM_URL_ENV_KEY],
+): PlatformApiUrlT | undefined {
+  if (postproApiUrl) {
+    return { url: postproApiUrl, guarded: false };
+  }
+  const value = releaseUrl?.trim();
+  if (!value) {
+    return undefined;
+  }
+  try {
+    parseGuardedUrl(value);
+    return { url: value, guarded: true };
+  } catch {
+    // Fixed text: never the value.
+    console.warn("[Config] Ignoring the release web app URL for the recording upload (expected a public https URL)");
+    return undefined;
+  }
+}
+
+/**
  * Parse CLI arguments and return validated configuration
  */
 export function parseConfig(args: string[]): BridgeConfigT {
@@ -63,6 +116,8 @@ export function parseConfig(args: string[]): BridgeConfigT {
     pairingExpiresAt?: number;
     userDataDir?: string;
     postproApiUrl?: string;
+    platformApiUrl?: string;
+    platformApiUrlGuarded?: boolean;
   }> = {
     host: "127.0.0.1",
     port: 8787,
@@ -155,6 +210,9 @@ export function parseConfig(args: string[]): BridgeConfigT {
   // CLI first; a malformed CLI value falls back to the environment.
   config.postproApiUrl =
     normalizePostproApiUrl(config.postproApiUrl) ?? normalizePostproApiUrl(process.env.POSTPRO_API_URL);
+  const platformApi = resolvePlatformApiUrl(config.postproApiUrl);
+  config.platformApiUrl = platformApi?.url;
+  config.platformApiUrlGuarded = platformApi?.guarded;
 
   if (!config.relayEnabled) {
     config.bridgeId = undefined;

@@ -1,4 +1,4 @@
-import { normalizePostproApiUrl, parseConfig } from "./config.js";
+import { RELEASE_PLATFORM_URL_ENV_KEY, normalizePostproApiUrl, parseConfig, resolvePlatformApiUrl } from "./config.js";
 
 describe("parseConfig", () => {
   const originalEnv: Record<string, string | undefined> = {};
@@ -194,5 +194,69 @@ describe("post-production URL (session log opt-in)", () => {
   it("falls back to the environment when the CLI value is malformed", () => {
     process.env.POSTPRO_API_URL = "https://env.example";
     expect(parseConfig(["--postpro-api-url", "nope"]).postproApiUrl).toBe("https://env.example");
+  });
+});
+
+describe("platform URL of the recording upload (ADR-0011)", () => {
+  const originalOverride = process.env.POSTPRO_API_URL;
+  const originalRelease = process.env[RELEASE_PLATFORM_URL_ENV_KEY];
+  let warn: jest.SpyInstance;
+
+  const restore = (key: string, value: string | undefined) => {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  };
+
+  beforeEach(() => {
+    delete process.env.POSTPRO_API_URL;
+    delete process.env[RELEASE_PLATFORM_URL_ENV_KEY];
+    warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+    restore("POSTPRO_API_URL", originalOverride);
+    restore(RELEASE_PLATFORM_URL_ENV_KEY, originalRelease);
+  });
+
+  it("is unset without either key", () => {
+    const config = parseConfig([]);
+    expect(config.platformApiUrl).toBeUndefined();
+    expect(config.platformApiUrlGuarded).toBeUndefined();
+  });
+
+  it("uses the release-managed web app URL, guarded, and leaves the session-log switch off", () => {
+    process.env[RELEASE_PLATFORM_URL_ENV_KEY] = " https://app.example ";
+    const config = parseConfig([]);
+    expect(config.platformApiUrl).toBe("https://app.example");
+    expect(config.platformApiUrlGuarded).toBe(true);
+    expect(config.postproApiUrl).toBeUndefined();
+  });
+
+  it("prefers the operator override, unguarded (http and loopback allowed)", () => {
+    process.env[RELEASE_PLATFORM_URL_ENV_KEY] = "https://app.example";
+    process.env.POSTPRO_API_URL = "http://localhost:3021";
+    const config = parseConfig([]);
+    expect(config.platformApiUrl).toBe("http://localhost:3021");
+    expect(config.platformApiUrlGuarded).toBe(false);
+  });
+
+  it.each(["http://app.example", "https://127.0.0.1", "https://app.example:8443", "https://user:secret@app.example", "nope"])(
+    "drops the release value %p (URL guard) with a warning that never contains it",
+    (value) => {
+      expect(resolvePlatformApiUrl(undefined, value)).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).not.toContain(value);
+    },
+  );
+
+  it("a bad release value does not stop the bridge from starting", () => {
+    process.env[RELEASE_PLATFORM_URL_ENV_KEY] = "http://localhost:3000";
+    const config = parseConfig([]);
+    expect(config.platformApiUrl).toBeUndefined();
+    expect(config.port).toBe(8787);
   });
 });

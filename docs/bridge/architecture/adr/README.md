@@ -13,6 +13,7 @@ bekommt die alte den Status „abgelöst durch ADR-NNNN“.
 | [0005](0005-live-stream-bibliothek-fuer-pgm-und-meeting.md) | Gemeinsame `live_stream`-Bibliothek für PGM- und Meeting-Helper | akzeptiert |
 | [0006](0006-pgm-aufnahme-eigener-encoder.md) | PGM-Aufnahme mit eigenem H.264-High-Hardware-Encoder | akzeptiert |
 | [0007](0007-meeting-programm-im-hochformat.md) | Meeting-Programm im Hochformat (9:16) | akzeptiert; Bildraten-Vergleich abgelöst durch ADR-0010 |
-| [0008](0008-session-event-log-nur-auf-opt-in.md) | Session-Event-Log nur auf Opt-in | akzeptiert |
+| [0008](0008-session-event-log-nur-auf-opt-in.md) | Session-Event-Log nur auf Opt-in | akzeptiert; für den Aufnahme-Upload abgelöst durch ADR-0011 |
 | [0009](0009-live-pgm-windows-media-foundation.md) | Live-PGM unter Windows: Media-Foundation-Hardware-Encoder, OpenSSL statisch, WASAPI | akzeptiert (Umsetzung hinter Schaltern) |
 | [0010](0010-meeting-aufnahmeformat-und-faehigkeiten.md) | Meeting: Aufnahmeformat und Fähigkeiten | akzeptiert (Fähigkeitsmodell und macOS-Codecs umgesetzt; Windows-HEVC, 4K, 50/60 fps folgen) |
+| [0011](0011-aufnahme-upload-zur-plattform.md) | Aufnahme-Upload zur Plattform | akzeptiert |

@@ -123,6 +123,12 @@ jest.mock("../conference/conference-display-output.js", () => ({
   },
 }));
 
+const mockConfigureRecordingUpload = jest.fn();
+jest.mock("../postpro/recording-upload-service.js", () => ({
+  configureRecordingUpload: (...args: unknown[]) =>
+    mockConfigureRecordingUpload(...args),
+}));
+
 const mockPickRecordingSavePath = jest.fn();
 jest.mock("./meeting-recording-dialog.js", () => ({
   pickRecordingSavePath: (...args: unknown[]) =>
@@ -2038,6 +2044,44 @@ describe("meeting-command-handler", () => {
 
       expect(result.success).toBe(true);
       expect(mockClient.recordingStatus).toHaveBeenCalled();
+    });
+
+    describe("meeting_recording_upload_configure", () => {
+      const snapshot = { enabled: true, available: true, tasks: [], last_skipped: null };
+
+      beforeEach(() => {
+        mockConfigureRecordingUpload.mockReset().mockResolvedValue(snapshot);
+      });
+
+      it("stores the hint and returns the upload snapshot, without a running engine", async () => {
+        mockGetClient.mockReturnValue(null);
+        mockIsRunning.mockReturnValue(false);
+
+        const result = await handleMeetingCommand("meeting_recording_upload_configure", { enabled: true });
+
+        expect(result).toEqual({ success: true, data: { upload: snapshot } });
+        expect(mockConfigureRecordingUpload).toHaveBeenCalledWith(true);
+      });
+
+      it("passes false on as well", async () => {
+        await handleMeetingCommand("meeting_recording_upload_configure", { enabled: false });
+        expect(mockConfigureRecordingUpload).toHaveBeenCalledWith(false);
+      });
+
+      it.each([
+        ["no payload", undefined],
+        ["a URL next to the flag", { enabled: true, url: "https://evil.example" }],
+        ["a path next to the flag", { enabled: true, file_path: "/tmp/x.mp4" }],
+        ["a string flag", { enabled: "true" }],
+      ])("refuses %s and stores nothing", async (_name, payload) => {
+        await expect(
+          handleMeetingCommand(
+            "meeting_recording_upload_configure",
+            payload as Record<string, unknown> | undefined,
+          ),
+        ).rejects.toThrow("Invalid payload for meeting_recording_upload_configure");
+        expect(mockConfigureRecordingUpload).not.toHaveBeenCalled();
+      });
     });
 
     it("REC toggle starts into the shared default recordings folder", async () => {

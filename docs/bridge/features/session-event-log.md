@@ -7,6 +7,10 @@ per Bildheuristik.
 **Standardmäßig aus.** Entscheidung und Begründung: [ADR-0008](../architecture/adr/0008-session-event-log-nur-auf-opt-in.md).
 Modul und Vertrag: `apps/bridge/src/services/session-log/` (README dort).
 
+> Abgrenzung: der Upload fertiger **Aufnahmen** zur Plattform ist ein eigenes Feature mit eigener Regel (ADR-0011,
+> [meeting-recording.md](./meeting-recording.md), Abschnitt Upload to the platform). Er hängt nicht an diesem
+> Schalter; umgekehrt schaltet er das Session-Event-Log nicht ein.
+
 ## Einschalten
 
 Es gibt genau einen Schalter: die Basis-URL der Web-App.

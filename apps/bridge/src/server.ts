@@ -23,6 +23,10 @@ import {
   setBridgeContext,
 } from "./services/bridge-context.js";
 import { initializeSessionLog } from "./services/session-log/session-log-service.js";
+import {
+  initializeRecordingUpload,
+  shutdownRecordingUpload,
+} from "./services/postpro/recording-upload-service.js";
 import { graphicsManager } from "./services/graphics/graphics-manager.js";
 import { graphicsUsageRecorder } from "./services/intelligence/usage-event-recorder.js";
 import { ciSessionCoordinator } from "./services/intelligence/ci-session-coordinator.js";
@@ -108,6 +112,8 @@ export async function createServer(config: BridgeConfigT) {
     serverMode: config.mode,
     bridgeId: config.bridgeId,
     postproApiUrl: config.postproApiUrl,
+    platformApiUrl: config.platformApiUrl,
+    platformApiUrlGuarded: config.platformApiUrlGuarded,
     bridgeName: config.bridgeName,
     pairingCode: config.pairingCode,
     pairingExpiresAt: config.pairingExpiresAt,
@@ -175,7 +181,14 @@ export async function createServer(config: BridgeConfigT) {
     publishBridgeEvent: relayClient
       ? (payload) => relayClient?.sendBridgeEvent(payload)
       : undefined,
+    isRelayConnected: relayClient ? () => relayClient?.isConnected() === true : undefined,
   });
+
+  // Recording upload (ADR-0011): after the relay publisher is in the context
+  // so its status events reach the web app. Settles recordings left over from
+  // the last run and arms the queue; sends nothing until the web app pushed
+  // the opt-in. No-op without a platform address or bridge id.
+  await initializeRecordingUpload();
 
   // CI upload queue: load persisted tasks, then wire the relay transport so
   // finished calls drain their usage uploads (idempotent broker sequence).
@@ -411,6 +424,15 @@ export async function startServer(
         server.log.warn(
           `[Intelligence] CI coordinator shutdown failed: ${message}`
         );
+      }
+
+      // After the meeting shutdown: its final status enqueues a recording
+      // that was finalized on quit. The upload itself resumes at the next start.
+      try {
+        await withTimeout("recording upload shutdown", shutdownRecordingUpload(), 2000);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        server.log.warn(`[RecordingUpload] Shutdown failed: ${message}`);
       }
 
       await withTimeout("server close", server.close(), 2000);

@@ -1,6 +1,7 @@
 # ADR-0008: Session-Event-Log nur auf Opt-in
 
-- Status: akzeptiert
+- Status: akzeptiert; für den Aufnahme-Upload abgelöst durch ADR-0011 (die Plattform-Adresse darf dafür aus der
+  Release-Konfiguration kommen; für das Session-Event-Log gilt alles hier unverändert)
 - Datum: 2026-11-19
 
 ## Kontext

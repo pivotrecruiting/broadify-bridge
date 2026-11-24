@@ -137,6 +137,9 @@ const RELAY_COMMAND_POLICY: Record<RelayCommand, RelayCommandPolicyT> = {
   meeting_recording_stop: sideEffect("meeting_recording_stop", "helper_start", 35_000, 30_000, "meeting.recording", ["meeting.recording"], "after_state_check"),
   meeting_recording_toggle: sideEffect("meeting_recording_toggle", "helper_start", 35_000, 30_000, "meeting.recording", ["meeting.recording"], "after_state_check"),
   meeting_recording_status: readOnly("meeting_recording_status", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.recording"]),
+  // Stores the opt-in hint of the recording upload (ADR-0011) and returns the
+  // upload snapshot; idempotent, so a replay after a reconnect is harmless.
+  meeting_recording_upload_configure: sideEffect("meeting_recording_upload_configure", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.recording_upload", ["meeting.recording_upload"], "after_state_check"),
   meeting_keyer_get: readOnly("meeting_keyer_get", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, ["meeting.keyer"]),
   meeting_keyer_configure: sideEffect("meeting_keyer_configure", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.keyer", ["meeting.keyer"]),
   meeting_call_control: sideEffect("meeting_call_control", "fast", FAST_RELAY_TIMEOUT_MS, FAST_BRIDGE_LOCAL_SLA_MS, "meeting.call", ["meeting.call"]),

@@ -281,7 +281,28 @@ describe("command-router", () => {
               })),
               upload_copy: false,
             },
+            // No platform address in this test's bridge context.
+            recording_upload: false,
           },
+        }),
+      });
+    });
+
+    it("get_status advertises the recording upload once the bridge has a platform address and a bridge id", async () => {
+      const { getBridgeContext } = require("./bridge-context.js");
+      getBridgeContext.mockReturnValue({
+        ...defaultBridgeContext,
+        bridgeId: "11111111-1111-4111-8111-111111111111",
+        platformApiUrl: "https://app.example",
+        platformApiUrlGuarded: true,
+      });
+      const result = await commandRouter.handleCommand("get_status", {});
+      expect(result.data).toMatchObject({
+        capabilities: expect.objectContaining({
+          meeting: expect.objectContaining({
+            recording_upload: true,
+            recording: expect.objectContaining({ upload_copy: false }),
+          }),
         }),
       });
     });

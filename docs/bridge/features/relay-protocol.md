@@ -195,6 +195,9 @@ nicht abdeckt, wird mit `meeting_recording_codec_unsupported` und
 `data { codec, reason }` abgelehnt – die Aufnahme weicht nie auf einen anderen
 Codec aus. Alle drei Felder:
 `docs/bridge/features/meeting-status-contract.md`, Entscheidung: ADR-0010.
+`recording_upload` (optional, ADR-0011) – die Bridge kann fertige
+H.264/HEVC-Aufnahmen zur Plattform hochladen; nur dann sendet die Web-App
+`meeting_recording_upload_configure` (Payload strikt `{ enabled }`).
 
 #### mode_activate
 Die Web-App meldet den gewählten Modus; die Bridge stellt Studio-Verbindungen

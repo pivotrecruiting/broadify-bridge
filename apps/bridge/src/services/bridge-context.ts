@@ -24,9 +24,15 @@ export type BridgeContextT = {
   bridgeName?: string;
   /** Post-production web-app base URL (session-log uploads); undefined turns the session log off (ADR-0008). */
   postproApiUrl?: string;
+  /** Platform base URL of the recording upload (ADR-0011); undefined = recording upload unavailable. */
+  platformApiUrl?: string;
+  /** `platformApiUrl` came from the release-managed key: requests to it are URL-guarded. */
+  platformApiUrlGuarded?: boolean;
   pairingCode?: string;
   pairingExpiresAt?: number;
   publishBridgeEvent?: (payload: BridgeEventPayloadT) => void;
+  /** Whether a published event can reach the relay right now; set together with `publishBridgeEvent`. */
+  isRelayConnected?: () => boolean;
 };
 
 let bridgeContext: BridgeContextT | null = null;

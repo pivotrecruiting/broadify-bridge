@@ -52,6 +52,7 @@ import {
 import { graphicsUsageRecorder } from "../intelligence/usage-event-recorder.js";
 import { diffMeetingSummary, summarizeMeetingStatus, type MeetingSessionSummaryT } from "../session-log/meeting-session-events.js";
 import { isSessionLogEnabled, recordSwitcherEvent } from "../session-log/session-log-service.js";
+import { noteMeetingStatusForRecordingUpload } from "../postpro/recording-upload-service.js";
 import { ciSessionCoordinator } from "../intelligence/ci-session-coordinator.js";
 
 const HELPER_PATH_ENV = "BRIDGE_MEETING_HELPER_PATH";
@@ -1810,6 +1811,9 @@ export class MeetingHelperManager {
   private async publishStatus(reason: string, force: boolean): Promise<void> {
     const status = await this.getFullStatus();
     this.recordSessionEvents(status as unknown as Record<string, unknown>);
+    // Recording upload (ADR-0011): a finished recording is enqueued from the
+    // same snapshot; a no-op on a bridge that cannot upload.
+    noteMeetingStatusForRecordingUpload(status as unknown as Record<string, unknown>);
     // Single writer for the deck's REC mirror: derived from the same snapshot
     // every other consumer sees, so the key can no longer diverge from the
     // real recorder state (idempotent - only re-renders on change).

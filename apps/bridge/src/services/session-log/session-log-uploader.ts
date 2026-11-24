@@ -1,20 +1,19 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { POSTPRO_BRIDGE_ASSERTION_HEADER, buildBridgeAssertion, type BridgeSigningIdentityT } from "./bridge-assertion.js";
+import type { BridgeSigningIdentityT } from "../postpro/bridge-assertion.js";
+import { signedPlatformPost, type PlatformFetchT } from "../postpro/platform-client.js";
 import { SessionHeaderSchema } from "./session-log-types.js";
 
 const MARKER_SUFFIX = ".uploaded.json";
 const MAX_ATTEMPTS = 5;
 const RESCAN_INTERVAL_MS = 10 * 60 * 1000;
 
-type FetchLikeT = (input: string, init?: { method?: string; headers?: Record<string, string>; body?: string | Buffer }) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
-
 export type SessionLogUploaderOptionsT = {
   /** Web-app base URL, e.g. https://<preview>.vercel.app */
   apiBaseUrl: string;
   dir: string;
   getIdentity: () => Promise<BridgeSigningIdentityT>;
-  fetchFn?: FetchLikeT;
+  fetchFn?: PlatformFetchT;
   logger?: { info: (m: string) => void; warn: (m: string) => void };
   /** Session currently being written; never uploaded by a scan. */
   isSessionOpen?: (sessionId: string) => boolean;
@@ -30,7 +29,7 @@ export type SessionLogUploaderOptionsT = {
  * startup scan (bounded attempts, never throws into the caller).
  */
 export class SessionLogUploader {
-  private readonly fetchFn: FetchLikeT;
+  private readonly fetchFn: PlatformFetchT;
   private readonly attempts = new Map<string, number>();
   private chain: Promise<void> = Promise.resolve();
   private rescanTimer: NodeJS.Timeout | null = null;
@@ -137,24 +136,7 @@ export class SessionLogUploader {
     this.options.logger?.info(`[SessionLog] uploaded ${sessionId} (${eventCount} events)`);
   }
 
-  private async signedPost<T>(route: string, payload: Record<string, unknown>): Promise<T> {
-    const body = JSON.stringify(payload);
-    const identity = await this.options.getIdentity();
-    const response = await this.fetchFn(`${this.options.apiBaseUrl.replace(/\/$/, "")}${route}`, {
-      method: "POST",
-      headers: { "content-type": "application/json", [POSTPRO_BRIDGE_ASSERTION_HEADER]: buildBridgeAssertion(body, identity) },
-      body,
-    });
-    const text = await response.text();
-    let parsed: { success?: boolean; data?: T; error?: string } | null = null;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = null;
-    }
-    if (!response.ok || !parsed?.success) {
-      throw new Error(`${route}: HTTP ${response.status}: ${parsed?.error ?? text.slice(0, 200)}`);
-    }
-    return parsed.data as T;
+  private signedPost<T>(route: string, payload: Record<string, unknown>): Promise<T> {
+    return signedPlatformPost<T>({ baseUrl: this.options.apiBaseUrl, route, payload, getIdentity: this.options.getIdentity, fetchFn: this.fetchFn });
   }
 }

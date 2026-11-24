@@ -396,8 +396,9 @@ nicht; die Web-App behandelt ein fehlendes Feld als "nicht unterstuetzt".
       { "codec": "hevc", "container": "mp4", "max_height": 1080, "max_fps": 60 },
       { "codec": "prores_422", "container": "mov", "max_height": 1080, "max_fps": 60 }
     ],
-    "upload_copy": false // boolean, Bridge kann eine Kopie der Aufnahme hochladen
-  }
+    "upload_copy": false // boolean, reserviert fuer die Upload-Kopie eines ProRes-Masters; heute immer false
+  },
+  "recording_upload": true // boolean, optional, seit Nov 2026 (ADR-0011); Bridge kann fertige H.264/HEVC-Aufnahmen zur Plattform hochladen
 }
 ```
 
@@ -770,6 +771,106 @@ faehrt ihn zweimal, mit Metal (GPU-Plan) und als
 laufen beide ueber den CPU-Pfad. Der D3D11-Pfad (Windows) teilt denselben
 GPU-Plan, hat aber keinen eigenen Render-Test. Der Klicktest mit neu gebautem
 Helper steht in der WebApp-Doku (Punkt 28).
+
+## Aufnahme-Upload (ADR-0011)
+
+Fertige H.264- und HEVC-Aufnahmen laedt die Bridge nach dem Stopp im
+Hintergrund zur Plattform hoch (Ablauf, Warteschlange, Fehlercodes:
+[meeting-recording.md](./meeting-recording.md), Abschnitt Upload to the
+platform). Der Upload laeuft auch weiter, wenn der Helper gestoppt ist und
+kein `meeting_status` mehr kommt; sein Zustand steht deshalb **nicht** in
+`MeetingStatusT`, sondern in einem eigenen Event und im Ergebnis des
+Konfigurationsbefehls.
+
+### Faehigkeit
+
+`capabilities.meeting.recording_upload` (`get_status`): `true`, wenn die
+Bridge hochladen kann (Uploader vorhanden, Plattform-Adresse konfiguriert,
+Bridge-ID und damit Signier-Identitaet vorhanden). Fehlt das Feld (aeltere
+Bridge) oder ist es `false`, sendet die Web-App
+`meeting_recording_upload_configure` nicht und zeigt den Schalter deaktiviert.
+`recording.upload_copy` ist ein anderes Feld und bleibt `false`.
+
+### Befehl `meeting_recording_upload_configure`
+
+Payload strikt `{ "enabled": boolean }`; jeder weitere Schluessel wird
+abgelehnt (`Invalid payload for meeting_recording_upload_configure`). Der
+Befehl kann weder URL noch Pfad tragen; die Plattform-Adresse kennt die Bridge
+nur aus ihrer eigenen Konfiguration. Idempotent, Policy `fast` (12 s Relay /
+8 s lokal), braucht keinen laufenden Helper.
+
+- `enabled` ist ein Hinweis, keine Berechtigung: die Plattform entscheidet bei
+  jedem Upload-Beginn (Entitlement, Einwilligung, Monatsgrenzen). Solange der
+  Hinweis `false` ist (Standard, auch nach einer Neuinstallation), reiht die
+  Bridge nichts ein und spricht die Plattform nicht an.
+- Die Web-App sendet den Befehl bei jedem Bridge-Connect und bei jeder
+  Aenderung der Einstellung oder des Entitlements, **auch mit `false`**. Die
+  Bridge speichert den Wert (`<userData>/recording-upload/settings.json`).
+- `false` stoppt neues Einreihen; bereits eingereihte Uploads laufen auf der
+  Bridge weiter. Ob sie fertig werden, entscheidet die Plattform bei ihrem
+  naechsten Upload-Beginn (`upload_not_enabled` beendet die Aufgabe als
+  `cancelled`).
+- Ergebnis: `{ "upload": MeetingRecordingUploadStatusT }`. Auf einer Bridge
+  ohne Upload-Faehigkeit: `{ enabled: false, available: false, tasks: [],
+  last_skipped: null }`.
+
+### Event `recording_upload_status`
+
+```jsonc
+{
+  "type": "bridge_event",
+  "bridgeId": "<bridge-id>",
+  "event": "recording_upload_status",
+  "data": {
+    "at": 1712345678123, // number, Unix ms
+    "upload": {
+      "enabled": true, // boolean, zuletzt gesetzter Hinweis
+      "available": true, // boolean, wie capabilities.meeting.recording_upload
+      "tasks": [ // neueste zuerst, hoechstens 20; beendete Aufgaben bleiben 7 Tage sichtbar
+        {
+          "id": "<uuid>", // Bridge-ID der Aufgabe (client_recording_id der Plattform)
+          "recording_id": "<uuid>", // string|null, ID der Aufnahme auf der Plattform, ab dem ersten angenommenen Beginn
+          "file_name": "Broadify-Meeting-2026-11-22-10-15-00.mp4", // nur der Basename, nie der Pfad
+          "state": "uploading", // "queued" | "hashing" | "uploading" | "completing" | "done" | "failed" | "cancelled"
+          "size_bytes": 1288490188,
+          "bytes_uploaded": 402653184,
+          "attempts": 0, // Fehlversuche in Folge ohne Byte-Fortschritt (auch solche ohne Netz; nur beantwortete zaehlen gegen das Limit)
+          "next_attempt_at": null, // number|null, Unix ms des naechsten Versuchs, solange die Aufgabe wartet
+          "error_code": null, // string|null; bei wartenden Aufgaben der letzte Fehler, bei failed/cancelled der Grund
+          "updated_at": 1712345678000
+        }
+      ],
+      "last_skipped": null // { file_name, at, reason } | null; reason: "prores_master_local" | "recording_failed" | "file_missing" | "file_incomplete"
+    }
+  },
+  "timestamp": 1712345678124
+}
+```
+
+- Gesendet bei jedem Zustandswechsel einer Aufgabe, bei jeder Aenderung des
+  Hinweises und bei einer uebersprungenen Aufnahme; waehrend Bytes fliessen
+  hoechstens alle 2 s.
+- `bytes_uploaded` ist waehrend eines Teilstuecks ein Live-Wert (an den Socket
+  uebergebene Bytes) und kann nach einem Abbruch auf den vom Server
+  bestaetigten Stand zurueckfallen. Quelle der Wahrheit fuer den Eingang der
+  Web-App ist die Datenbankzeile der Plattform; das Event ist eine
+  Live-Ueberlagerung, verknuepft ueber `recording_id`.
+- `last_skipped` gilt fuer den laufenden Bridge-Prozess (nicht gespeichert)
+  und wird nur gesetzt, wenn der Upload eingeschaltet ist.
+- Kein Feld traegt einen lokalen Pfad, eine URL oder ein Token.
+- Gesendet wird nur bei verbundenem Relay. Es gibt keinen Resync-Snapshot:
+  nach einem Reconnect liefert der Konfigurationsbefehl den aktuellen Stand.
+- `error_code` beendeter Aufgaben, die die Bridge selbst vergibt:
+  `upload_retries_exhausted`, `upload_restarts_exhausted`, `upload_expired`,
+  `file_missing`, `file_changed`, `recording_too_large`,
+  `codec_not_uploadable`,
+  `storage_http_<status>`, `invalid_request`; sonst der Code der Plattform.
+  Bei wartenden Aufgaben: `network_error`, `platform_http_<status>`,
+  `storage_http_<status>`, `platform_response_invalid`, `file_unavailable`.
+
+Kompatibilitaet: alte Bridge + neue Web-App: Faehigkeit fehlt, Befehl wird nie
+gesendet. Neue Bridge + alte Web-App: der Hinweis kommt nie an, nichts wird
+hochgeladen; das unbekannte Event wird ignoriert.
 
 ## Kompatibilitaet
 

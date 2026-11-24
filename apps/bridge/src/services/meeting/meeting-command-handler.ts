@@ -20,6 +20,7 @@ import {
   MeetingRecordingPickPathSchema,
   MeetingRecordingStartSchema,
   MeetingRecordingToggleSchema,
+  MeetingRecordingUploadConfigureSchema,
   MeetingScreenPickSchema,
   MeetingScreenStartSchema,
 } from "./meeting-command-schemas.js";
@@ -37,6 +38,7 @@ import {
   validateBrowserSourceUrl,
 } from "./meeting-content-layers.js";
 import { getBridgeContext } from "../bridge-context.js";
+import { configureRecordingUpload } from "../postpro/recording-upload-service.js";
 import { PgmWebrtcCloseSchema, PgmWebrtcOfferSchema } from "../pgm/pgm-command-schemas.js";
 import { MeetingProgramStreamError, meetingProgramStream } from "./meeting-program-stream.js";
 import { openGuardedDownload } from "./media-download.js";
@@ -72,6 +74,7 @@ import { loadFrameBusModule } from "../graphics/framebus/framebus-client.js";
 import type {
   MeetingProgramFormatT,
   MeetingRecordingCodecT,
+  MeetingRecordingUploadConfigureResultT,
 } from "@broadify/protocol";
 import { meetingRecordingContainer } from "./meeting-recording-codecs.js";
 import {
@@ -1055,6 +1058,21 @@ export async function handleMeetingCommand(
 
     case "meeting_recording_status": {
       return runMeetingRpc(() => requireClient().recordingStatus());
+    }
+
+    case "meeting_recording_upload_configure": {
+      // The web app pushes the user's opt-in (and `false` when it is off or
+      // the organisation lacks the mode). A hint only: the platform decides
+      // at every upload begin. Works without a running engine.
+      const { enabled } = parseRelayPayload(
+        MeetingRecordingUploadConfigureSchema,
+        payload ?? {},
+        "Invalid payload for meeting_recording_upload_configure",
+      );
+      const result: MeetingRecordingUploadConfigureResultT = {
+        upload: await configureRecordingUpload(enabled),
+      };
+      return { success: true, data: result };
     }
 
     // Cloud-fetch commands: HTTPS webapps cannot POST files to the local
